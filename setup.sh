@@ -34,3 +34,21 @@ echo "Environment ready. To run the app:"
 echo "  source venv/bin/activate"
 echo "  python app_main.py"
 
+echo
+read -r -p "Would you like to install a systemd service for BenchViz now? [y/N]: " INSTALL_SERVICE
+INSTALL_SERVICE="${INSTALL_SERVICE:-N}"
+
+case "$INSTALL_SERVICE" in
+    y|Y)
+        if [ -x "./install_systemd_service.sh" ]; then
+            ./install_systemd_service.sh
+        else
+            echo "install_systemd_service.sh not found or not executable. Skipping systemd setup."
+        fi
+        ;;
+    *)
+        echo "Skipping systemd service installation."
+        ;;
+esac
+
+
