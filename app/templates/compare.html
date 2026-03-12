@@ -433,34 +433,49 @@
                         font: { color: '#8b949e' },
                         xaxis: { title: chartData.display_format === 'LINE_GRAPH' ? 'Time/Samples' : 'Systems', gridcolor: 'rgba(255,255,255,0.05)' },
                         yaxis: { title: chartData.scale, gridcolor: 'rgba(255,255,255,0.05)' },
-                        margin: { t: 40, l: 50, r: 20, b: 50 },
+                        margin: { t: 60, l: 50, r: 20, b: 50 },
                         showlegend: chartData.is_primary,
-                        legend: { orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "right", x: 1 }
+                        legend: { orientation: "h", yanchor: "bottom", y: 1.05, xanchor: "right", x: 1 }
                     };
 
                     if (chartData.display_format === 'BAR_GRAPH') {
-                        plotTraces.forEach(t => {
-                            const tempX = t.x;
-                            t.x = t.y;
-                            t.y = tempX;
-                            t.orientation = 'h';
+                        let singleTrace = {
+                            x: [],
+                            y: [],
+                            type: 'bar',
+                            orientation: 'h',
+                            text: [],
+                            textposition: 'outside',
+                            textfont: { color: '#c9d1d9', size: 11 },
+                            customdata: [],
+                            hovertemplate: "%{customdata[0]}<br>%{x}<extra></extra>",
+                            marker: { color: [] }
+                        };
+                        
+                        const defaultColors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
 
-                            // Show numeric values directly on the bars
-                            const values = Array.isArray(t.x) ? t.x : [t.x];
-                            t.text = values.map(v => (v === null || v === undefined || isNaN(v) ? '' : Number(v).toFixed(2)));
-                            t.textposition = 'outside';
-                            t.textfont = { color: '#c9d1d9', size: 11 };
+                        plotTraces.forEach((t, i) => {
+                            const val = Array.isArray(t.y) ? t.y[0] : t.y;
+                            const sysName = Array.isArray(t.x) ? t.x[0] : t.x;
+                            const custom = t.customdata ? t.customdata[0] : sysName;
+
+                            singleTrace.y.push(sysName);
+                            singleTrace.x.push(val);
+                            singleTrace.customdata.push([custom]);
+                            singleTrace.text.push(val === null || val === undefined || isNaN(val) ? '' : Number(val).toFixed(2));
+                            singleTrace.marker.color.push(defaultColors[i % defaultColors.length]);
                         });
+                        
+                        plotTraces = [singleTrace];
                         plotLayout.xaxis.title = chartData.scale;
                         plotLayout.yaxis.title = 'Systems';
-                        plotLayout.margin.l = 140;
-                        plotLayout.margin.r = 70; // room for value labels to the right
-                        plotLayout.bargap = 0.85;  // even thinner bars / more separation
-                        plotLayout.bargroupgap = 0.35;
-                        
-                        const numCategories = Math.max(...plotTraces.map(t => t.y.length));
-                        // Keep each chart fairly tight vertically while fitting labels
-                        const reqHeight = Math.max(130, numCategories * 22 + 70);
+                        plotLayout.margin.l = 150;
+                        plotLayout.margin.r = 70; 
+                        plotLayout.bargap = 0.3;
+                        plotLayout.showlegend = false; 
+
+                        const numCategories = singleTrace.y.length;
+                        const reqHeight = Math.max(200, numCategories * 40 + 100);
                         plotContainer.style.height = `${reqHeight}px`;
                     }
 
@@ -522,12 +537,12 @@
                         plotLayout.yaxis.title = 'Systems';
                         plotLayout.title.text = `${chartData.metric}`;
                         plotLayout.showlegend = false;
-                        plotLayout.margin.l = 100;
+                        plotLayout.margin.l = 150;
                         plotLayout.margin.r = 20;
                         plotLayout.boxgap = 0.5;
                         
                         const numCategories = boxTraces.length;
-                        const reqHeight = Math.max(150, numCategories * 40 + 100);
+                        const reqHeight = Math.max(220, numCategories * 40 + 100);
                         plotContainer.style.height = `${reqHeight}px`;
                     }
 
