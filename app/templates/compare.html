@@ -418,8 +418,15 @@
                     }
                     
                     let plotTraces = JSON.parse(JSON.stringify(chartData.traces));
+                    // Derive a human-friendly better-is direction when available
+                    let betterText = '';
+                    if (chartData.proportion === 'HIB') {
+                        betterText = ' (higher is better)';
+                    } else if (chartData.proportion === 'LIB') {
+                        betterText = ' (lower is better)';
+                    }
                     let plotLayout = {
-                        title: { text: chartData.metric, font: { color: '#c9d1d9', size: 14 } },
+                        title: { text: chartData.metric + betterText, font: { color: '#c9d1d9', size: 14 } },
                         paper_bgcolor: 'rgba(0,0,0,0)',
                         plot_bgcolor: 'rgba(0,0,0,0)',
                         font: { color: '#8b949e' },
@@ -436,14 +443,22 @@
                             t.x = t.y;
                             t.y = tempX;
                             t.orientation = 'h';
+
+                            // Show numeric values directly on the bars
+                            const values = Array.isArray(t.x) ? t.x : [t.x];
+                            t.text = values.map(v => (v === null || v === undefined || isNaN(v) ? '' : Number(v).toFixed(2)));
+                            t.textposition = 'outside';
+                            t.textfont = { color: '#c9d1d9', size: 11 };
                         });
                         plotLayout.xaxis.title = chartData.scale;
                         plotLayout.yaxis.title = 'Systems';
                         plotLayout.margin.l = 150;
-                        plotLayout.bargap = 0.5;
+                        plotLayout.margin.r = 80; // room for value labels to the right
+                        plotLayout.bargap = 0.8;  // thinner bars
+                        plotLayout.bargroupgap = 0.3;
                         
                         const numCategories = Math.max(...plotTraces.map(t => t.y.length));
-                        const reqHeight = Math.max(150, numCategories * 40 + 100);
+                        const reqHeight = Math.max(150, numCategories * 30 + 80); // reduce vertical thickness a bit
                         plotContainer.style.height = `${reqHeight}px`;
                     }
 

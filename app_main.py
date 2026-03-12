@@ -512,6 +512,7 @@ def api_compare():
                 "description": primary_benchmark.description,
                 "scale": primary_benchmark.scale,
                 "display_format": primary_benchmark.display_format,
+                "proportion": primary_benchmark.proportion,
                 "traces": primary_traces,
                 "is_primary": True
             })
@@ -583,6 +584,7 @@ def api_compare():
                     "description": s_bm.description,
                     "scale": s_bm.scale,
                     "display_format": s_bm.display_format,
+                    "proportion": s_bm.proportion,
                     "traces": s_traces,
                     "is_primary": False
                 })
