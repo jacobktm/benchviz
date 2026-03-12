@@ -13,6 +13,21 @@ DEFAULT_USER="${SUDO_USER:-$USER}"
 read -r -p "System user to run BenchViz as [${DEFAULT_USER}]: " SERVICE_USER
 SERVICE_USER="${SERVICE_USER:-$DEFAULT_USER}"
 
+# Ensure the service user exists (print instructions if missing)
+if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+  echo "User '${SERVICE_USER}' does not exist."
+  echo
+  echo "Please create this user before installing the systemd service. For example:"
+  if command -v adduser >/dev/null 2>&1; then
+      echo "  sudo adduser --disabled-password --gecos \"\" ${SERVICE_USER}"
+  else
+      echo "  sudo useradd -m -s /bin/bash ${SERVICE_USER}"
+  fi
+  echo
+  echo "Then re-run ./install_systemd_service.sh."
+  exit 1
+fi
+
 PYTHON_BIN="${PROJECT_ROOT}/venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
   echo "Expected virtualenv Python at ${PYTHON_BIN} but it was not found or not executable."
