@@ -390,8 +390,9 @@
                 
                 const secondarySection = document.createElement('div');
                 secondarySection.style.display = 'grid';
-                secondarySection.style.gridTemplateColumns = 'repeat(auto-fit, minmax(400px, 1fr))';
-                secondarySection.style.gap = '1.5rem';
+                // Stack secondary charts; keep gaps modest so page stays dense
+                secondarySection.style.gridTemplateColumns = '1fr';
+                secondarySection.style.rowGap = '1rem';
                 
                 groupWrapper.appendChild(primarySection);
                 groupWrapper.appendChild(secondarySection);
@@ -452,13 +453,14 @@
                         });
                         plotLayout.xaxis.title = chartData.scale;
                         plotLayout.yaxis.title = 'Systems';
-                        plotLayout.margin.l = 150;
-                        plotLayout.margin.r = 80; // room for value labels to the right
-                        plotLayout.bargap = 0.8;  // thinner bars
-                        plotLayout.bargroupgap = 0.3;
+                        plotLayout.margin.l = 140;
+                        plotLayout.margin.r = 70; // room for value labels to the right
+                        plotLayout.bargap = 0.85;  // even thinner bars / more separation
+                        plotLayout.bargroupgap = 0.35;
                         
                         const numCategories = Math.max(...plotTraces.map(t => t.y.length));
-                        const reqHeight = Math.max(150, numCategories * 30 + 80); // reduce vertical thickness a bit
+                        // Keep each chart fairly tight vertically while fitting labels
+                        const reqHeight = Math.max(130, numCategories * 22 + 70);
                         plotContainer.style.height = `${reqHeight}px`;
                     }
 
