@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="animate-in delay-1" style="margin-bottom: 2rem;">
+    <h1 style="margin-top: 1rem;">Hardware Insights</h1>
+    <p class="card-meta">Statistical correlation analysis of benchmark performance across varying hardware configurations. Only displaying cohorts with a minimum sample size (n >= 3).</p>
+</div>
+
+<style>
+    .feature-card {
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+    }
+    .metric-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .metric-row:last-child {
+        border-bottom: none;
+    }
+    .score-badge {
+        background: rgba(46, 213, 115, 0.1);
+        color: #7bed9f;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+</style>
+
+<div class="animate-in delay-2">
+    {% set ns = namespace(has_data=false) %}
+    
+    {% for analysis in analyses %}
+        {% set result_available = false %}
+        {% for arg, feature_stats in analysis.analysis_json.items() %}
+            {# Check if there is actual data inside vs just "Insufficient data" logs #}
+            {% for feature_values in feature_stats.values() %}
+                {% if not feature_values[0].get("error") %}
+                    {% set result_available = true %}
+                    {% set ns.has_data = true %}
+                {% endif %}
+            {% endfor %}
+        {% endfor %}
+        
+        {% if result_available %}
+        <div class="glass feature-card">
+            <h2 style="margin-bottom: 0.5rem; color: var(--gradient-start);">
+                {{ analysis.benchmark_title }}
+                <span style="font-size: 0.9rem; font-weight: 400; color: var(--text-secondary);">
+                    {% if analysis.benchmark_app_version %}(v{{ analysis.benchmark_app_version }}){% endif %}
+                </span>
+            </h2>
+            <p class="card-meta" style="margin-bottom: 1.5rem;">Last analyzed: {{ analysis.last_updated.strftime('%Y-%m-%d %H:%M') }}</p>
+            
+            {% for arg, feature_stats in analysis.analysis_json.items() %}
+                {% if arg != 'default' %}
+                    <h3 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">Configuration: <span style="font-family: monospace;">{{ arg }}</span></h3>
+                {% endif %}
+                
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 1.5rem;">
+                {% for feature_name, feature_values in feature_stats.items() %}
+                    {% if not feature_values[0].get("error") %}
+                    <div style="background: rgba(0,0,0,0.2); padding: 1.25rem; border-radius: 8px;">
+                        <h4 style="margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem;">{{ feature_name }}</h4>
+                        {% for val_stat in feature_values %}
+                        <div class="metric-row">
+                            <div style="flex: 1; min-width: 0;">
+                                <div style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 1rem;">
+                                    {{ val_stat.name }} 
+                                </div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary);">n = {{ val_stat.n }} sample(s)</div>
+                            </div>
+                            <div class="score-badge">
+                                {{ "%.2f"|format(val_stat.mean) }}
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                {% endfor %}
+                </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    {% endfor %}
+    
+    {% if not ns.has_data %}
+    <div class="glass feature-card" style="text-align: center; padding: 4rem 2rem;">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width: 48px; height: 48px; margin: 0 auto 1rem; color: var(--text-secondary); opacity: 0.5;">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <h2 style="margin-bottom: 1rem; color: var(--text-secondary);">Insufficient Data for Correlation</h2>
+        <p style="color: var(--text-secondary); max-width: 600px; margin: 0 auto; line-height: 1.6;">
+            We need more data to draw statistical correlations. Currently, the analysis engine requires at least 3 distinct systems/runs per component combination to avoid misleading outliers. Upload more benchmarks to populate these insights.
+        </p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

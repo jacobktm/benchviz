@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="animate-in delay-1">
+    <h1>BenchViz Dashboard</h1>
+    <p class="card-meta" style="margin-bottom: 2rem;">Overview of all benchmarked systems and available tests.</p>
+</div>
+
+<style>
+    .flash-message {
+        padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; font-weight: 500; font-size: 0.95rem;
+    }
+    .flash-success {
+        background: rgba(46, 213, 115, 0.1); color: #7bed9f; border: 1px solid rgba(46, 213, 115, 0.2);
+    }
+    .flash-error {
+        background: rgba(255, 60, 60, 0.1); color: #ff6b81; border: 1px solid rgba(255, 60, 60, 0.2);
+    }
+</style>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class="animate-in delay-1">
+    {% for category, message in messages %}
+      <div class="flash-message {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">
+        {{ message }}
+      </div>
+    {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+
+<!-- Unified Search -->
+<div class="search-container glass animate-in delay-2" style="padding: 1.5rem; border-radius: 12px; margin-bottom: 2rem;">
+    <input type="text" id="searchInput" placeholder="Search systems by hardware/software, or benchmarks by title..." aria-label="Search">
+</div>
+
+<!-- Tabs Navigation -->
+<div class="tabs-nav animate-in delay-3" style="margin-bottom: 2rem; display: flex; gap: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+    <button class="tab-btn active" data-tab="benchmarks-tab" style="background: none; border: none; color: var(--text-primary); font-size: 1.1rem; font-weight: 600; cursor: pointer; padding: 0.5rem 1rem; border-radius: 6px;">Benchmarks <span class="tag" id="benchmarkCount">{{ grouped_benchmarks|length }}</span></button>
+    <button class="tab-btn" data-tab="systems-tab" style="background: none; border: none; color: var(--text-secondary); font-size: 1.1rem; font-weight: 600; cursor: pointer; padding: 0.5rem 1rem; border-radius: 6px;">Systems <span class="tag" id="systemCount">{{ grouped_systems|length }}</span></button>
+</div>
+
+<div class="dashboard-tabs-container">
+    <div id="systems-tab" class="tab-pane" style="display: none;">
+        <div class="expandable-list" id="systemGrid">
+            {% for group in grouped_systems %}
+            <details class="glass system-item" data-search="{{ group.search_tags_str|lower }}" style="margin-bottom: 1rem; border-radius: 8px; overflow: hidden;">
+                <summary style="padding: 1rem; cursor: pointer; font-weight: 600; background: rgba(255,255,255,0.05); user-select: none;">
+                    {{ group.group_name }} <span style="color: var(--text-secondary); font-weight: normal; font-size: 0.9rem; margin-left: 0.5rem;">({{ group.profiles|length }} profiles)</span>
+                </summary>
+                <div style="padding: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
+                    <div class="table-container">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                    <th style="padding-bottom: 0.5rem;">Profile</th>
+                                    <th style="padding-bottom: 0.5rem;">Created</th>
+                                    <th style="padding-bottom: 0.5rem;">Detected Hardware</th>
+                                    <th style="padding-bottom: 0.5rem; text-align: right;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for sys in group.profiles %}
+                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                    <td style="padding: 0.75rem 0; font-size: 0.9rem;">
+                                        <div style="font-weight: 600;">{{ sys.identifier }}</div>
+                                        <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.15rem;">{{ sys.profile_label }}</div>
+                                    </td>
+                                    <td style="padding: 0.75rem 0; color: var(--text-secondary); font-size: 0.85rem;">{{ sys.timestamp }}</td>
+                                    <td style="padding: 0.75rem 0; font-size: 0.85rem; color: var(--text-secondary); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                        {{ sys.hardware.split(',')[0] }}
+                                    </td>
+                                    <td style="padding: 0.75rem 0; text-align: right;">
+                                        <a href="{{ url_for('system_detail', id=sys.id) }}" class="btn-primary-sm" style="text-decoration: none; padding: 0.25rem 0.75rem; font-size: 0.85rem;">View</a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </details>
+            {% endfor %}
+            <div id="noSystemsMsg" style="display: none; color: var(--text-secondary); padding: 1rem 0;">No matching systems found.</div>
+        </div>
+    </div>
+
+    <div id="benchmarks-tab" class="tab-pane active animate-in delay-3">
+        <div class="expandable-list" id="benchmarkGrid">
+            {% for group in grouped_benchmarks %}
+            <details class="glass benchmark-item" data-search="{{ group.title|lower }} {{ group.app_version|lower }} {{ group.search_tags_str|lower }}" style="margin-bottom: 1rem; border-radius: 8px; overflow: hidden;">
+                <summary style="padding: 1rem; cursor: pointer; font-weight: 600; background: rgba(255,255,255,0.05); user-select: none;">
+                    {{ group.title }} <span style="color: var(--text-secondary); font-weight: normal; font-size: 0.9rem; margin-left: 0.5rem;">(v{{ group.app_version }})</span>
+                </summary>
+                
+                <div style="padding: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
+                    <div style="margin-bottom: 1.5rem;">
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Systems Benchmarked:</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                            {% for sys in group.system_variations %}
+                            <a href="{{ url_for('system_detail', id=sys.id) }}" class="tag" style="text-decoration: none; border: 1px solid rgba(255,255,255,0.1); transition: background 0.2s;">
+                                {{ sys.primary_group_name }} <span style="opacity: 0.7; font-size: 0.8em; margin-left: 0.25rem;">{{ sys.profile_label }}</span>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 1.5rem;">
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Tests & Configurations:</p>
+                        <ul style="list-style-type: none; padding-left: 0; font-size: 0.9rem;">
+                            {% for run in group.runs %}
+                            <li style="margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                {{ run.description }} <span style="color: var(--text-secondary); font-size: 0.8rem;">({{ run.scale }})</span>
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+
+                    <div>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Captured Hardware Sensors:</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                            {% for sensor in group.sensors %}
+                                <span class="tag" style="background: rgba(46, 213, 115, 0.1); color: #7bed9f; border: 1px solid rgba(46, 213, 115, 0.2);">
+                                    {% if 'CPU Frequency' in sensor.description %}
+                                        CPU Freq
+                                    {% elif 'CPU Temperature' in sensor.description %}
+                                        CPU Temp
+                                    {% elif 'CPU Usage' in sensor.description %}
+                                        CPU Usage
+                                    {% elif 'CPU Power' in sensor.description %}
+                                        CPU Power
+                                    {% else %}
+                                        {{ sensor.description }}
+                                    {% endif %}
+                                    <span style="opacity: 0.7; font-size: 0.8em;">({{ sensor.scale }})</span>
+                                </span>
+                            {% endfor %}
+                            {% if not group.sensors %}
+                                <span style="font-size: 0.85rem; color: var(--text-secondary); font-style: italic;">No secondary telemetry sensors captured.</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </details>
+            {% endfor %}
+            <div id="noBenchmarksMsg" style="display: none; color: var(--text-secondary); padding: 1rem 0;">No matching benchmarks found.</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const searchInput = document.getElementById('searchInput');
+        const systemItems = document.querySelectorAll('.system-item');
+        const benchmarkItems = document.querySelectorAll('.benchmark-item');
+        
+        const sysCountSpan = document.getElementById('systemCount');
+        const bmCountSpan = document.getElementById('benchmarkCount');
+        
+        const noSysMsg = document.getElementById('noSystemsMsg');
+        const noBmMsg = document.getElementById('noBenchmarksMsg');
+
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            
+            let visibleSysCount = 0;
+            systemItems.forEach(item => {
+                const searchStr = item.getAttribute('data-search');
+                if (searchStr.includes(query)) {
+                    item.style.display = 'block';
+                    visibleSysCount++;
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            sysCountSpan.textContent = visibleSysCount;
+            noSysMsg.style.display = visibleSysCount === 0 ? 'block' : 'none';
+
+            let visibleBmCount = 0;
+            benchmarkItems.forEach(item => {
+                const searchStr = item.getAttribute('data-search');
+                if (searchStr.includes(query)) {
+                    item.style.display = 'block';
+                    visibleBmCount++;
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            bmCountSpan.textContent = visibleBmCount;
+            noBmMsg.style.display = visibleBmCount === 0 ? 'block' : 'none';
+        });
+
+        // Tab Switching Logic
+        const tabBtns = document.querySelectorAll('.tab-btn');
+        const tabPanes = document.querySelectorAll('.tab-pane');
+
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Remove active class from all buttons and panes
+                tabBtns.forEach(b => {
+                    b.classList.remove('active');
+                    b.style.color = 'var(--text-secondary)';
+                });
+                tabPanes.forEach(p => p.style.display = 'none');
+
+                // Add active class to clicked button and corresponding pane
+                btn.classList.add('active');
+                btn.style.color = 'var(--text-primary)';
+                const targetTabId = btn.getAttribute('data-tab');
+                document.getElementById(targetTabId).style.display = 'block';
+            });
+        });
+    });
+</script>
+{% endblock %}

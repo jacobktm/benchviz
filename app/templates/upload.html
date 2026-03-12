@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="animate-in delay-1" style="margin-bottom: 2rem;">
+    <h1 style="margin-top: 1rem;">Upload Benchmarks</h1>
+    <p class="card-meta">Upload Phoronix Test Suite XML results or ZIP archives containing them.</p>
+</div>
+
+<div class="compare-layout">
+    <div class="sidebar-panel glass animate-in delay-2" style="width: 100%; max-width: 900px; margin: 0 auto; grid-column: 1 / -1;">
+        
+        <style>
+            .flash-message {
+                padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; font-weight: 500; font-size: 0.95rem;
+            }
+            .flash-success {
+                background: rgba(46, 213, 115, 0.1); color: #7bed9f; border: 1px solid rgba(46, 213, 115, 0.2);
+            }
+            .flash-error {
+                background: rgba(255, 60, 60, 0.1); color: #ff6b81; border: 1px solid rgba(255, 60, 60, 0.2);
+            }
+        </style>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="flash-message {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">
+                {{ message }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <form action="{{ url_for('upload_benchmarks') }}" method="POST" enctype="multipart/form-data">
+            
+            <div style="margin-bottom: 2rem; padding: 1rem; background: rgba(50, 150, 255, 0.1); border: 1px solid rgba(50, 150, 255, 0.2); border-radius: 8px;">
+                <label for="existing_profile_select" style="display: block; margin-bottom: 0.5rem; font-weight: 600; color: #fff;">
+                    Load Existing Profile 
+                    <span style="font-weight: normal; color: var(--text-secondary); font-size: 0.85rem; margin-left: 0.5rem;">(Auto-fills manual inputs below)</span>
+                </label>
+                <select id="existing_profile_select" style="width: 100%; padding: 0.75rem; border-radius: 8px; background-color: var(--bg-color); border: 1px solid rgba(255,255,255,0.1); color: #fff;">
+                    <option value="" style="background-color: var(--bg-color); color: #fff;">-- Start Fresh / Manual Entry --</option>
+                </select>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                <div>
+                    <label for="primary_system_name" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        Primary System Name
+                    </label>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        Used for dashboard grouping across hardware and software profile variants.
+                    </p>
+                    <input type="text" id="primary_system_name" name="primary_system_name" list="primary_system_name_list" placeholder="e.g. Thelio Mira R4" style="width: 100%;">
+                    <datalist id="primary_system_name_list">
+                        {% for val in unique_values.get('primary_system_name', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div>
+                    <label for="chassis_version" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        Chassis Version Tag
+                    </label>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        Specify the system chassis context for these benchmarks. Leave blank to assign later.
+                    </p>
+                    <input type="text" id="chassis_version" name="chassis_version" list="chassis_version_list" placeholder="e.g. v2.1-alpha" style="width: 100%;">
+                    <datalist id="chassis_version_list">
+                        {% for val in unique_values.get('chassis_version', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div>
+                    <label for="cooler_model" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        Cooler Model
+                    </label>
+                    <input type="text" id="cooler_model" name="cooler_model" list="cooler_model_list" placeholder="e.g. Noctua NH-D15 G2" style="width: 100%;">
+                    <datalist id="cooler_model_list">
+                        {% for val in unique_values.get('cooler_model', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div>
+                    <label for="psu_model" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        PSU Model
+                    </label>
+                    <input type="text" id="psu_model" name="psu_model" list="psu_model_list" placeholder="e.g. Corsair RM1000x" style="width: 100%;">
+                    <datalist id="psu_model_list">
+                        {% for val in unique_values.get('psu_model', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div>
+                    <label for="psu_wattage" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        PSU Wattage
+                    </label>
+                    <input type="text" id="psu_wattage" name="psu_wattage" list="psu_wattage_list" placeholder="e.g. 1000W" style="width: 100%;">
+                    <datalist id="psu_wattage_list">
+                        {% for val in unique_values.get('psu_wattage', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div>
+                    <label for="custom_hardware" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        Legacy Custom Hardware Tag
+                    </label>
+                    <input type="text" id="custom_hardware" name="custom_hardware" list="custom_hardware_list" placeholder="Optional legacy tag" style="width: 100%;">
+                    <datalist id="custom_hardware_list">
+                        {% for val in unique_values.get('custom_hardware', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 1.5rem;">
+                <p style="font-size: 0.9rem; font-weight: 500; color: #fff; margin-bottom: 0.75rem;">Cooling and external state</p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
+                    <label class="checkbox-item"><input type="checkbox" name="external_off"><span>External Off</span></label>
+                    <label class="checkbox-item"><input type="checkbox" name="gpu_fans"><span>GPU Fans</span></label>
+                    <label class="checkbox-item"><input type="checkbox" name="memory_fans"><span>Memory Fans</span></label>
+                    <label class="checkbox-item"><input type="checkbox" name="nvme_fans"><span>NVMe Fans</span></label>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 1.5rem;">
+                <label for="manual_notes" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                    Manual Lab Notes
+                </label>
+                <textarea id="manual_notes" name="manual_notes" rows="4" placeholder="External setup, fan placement, PSU cabling, cooling notes, or anything the OS cannot detect."></textarea>
+            </div>
+
+            <div style="margin-bottom: 2rem;">
+                <label for="benchmark_files" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                    Select File(s)
+                </label>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                    Accepts: .xml, .zip
+                </p>
+                <input type="file" id="benchmark_files" name="benchmark_files" accept=".xml,.zip" multiple required 
+                       style="width: 100%; padding: 0.75rem; background: rgba(0,0,0,0.2); border: 1px dashed rgba(255,255,255,0.2); border-radius: 8px; color: #fff; cursor: pointer;">
+            </div>
+            
+            <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; font-size: 1.05rem; padding: 0.875rem;">
+                Upload & Process
+            </button>
+        </form>
+    </div>
+</div>
+
+<script id="existing-profiles-data" type="application/json">
+    {{ existing_profiles_json | safe }}
+</script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Provided from backend route context securely encoded
+        const profilesJsonStr = document.getElementById('existing-profiles-data').textContent;
+        let profiles = [];
+        try {
+            profiles = JSON.parse(profilesJsonStr);
+        } catch(e) {
+            console.error("Could not parse existing profiles JSON", e);
+        }
+
+        const selectEl = document.getElementById('existing_profile_select');
+        
+        // Populate options iteratively
+        profiles.forEach((profile, index) => {
+            const opt = document.createElement('option');
+            opt.value = index; // Referencing array index for direct map later
+            opt.textContent = profile.label;
+            opt.style.backgroundColor = 'var(--bg-color)';
+            opt.style.color = '#fff';
+            selectEl.appendChild(opt);
+        });
+
+        // DOM elements cache block
+        const domNodes = {
+            'primary_system_name': document.getElementById('primary_system_name'),
+            'chassis_version': document.getElementById('chassis_version'),
+            'cooler_model': document.getElementById('cooler_model'),
+            'psu_model': document.getElementById('psu_model'),
+            'psu_wattage': document.getElementById('psu_wattage'),
+            'custom_hardware': document.getElementById('custom_hardware'),
+            'manual_notes': document.getElementById('manual_notes'),
+            'external_off': document.querySelector('input[name="external_off"]'),
+            'gpu_fans': document.querySelector('input[name="gpu_fans"]'),
+            'memory_fans': document.querySelector('input[name="memory_fans"]'),
+            'nvme_fans': document.querySelector('input[name="nvme_fans"]')
+        };
+
+        selectEl.addEventListener('change', function(e) {
+            const selectedIdx = e.target.value;
+            if (selectedIdx === "") {
+                return; // Do nothing if manual entry 
+            }
+            
+            const profile = profiles[selectedIdx];
+            if (!profile) return;
+            
+            // Map text fields cleanly
+            const textKeys = ['primary_system_name', 'chassis_version', 'cooler_model', 'psu_model', 'psu_wattage', 'custom_hardware', 'manual_notes'];
+            textKeys.forEach(k => {
+                if(domNodes[k]) domNodes[k].value = profile[k] || '';
+            });
+
+            // Map boolean checkbox fields securely
+            const boolKeys = ['external_off', 'gpu_fans', 'memory_fans', 'nvme_fans'];
+            boolKeys.forEach(k => {
+                if(domNodes[k]) domNodes[k].checked = profile[k] === true;
+            });
+        });
+    });
+</script>
+{% endblock %}

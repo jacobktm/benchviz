@@ -1,0 +1,708 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="animate-in delay-1" style="margin-bottom: 2rem;">
+    <h1 style="margin-top: 1rem;">Compare Systems</h1>
+    <p class="card-meta">Build a report by selecting systems and one or more shared benchmarks.</p>
+</div>
+
+<details class="glass animate-in delay-2" id="configureAccordion" open style="margin-bottom: 2rem; border-radius: 12px; overflow: hidden;">
+    <summary style="padding: 1.5rem; cursor: pointer; font-size: 1.2rem; font-weight: 600; color: #fff; background: rgba(255,255,255,0.05); user-select: none;">
+        [+] Configure Comparison
+    </summary>
+    <div style="padding: 1.5rem; border-top: 1px solid rgba(255,255,255,0.1); display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 2rem;">
+        
+        <!-- Step 1: Select Systems (dropdown + chips) -->
+        <div>
+            <h3 style="margin-bottom: 1rem; color: #fff;">1. Select Systems</h3>
+            <p class="card-meta" style="margin-bottom: 0.75rem;">Pick one or more system profiles to compare.</p>
+
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+                <select id="systemSelect" style="flex: 1;">
+                    <option value="">-- Choose a system profile --</option>
+                    {% for sys in systems %}
+                    <option 
+                        value="{{ sys.id }}"
+                        data-short-name="{{ sys.identifier }}"
+                        data-primary-name="{{ sys.primary_group_name }}"
+                        data-label="{{ sys.profile_label }}"
+                    >
+                        {{ sys.primary_group_name }} — {{ sys.profile_label }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <button type="button" id="addSystemBtn" class="btn-primary-sm">Add</button>
+            </div>
+
+            <div id="selectedSystems" class="glass" style="min-height: 48px; padding: 0.75rem 1rem; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                <span id="noSystemsSelected" style="color: var(--text-secondary); font-size: 0.85rem;">No systems selected yet.</span>
+            </div>
+        </div>
+
+        <!-- Step 2: Select Benchmarks (dropdown + chips) -->
+        <div>
+            <h3 style="margin-bottom: 1rem; color: #fff;">2. Select Benchmarks</h3>
+            <p class="card-meta" id="benchmarkHelperText" style="margin-bottom: 0.75rem;">
+                Select one or more benchmarks shared by the chosen systems.
+            </p>
+
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
+                <select id="benchmarkSelect" style="flex: 1;" disabled>
+                    <option value="">-- Select at least one system first --</option>
+                </select>
+                <button type="button" id="addBenchmarkBtn" class="btn-primary-sm" disabled>Add</button>
+            </div>
+
+            <div id="selectedBenchmarks" class="glass" style="min-height: 48px; padding: 0.75rem 1rem; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                <span id="noBenchmarksSelected" style="color: var(--text-secondary); font-size: 0.85rem;">No benchmarks selected yet.</span>
+            </div>
+
+            <button id="generateBtn" class="btn-primary" style="width: 100%; margin-top: 1rem;" disabled>
+                Generate Comparison ➔
+            </button>
+        </div>
+    </div>
+</details>
+
+<!-- Chart Area (Results) -->
+<div class="animate-in delay-3" style="width: 100%; display: flex; flex-direction: column;">
+    <div class="glass" style="padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; display: none;" id="chartControls">
+        <h3 style="margin-bottom: 1rem;" id="chartTitle"></h3>
+        <div id="metricToggles" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
+    </div>
+    
+    <div class="chart-container" id="chartWrapper" style="display: flex; flex-direction: column; gap: 2rem; min-height: 200px;">
+        <!-- Loading indicator -->
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="spinner"></div>
+        </div>
+        
+        <div id="chartsContainer" style="width: 100%; display: flex; flex-direction: column; gap: 4rem; align-items: center; justify-content: center; color: var(--text-secondary); padding: 4rem 0;">
+            Expand "[+] Configure Comparison" to build a report.
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const systemSelect = document.getElementById('systemSelect');
+        const addSystemBtn = document.getElementById('addSystemBtn');
+        const selectedSystemsEl = document.getElementById('selectedSystems');
+        const noSystemsSelectedEl = document.getElementById('noSystemsSelected');
+
+        const benchmarkSelect = document.getElementById('benchmarkSelect');
+        const addBenchmarkBtn = document.getElementById('addBenchmarkBtn');
+        const selectedBenchmarksEl = document.getElementById('selectedBenchmarks');
+        const noBenchmarksSelectedEl = document.getElementById('noBenchmarksSelected');
+        const benchmarkHelperText = document.getElementById('benchmarkHelperText');
+
+        const generateBtn = document.getElementById('generateBtn');
+        const overlay = document.getElementById('loadingOverlay');
+        const chartsContainer = document.getElementById('chartsContainer');
+        const chartControls = document.getElementById('chartControls');
+        const metricToggles = document.getElementById('metricToggles');
+        const chartTitle = document.getElementById('chartTitle');
+        const configureAccordion = document.getElementById('configureAccordion');
+
+        let currentComparisonGroups = [];
+        let globalToggleState = {};   // Sensor visibility across all charts
+        let selectedSystems = [];     // { id, shortName, primaryName, label }
+        let selectedBenchmarks = [];  // { id, label }
+        let availableBenchmarks = []; // from /api/common_benchmarks
+
+        function refreshGenerateButtonState() {
+            generateBtn.disabled = !(selectedSystems.length > 0 && selectedBenchmarks.length > 0);
+        }
+
+        function renderSelectedSystems() {
+            selectedSystemsEl.innerHTML = '';
+            if (!selectedSystems.length) {
+                noSystemsSelectedEl.style.display = 'inline';
+                selectedSystemsEl.appendChild(noSystemsSelectedEl);
+                return;
+            }
+            noSystemsSelectedEl.style.display = 'none';
+
+            selectedSystems.forEach(sys => {
+                const chip = document.createElement('span');
+                chip.className = 'tag';
+                chip.style.display = 'inline-flex';
+                chip.style.alignItems = 'center';
+                chip.style.gap = '0.4rem';
+                chip.textContent = `${sys.primaryName} — ${sys.label}`;
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = '×';
+                btn.style.background = 'transparent';
+                btn.style.border = 'none';
+                btn.style.color = 'inherit';
+                btn.style.cursor = 'pointer';
+                btn.addEventListener('click', async () => {
+                    selectedSystems = selectedSystems.filter(s => s.id !== sys.id);
+                    await syncBenchmarkOptions();
+                });
+
+                chip.appendChild(btn);
+                selectedSystemsEl.appendChild(chip);
+            });
+        }
+
+        function renderSelectedBenchmarks() {
+            selectedBenchmarksEl.innerHTML = '';
+            if (!selectedBenchmarks.length) {
+                noBenchmarksSelectedEl.style.display = 'inline';
+                selectedBenchmarksEl.appendChild(noBenchmarksSelectedEl);
+                return;
+            }
+            noBenchmarksSelectedEl.style.display = 'none';
+
+            selectedBenchmarks.forEach(bm => {
+                const chip = document.createElement('span');
+                chip.className = 'tag';
+                chip.style.display = 'inline-flex';
+                chip.style.alignItems = 'center';
+                chip.style.gap = '0.4rem';
+                chip.textContent = bm.label;
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = '×';
+                btn.style.background = 'transparent';
+                btn.style.border = 'none';
+                btn.style.color = 'inherit';
+                btn.style.cursor = 'pointer';
+                btn.addEventListener('click', async () => {
+                    selectedBenchmarks = selectedBenchmarks.filter(b => b.id !== bm.id);
+                    await syncSystemConstraints();
+                });
+
+                chip.appendChild(btn);
+                selectedBenchmarksEl.appendChild(chip);
+            });
+        }
+
+        function populateBenchmarkSelect() {
+            benchmarkSelect.innerHTML = '';
+            if (!availableBenchmarks.length) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = selectedSystems.length
+                    ? 'No common benchmarks for current systems'
+                    : '-- Select at least one system first --';
+                benchmarkSelect.appendChild(opt);
+                benchmarkSelect.disabled = true;
+                addBenchmarkBtn.disabled = true;
+                return;
+            }
+
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '-- Choose a benchmark suite --';
+            benchmarkSelect.appendChild(placeholder);
+
+            availableBenchmarks.forEach(bm => {
+                const opt = document.createElement('option');
+                opt.value = String(bm.id);
+                opt.textContent = bm.label;
+                benchmarkSelect.appendChild(opt);
+            });
+
+            benchmarkSelect.disabled = false;
+            addBenchmarkBtn.disabled = false;
+        }
+
+        async function syncBenchmarkOptions() {
+            if (!selectedSystems.length) {
+                availableBenchmarks = [];
+                selectedBenchmarks = [];
+                populateBenchmarkSelect();
+                renderSelectedBenchmarks();
+                refreshGenerateButtonState();
+                benchmarkHelperText.textContent = 'Select one or more benchmarks shared by the chosen systems.';
+                return;
+            }
+
+            try {
+                const url = new URL('/api/common_benchmarks', window.location.origin);
+                selectedSystems.forEach(sys => url.searchParams.append('system_id', sys.id));
+
+                const response = await fetch(url.toString());
+                const data = await response.json();
+
+                if (data.error) {
+                    availableBenchmarks = [];
+                    selectedBenchmarks = [];
+                    populateBenchmarkSelect();
+                    renderSelectedBenchmarks();
+                    benchmarkHelperText.textContent = data.error;
+                } else {
+                    availableBenchmarks = data.benchmarks || [];
+                    const validIds = new Set(availableBenchmarks.map(b => String(b.id)));
+                    selectedBenchmarks = selectedBenchmarks.filter(b => validIds.has(String(b.id)));
+                    populateBenchmarkSelect();
+                    renderSelectedBenchmarks();
+
+                    if (selectedSystems.length === 1) {
+                        benchmarkHelperText.textContent = 'All benchmarks recorded on this system are available.';
+                    } else {
+                        benchmarkHelperText.textContent = 'Only benchmarks common to all selected systems are shown.';
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                availableBenchmarks = [];
+                populateBenchmarkSelect();
+                benchmarkHelperText.textContent = 'Failed to load shared benchmarks.';
+            } finally {
+                refreshGenerateButtonState();
+            }
+        }
+
+        async function syncSystemConstraints() {
+            if (!selectedBenchmarks.length) {
+                renderSelectedSystems();
+                await syncBenchmarkOptions();
+                return;
+            }
+
+            try {
+                const perBenchmarkSets = [];
+                for (const bm of selectedBenchmarks) {
+                    const url = new URL('/api/systems_for_benchmark', window.location.origin);
+                    url.searchParams.append('benchmark_id', bm.id);
+                    const resp = await fetch(url.toString());
+                    const data = await resp.json();
+                    if (data.error) continue;
+                    perBenchmarkSets.push(new Set((data.systems || []).map(s => String(s.id))));
+                }
+
+                if (!perBenchmarkSets.length) {
+                    refreshGenerateButtonState();
+                    return;
+                }
+
+                let allowed = perBenchmarkSets[0];
+                for (let i = 1; i < perBenchmarkSets.length; i++) {
+                    const next = perBenchmarkSets[i];
+                    allowed = new Set([...allowed].filter(id => next.has(id)));
+                }
+
+                selectedSystems = selectedSystems.filter(s => allowed.has(String(s.id)));
+                renderSelectedSystems();
+                await syncBenchmarkOptions();
+            } catch (err) {
+                console.error(err);
+            } finally {
+                refreshGenerateButtonState();
+            }
+        }
+
+        addSystemBtn.addEventListener('click', async () => {
+            const val = systemSelect.value;
+            if (!val) return;
+            if (selectedSystems.some(s => s.id === val)) return;
+
+            const opt = systemSelect.options[systemSelect.selectedIndex];
+            const sys = {
+                id: val,
+                shortName: opt.dataset.shortName || '',
+                primaryName: opt.dataset.primaryName || '',
+                label: opt.dataset.label || ''
+            };
+            selectedSystems.push(sys);
+            renderSelectedSystems();
+            await syncBenchmarkOptions();
+        });
+
+        addBenchmarkBtn.addEventListener('click', async () => {
+            const val = benchmarkSelect.value;
+            if (!val) return;
+            if (selectedBenchmarks.some(b => String(b.id) === String(val))) return;
+
+            const bm = availableBenchmarks.find(b => String(b.id) === String(val));
+            if (!bm) return;
+
+            selectedBenchmarks.push({ id: String(bm.id), label: bm.label });
+            renderSelectedBenchmarks();
+            await syncSystemConstraints();
+        });
+
+        function renderCharts() {
+            chartsContainer.innerHTML = '';
+            
+            if (currentComparisonGroups.length > 0 && currentComparisonGroups[0].system_details && currentComparisonGroups[0].system_details.length > 0) {
+                const detailsDiv = document.createElement('div');
+                detailsDiv.style.width = '100%';
+                detailsDiv.style.marginBottom = '3rem';
+                detailsDiv.innerHTML = `
+                    <h3 style="margin-bottom: 1rem; color: #c9d1d9; font-weight: 500; font-size: 1.1rem; text-align: left;">System Configurations</h3>
+                    <div class="table-container" style="margin: 0;">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                    <th style="padding: 0.5rem; width: 25%;">Identifier (Graph Y-Axis Label)</th>
+                                    <th style="padding: 0.5rem;">Full Configuration Profile</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${currentComparisonGroups[0].system_details.map(s => `
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 0.5rem; color: var(--accent); font-weight: 600;">${s.short_name}</td>
+                                        <td style="padding: 0.5rem; color: var(--text-secondary);">${s.full_label}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                chartsContainer.appendChild(detailsDiv);
+            }
+            
+            currentComparisonGroups.forEach((compGroup, compGroupIdx) => {
+                const groupWrapper = document.createElement('div');
+                groupWrapper.style.width = '100%';
+                groupWrapper.style.marginBottom = '4rem';
+                groupWrapper.style.paddingBottom = '4rem';
+                groupWrapper.style.borderBottom = compGroupIdx < currentComparisonGroups.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none';
+                
+                const groupHeader = document.createElement('h2');
+                groupHeader.textContent = compGroup.title;
+                groupHeader.style.color = 'var(--text-primary)';
+                groupHeader.style.marginBottom = '2rem';
+                groupHeader.style.textAlign = 'center';
+                groupWrapper.appendChild(groupHeader);
+            
+                let primaryChartData = compGroup.charts.find(c => c.is_primary);
+                let primaryScoresMap = {};
+                if (primaryChartData) {
+                    primaryChartData.traces.forEach(t => {
+                        primaryScoresMap[t.name] = t.y[0];
+                    });
+                }
+
+                let correlationTraces = [];
+                
+                const primarySection = document.createElement('div');
+                primarySection.style.width = '100%';
+                
+                const secondarySection = document.createElement('div');
+                secondarySection.style.display = 'grid';
+                secondarySection.style.gridTemplateColumns = 'repeat(auto-fit, minmax(400px, 1fr))';
+                secondarySection.style.gap = '1.5rem';
+                
+                groupWrapper.appendChild(primarySection);
+                groupWrapper.appendChild(secondarySection);
+                
+                compGroup.charts.forEach((chartData) => {
+                    if (!chartData.is_primary && !globalToggleState[chartData.metric]) {
+                        return; 
+                    }
+                    
+                    const chartDiv = document.createElement('div');
+                    chartDiv.style.width = '100%';
+                    chartDiv.style.display = 'flex';
+                    chartDiv.style.flexDirection = 'column';
+                    
+                    const plotContainer = document.createElement('div');
+                    plotContainer.style.width = '100%';
+                    plotContainer.style.height = chartData.is_primary ? '350px' : '250px';
+                    chartDiv.appendChild(plotContainer);
+                    
+                    if (chartData.is_primary) {
+                        primarySection.appendChild(chartDiv);
+                    } else {
+                        secondarySection.appendChild(chartDiv);
+                    }
+                    
+                    let plotTraces = JSON.parse(JSON.stringify(chartData.traces));
+                    let plotLayout = {
+                        title: { text: chartData.metric, font: { color: '#c9d1d9', size: 14 } },
+                        paper_bgcolor: 'rgba(0,0,0,0)',
+                        plot_bgcolor: 'rgba(0,0,0,0)',
+                        font: { color: '#8b949e' },
+                        xaxis: { title: chartData.display_format === 'LINE_GRAPH' ? 'Time/Samples' : 'Systems', gridcolor: 'rgba(255,255,255,0.05)' },
+                        yaxis: { title: chartData.scale, gridcolor: 'rgba(255,255,255,0.05)' },
+                        margin: { t: 40, l: 50, r: 20, b: 50 },
+                        showlegend: chartData.is_primary,
+                        legend: { orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "right", x: 1 }
+                    };
+
+                    if (chartData.display_format === 'BAR_GRAPH') {
+                        plotTraces.forEach(t => {
+                            const tempX = t.x;
+                            t.x = t.y;
+                            t.y = tempX;
+                            t.orientation = 'h';
+                        });
+                        plotLayout.xaxis.title = chartData.scale;
+                        plotLayout.yaxis.title = 'Systems';
+                        plotLayout.margin.l = 150;
+                        plotLayout.bargap = 0.5;
+                        
+                        const numCategories = Math.max(...plotTraces.map(t => t.y.length));
+                        const reqHeight = Math.max(150, numCategories * 40 + 100);
+                        plotContainer.style.height = `${reqHeight}px`;
+                    }
+
+                    let statsTableHtml = '';
+                    if (!chartData.is_primary && chartData.display_format === 'LINE_GRAPH') {
+                        let boxTraces = [];
+                        statsTableHtml = `
+                            <div style="margin-top: 1rem; padding: 0 1rem;">
+                                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.8rem; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                                    <thead>
+                                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); color: #8b949e;">
+                                            <th style="padding: 0.4rem;">System</th>
+                                            <th style="padding: 0.4rem;">Min</th>
+                                            <th style="padding: 0.4rem;">Avg</th>
+                                            <th style="padding: 0.4rem;">Max</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                        `;
+
+                        chartData.traces.forEach(trace => {
+                            boxTraces.push({
+                                x: trace.y,
+                                type: 'box',
+                                name: trace.name,
+                                orientation: 'h',
+                                boxpoints: 'outliers'
+                            });
+                            
+                            if (trace.stats && trace.stats.mean && primaryScoresMap[trace.name]) {
+                                correlationTraces.push({
+                                    x: [trace.stats.mean],
+                                    y: [primaryScoresMap[trace.name]],
+                                    mode: 'markers+text',
+                                    type: 'scatter',
+                                    name: trace.name,
+                                    text: [trace.name],
+                                    textposition: 'top center',
+                                    marker: { size: 10 },
+                                    legendgroup: trace.name,
+                                    showlegend: false
+                                });
+                                
+                                statsTableHtml += `
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.02);">
+                                        <td style="padding: 0.4rem; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; max-width: 100px; overflow: hidden;">${trace.name}</td>
+                                        <td style="padding: 0.4rem; font-family: monospace;">${trace.stats.min.toFixed(2)}</td>
+                                        <td style="padding: 0.4rem; font-family: monospace; color: var(--accent); font-weight: bold;">${trace.stats.mean.toFixed(2)}</td>
+                                        <td style="padding: 0.4rem; font-family: monospace;">${trace.stats.max.toFixed(2)}</td>
+                                    </tr>
+                                `;
+                            }
+                        });
+                        
+                        statsTableHtml += `</tbody></table></div>`;
+                        
+                        plotTraces = boxTraces;
+                        plotLayout.xaxis.title = chartData.scale;
+                        plotLayout.yaxis.title = 'Systems';
+                        plotLayout.title.text = `${chartData.metric}`;
+                        plotLayout.showlegend = false;
+                        plotLayout.margin.l = 100;
+                        plotLayout.margin.r = 20;
+                        plotLayout.boxgap = 0.5;
+                        
+                        const numCategories = boxTraces.length;
+                        const reqHeight = Math.max(150, numCategories * 40 + 100);
+                        plotContainer.style.height = `${reqHeight}px`;
+                    }
+
+                    Plotly.newPlot(plotContainer, plotTraces, plotLayout, { responsive: true, displayModeBar: false });
+                    
+                    if (statsTableHtml) {
+                        const inlineStatsWrapper = document.createElement('div');
+                        inlineStatsWrapper.innerHTML = statsTableHtml;
+                        chartDiv.appendChild(inlineStatsWrapper);
+                    }
+                });
+                
+                if (primarySection.children.length === 0) primarySection.remove();
+                if (secondarySection.children.length === 0) secondarySection.remove();
+                
+                if (correlationTraces.length > 0) {
+                    const analyticsSection = document.createElement('div');
+                    analyticsSection.style.display = 'grid';
+                    analyticsSection.style.gridTemplateColumns = 'repeat(auto-fit, minmax(450px, 1fr))';
+                    analyticsSection.style.gap = '2rem';
+                    analyticsSection.style.borderTop = '1px solid rgba(255,255,255,0.1)';
+                    analyticsSection.style.paddingTop = '1rem';
+                    groupWrapper.appendChild(analyticsSection);
+                
+                    const corrDivId = `correlation-scatter-plot-${compGroupIdx}`;
+                    const corrDiv = document.createElement('div');
+                    corrDiv.id = corrDivId;
+                    corrDiv.style.width = '100%';
+                    corrDiv.style.height = '350px';
+                    analyticsSection.appendChild(corrDiv);
+                    
+                    const corrLayout = {
+                        title: { text: "Performance vs. Averages (Scatter)", font: { color: '#c9d1d9', size: 16 } },
+                        paper_bgcolor: 'rgba(0,0,0,0)',
+                        plot_bgcolor: 'rgba(0,0,0,0)',
+                        font: { color: '#8b949e' },
+                        xaxis: { title: 'Mean Sensor Values', gridcolor: 'rgba(255,255,255,0.05)' },
+                        yaxis: { title: primaryChartData ? `Score (${primaryChartData.scale})` : 'Score', gridcolor: 'rgba(255,255,255,0.05)' },
+                        margin: { t: 40, l: 50, r: 20, b: 50 },
+                        showlegend: false,
+                        hovermode: 'closest'
+                    };
+                    
+                    Plotly.newPlot(corrDivId, correlationTraces, corrLayout, { responsive: true, displayModeBar: false });
+
+                    const statsDiv = document.createElement('div');
+                    statsDiv.style.height = '350px';
+                    statsDiv.style.overflowY = 'auto';
+                    statsDiv.style.paddingRight = '10px';
+                    
+                    statsDiv.innerHTML = `
+                        <h3 style="margin-bottom: 1rem; color: #c9d1d9; font-weight: 500; font-size: 1.1rem; text-align: center;">Raw Statistical Analysis</h3>
+                        <div class="table-container" style="margin: 0;">
+                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
+                                <thead>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                        <th style="padding: 0.5rem;">System</th>
+                                        <th style="padding: 0.5rem;">Metric</th>
+                                        <th style="padding: 0.5rem;">Min</th>
+                                        <th style="padding: 0.5rem;">Max</th>
+                                        <th style="padding: 0.5rem;">Avg</th>
+                                        <th style="padding: 0.5rem;">Med</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stats-tbody-${compGroupIdx}">
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                    analyticsSection.appendChild(statsDiv);
+                    
+                    const tbody = document.getElementById(`stats-tbody-${compGroupIdx}`);
+                    
+                    compGroup.charts.forEach((chartData) => {
+                        if (chartData.is_primary || chartData.display_format !== 'LINE_GRAPH') return;
+                        if (!globalToggleState[chartData.metric]) return;
+                        
+                        chartData.traces.forEach(trace => {
+                            if(trace.stats) {
+                                const tr = document.createElement('tr');
+                                tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+                                tr.innerHTML = `
+                                    <td style="padding: 0.5rem; color: var(--text-primary); font-weight: 500; font-size: 0.8rem;">${trace.name.split(' ')[0]}</td>
+                                    <td style="padding: 0.5rem; color: var(--text-secondary);">${chartData.metric}</td>
+                                    <td style="padding: 0.5rem; font-family: monospace;">${trace.stats.min.toFixed(2)}</td>
+                                    <td style="padding: 0.5rem; font-family: monospace;">${trace.stats.max.toFixed(2)}</td>
+                                    <td style="padding: 0.5rem; font-family: monospace; color: var(--accent); font-weight: bold;">${trace.stats.mean.toFixed(2)}</td>
+                                    <td style="padding: 0.5rem; font-family: monospace;">${trace.stats.median.toFixed(2)}</td>
+                                `;
+                                tbody.appendChild(tr);
+                            }
+                        });
+                    });
+                }
+                
+                chartsContainer.appendChild(groupWrapper);
+            });
+            
+            if (!chartsContainer.children.length) {
+                chartsContainer.innerHTML = `<div style="color: var(--text-secondary); width: 100%; text-align: center; padding: 2rem;">No data successfully plotted.</div>`;
+            }
+        }
+
+        generateBtn.addEventListener('click', async () => {
+            const systemIds = selectedSystems.map(s => s.id);
+            const benchmarkIds = selectedBenchmarks.map(b => b.id);
+
+            if (!systemIds.length) {
+                alert("Please select at least one system to compare.");
+                return;
+            }
+            if (!benchmarkIds.length) {
+                alert("Please select at least one benchmark.");
+                return;
+            }
+
+            configureAccordion.open = false;
+            overlay.classList.add('active');
+
+            try {
+                const url = new URL('/api/compare', window.location.origin);
+                benchmarkIds.forEach(id => url.searchParams.append('benchmark_id', id));
+                systemIds.forEach(id => url.searchParams.append('system_ids', id));
+
+                const response = await fetch(url.toString());
+                const data = await response.json();
+
+                if (data.error) {
+                    chartsContainer.innerHTML = `<div style="color: #f85149;">Error: ${data.error}</div>`;
+                    chartControls.style.display = 'none';
+                    metricToggles.innerHTML = '';
+                    chartTitle.style.display = 'none';
+                } else {
+                    currentComparisonGroups = data.comparison_groups;
+                    
+                    chartControls.style.display = 'block';
+                    chartTitle.textContent = "Global Sensor Controls";
+                    chartTitle.style.display = 'block';
+                    
+                    let allDistinctSensors = new Set();
+                    currentComparisonGroups.forEach(cg => {
+                        cg.charts.forEach(c => {
+                            if (!c.is_primary && c.display_format === 'LINE_GRAPH') {
+                                allDistinctSensors.add(c.metric);
+                            }
+                        });
+                    });
+                    
+                    allDistinctSensors.forEach(sensor => {
+                        if (globalToggleState[sensor] === undefined) {
+                            globalToggleState[sensor] = false;
+                        }
+                    });
+                    
+                    metricToggles.innerHTML = '';
+                    allDistinctSensors.forEach(sensor => {
+                        const label = document.createElement('label');
+                        label.className = 'checkbox-item';
+                        label.style.display = 'inline-flex';
+                        label.style.marginRight = '1rem';
+                        label.style.background = 'rgba(255,255,255,0.05)';
+                        label.style.padding = '0.5rem 1rem';
+                        label.style.borderRadius = '20px';
+                        label.style.cursor = 'pointer';
+                        
+                        const input = document.createElement('input');
+                        input.type = 'checkbox';
+                        input.dataset.sensor = sensor;
+                        input.checked = globalToggleState[sensor]; 
+                        input.addEventListener('change', (e) => {
+                            globalToggleState[sensor] = e.target.checked;
+                            renderCharts();
+                        });
+                        
+                        const span = document.createElement('span');
+                        span.textContent = sensor;
+                        span.style.fontSize = '0.85rem';
+                        
+                        label.appendChild(input);
+                        label.appendChild(span);
+                        metricToggles.appendChild(label);
+                    });
+                    
+                    renderCharts();
+                }
+            } catch (err) {
+                console.error(err);
+                chartsContainer.innerHTML = `<div style="color: #f85149;">Failed to load data. See console.</div>`;
+            } finally {
+                overlay.classList.remove('active');
+            }
+        });
+    });
+</script>
+{% endblock %}

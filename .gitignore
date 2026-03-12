@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+
+# Local benchmark result payloads
+benchmarks/**/*.xml
+benchmarks/*.xml
+
+# Local SQLite instance database
+instance/benchmarks.db
