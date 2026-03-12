@@ -6,7 +6,21 @@ set -euo pipefail
 #   chmod +x install_systemd_service.sh
 #   ./install_systemd_service.sh
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+read -r -p "Path where BenchViz is installed [${PROJECT_ROOT_DEFAULT}]: " PROJECT_ROOT
+PROJECT_ROOT="${PROJECT_ROOT:-$PROJECT_ROOT_DEFAULT}"
+
+if [ ! -d "$PROJECT_ROOT" ]; then
+  echo "Directory '$PROJECT_ROOT' does not exist. Creating it (you may be prompted for sudo)..."
+  sudo mkdir -p "$PROJECT_ROOT"
+fi
+
+if [ ! -f "$PROJECT_ROOT/app_main.py" ]; then
+  echo "No app_main.py found in '$PROJECT_ROOT'."
+  echo "Please ensure BenchViz is installed there before installing the service."
+  echo "Aborting."
+  exit 1
+fi
 SERVICE_NAME="benchviz"
 
 DEFAULT_USER="${SUDO_USER:-$USER}"
@@ -27,6 +41,10 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
   echo "Then re-run ./install_systemd_service.sh."
   exit 1
 fi
+
+# Ensure the install directory is owned by the service user
+echo "Ensuring '${PROJECT_ROOT}' is owned by '${SERVICE_USER}' (you may be prompted for sudo)..."
+sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "${PROJECT_ROOT}"
 
 PYTHON_BIN="${PROJECT_ROOT}/venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then

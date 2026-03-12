@@ -5,6 +5,45 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$PROJECT_ROOT"
 
+echo
+read -r -p "Is this a system-wide/service install (you plan to run BenchViz via systemd)? [y/N]: " INSTALL_AS_SERVICE
+INSTALL_AS_SERVICE="${INSTALL_AS_SERVICE:-N}"
+
+INSTALL_ROOT="$PROJECT_ROOT"
+
+if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
+  if [ "$EUID" -ne 0 ]; then
+    echo "For a service install, please re-run this script with sudo so it can set up systemd cleanly:"
+    echo "  sudo ./setup.sh"
+    exit 1
+  fi
+
+  # Ask where BenchViz should be installed for the service
+  DEFAULT_INSTALL_ROOT="/opt/benchviz"
+  read -r -p "Target install path for BenchViz [${DEFAULT_INSTALL_ROOT}]: " INSTALL_ROOT
+  INSTALL_ROOT="${INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
+
+  echo "Installing BenchViz files to '$INSTALL_ROOT'..."
+  mkdir -p "$INSTALL_ROOT"
+
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a \
+      --exclude 'venv' \
+      --exclude '.git' \
+      --exclude 'instance/benchmarks.db' \
+      --exclude 'benchmarks/*.xml' \
+      "$PROJECT_ROOT"/ "$INSTALL_ROOT"/
+  else
+    cp -a "$PROJECT_ROOT"/. "$INSTALL_ROOT"/
+    rm -rf "$INSTALL_ROOT/venv" "$INSTALL_ROOT/.git"
+    rm -f "$INSTALL_ROOT/instance/benchmarks.db" 2>/dev/null || true
+    rm -f "$INSTALL_ROOT"/benchmarks/*.xml 2>/dev/null || true
+  fi
+
+  PROJECT_ROOT="$INSTALL_ROOT"
+  cd "$PROJECT_ROOT"
+fi
+
 # Ensure python3-pip is available
 if ! command -v pip3 >/dev/null 2>&1; then
   echo "python3-pip is not installed."
@@ -31,24 +70,20 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 echo "Environment ready. To run the app:"
+echo "  cd \"$PROJECT_ROOT\""
 echo "  source venv/bin/activate"
 echo "  python app_main.py"
 
-echo
-read -r -p "Would you like to install a systemd service for BenchViz now? [y/N]: " INSTALL_SERVICE
-INSTALL_SERVICE="${INSTALL_SERVICE:-N}"
-
-case "$INSTALL_SERVICE" in
-    y|Y)
-        if [ -x "./install_systemd_service.sh" ]; then
-            ./install_systemd_service.sh
-        else
-            echo "install_systemd_service.sh not found or not executable. Skipping systemd setup."
-        fi
-        ;;
-    *)
-        echo "Skipping systemd service installation."
-        ;;
-esac
-
+if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
+  echo
+  echo "Installing BenchViz as a systemd service..."
+  if [ -x "./install_systemd_service.sh" ]; then
+      ./install_systemd_service.sh
+  else
+      echo "install_systemd_service.sh not found or not executable. Skipping systemd setup."
+  fi
+else
+  echo
+  echo "Skipping systemd service installation."
+fi
 
