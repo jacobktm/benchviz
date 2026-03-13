@@ -480,6 +480,7 @@
         let normalizeComposite = false;
         let showCompositeBar = false;
         let showWinsLossCharts = false;
+        let showOverallSensor = {};  // metric name -> boolean, for overall sensor bar charts
 
         function destroyCharts() {
             activeCharts.forEach(ch => {
@@ -705,6 +706,35 @@
         }
 
         /**
+         * Aggregate sensor means across all comparison groups: for each sensor type (e.g. CPU Temp),
+         * for each system, compute the mean of that sensor's mean values from each run.
+         * Returns [{ metric, scale, valuesBySystem }] where valuesBySystem is an array in systems order.
+         */
+        function computeOverallSensorMeans(compGroups, systems) {
+            const bySensor = new Map(); // metric -> { scale, bySystem: system -> [mean values] }
+            compGroups.forEach(cg => {
+                (cg.charts || []).forEach(ch => {
+                    if (ch.is_primary || ch.display_format !== 'LINE_GRAPH' || !ch.traces) return;
+                    const metric = ch.metric || ch.description || 'Sensor';
+                    const scale = ch.scale || '';
+                    if (!bySensor.has(metric)) bySensor.set(metric, { scale, bySystem: systems.reduce((o, s) => { o[s] = []; return o; }, {}) });
+                    const rec = bySensor.get(metric);
+                    ch.traces.forEach(t => {
+                        const meanVal = t.stats && typeof t.stats.mean === 'number' && !isNaN(t.stats.mean) ? t.stats.mean : null;
+                        if (t.name != null && meanVal != null && rec.bySystem[t.name]) rec.bySystem[t.name].push(meanVal);
+                    });
+                });
+            });
+            return Array.from(bySensor.entries()).map(([metric, { scale, bySystem }]) => {
+                const valuesBySystem = systems.map(s => {
+                    const arr = bySystem[s].filter(v => v != null && !isNaN(v));
+                    return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+                });
+                return { metric, scale, valuesBySystem };
+            }).filter(s => s.valuesBySystem.some(v => v != null && !isNaN(v)));
+        }
+
+        /**
          * Global summary across ALL benchmark groups.
          * Builds one ratio per (benchmark, option/config) per system so the overall composite
          * reflects who won more options—not one value per benchmark (which can tie when each
@@ -908,6 +938,30 @@
                     globalSection.appendChild(pieRow);
                     addPieChart(pieRow, systems, globalWins, 'Overall wins (best score per option)');
                     addPieChart(pieRow, systems, globalLosses, 'Overall losses (worst score per option)');
+                }
+
+                const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+                const sensorsToShow = overallSensors.filter(({ metric }) => showOverallSensor[metric]);
+                if (sensorsToShow.length) {
+                    const sensorHeading = document.createElement('div');
+                    sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.75rem;font-size:0.9rem;';
+                    sensorHeading.textContent = 'Overall sensor data (mean across all runs)';
+                    globalSection.appendChild(sensorHeading);
+                    sensorsToShow.forEach(({ metric, scale, valuesBySystem }) => {
+                        const wrap = document.createElement('div');
+                        wrap.style.marginBottom = '1.25rem';
+                        globalSection.appendChild(wrap);
+                        const values = systems.map((s, i) => valuesBySystem[i] != null ? valuesBySystem[i] : 0);
+                        const xLabel = scale ? `${metric} (${scale})` : metric;
+                        createBarChart(
+                            wrap,
+                            systems,
+                            values,
+                            xLabel,
+                            (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
+                            'overall-sensor'
+                        );
+                    });
                 }
 
                 chartsContainer.appendChild(globalSection);
@@ -1284,6 +1338,14 @@
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Normalize scores across benchmarks (ratios to worst system)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
+                        const overallSensorLabel = document.createElement('div');
+                        overallSensorLabel.textContent = 'Overall sensor data (mean across runs):';
+                        overallSensorLabel.style.cssText = 'font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;margin-bottom:0.25rem;';
+                        modeWrap.appendChild(overallSensorLabel);
+                        const overallSensorTogglesRow = document.createElement('div');
+                        overallSensorTogglesRow.className = 'overall-sensor-toggles';
+                        overallSensorTogglesRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.75rem;';
+                        modeWrap.appendChild(overallSensorTogglesRow);
                         
                         chartControls.insertBefore(modeWrap, chartTitle);
                     } else {
@@ -1309,7 +1371,36 @@
                         if (globalToggleState[sensor] === undefined) {
                             globalToggleState[sensor] = false;
                         }
+                        if (showOverallSensor[sensor] === undefined) {
+                            showOverallSensor[sensor] = false;
+                        }
                     });
+                    
+                    const overallSensorTogglesRow = chartControls.querySelector('.overall-sensor-toggles');
+                    if (overallSensorTogglesRow) {
+                        overallSensorTogglesRow.innerHTML = '';
+                        allDistinctSensors.forEach(sensor => {
+                            const label = document.createElement('label');
+                            label.className = 'checkbox-item';
+                            label.style.display = 'inline-flex';
+                            label.style.alignItems = 'center';
+                            label.style.gap = '0.4rem';
+                            const input = document.createElement('input');
+                            input.type = 'checkbox';
+                            input.dataset.overallSensor = sensor;
+                            input.checked = showOverallSensor[sensor];
+                            input.addEventListener('change', (e) => {
+                                showOverallSensor[e.target.dataset.overallSensor] = e.target.checked;
+                                renderCharts();
+                            });
+                            const span = document.createElement('span');
+                            span.textContent = sensor;
+                            span.style.fontSize = '0.8rem';
+                            label.appendChild(input);
+                            label.appendChild(span);
+                            overallSensorTogglesRow.appendChild(label);
+                        });
+                    }
                     
                     metricToggles.innerHTML = '';
                     allDistinctSensors.forEach(sensor => {
