@@ -488,6 +488,8 @@ def api_compare():
         if not primary_benchmark:
             continue
 
+        # Same logical benchmark can have different benchmark_id (and sometimes identifier) per
+        # import; match strictly first, then by title+version so results from all systems show.
         matching_primary_bm_ids = [
             bm.id for bm in Benchmark.query.filter(
                 Benchmark.identifier == primary_benchmark.identifier,
@@ -496,6 +498,14 @@ def api_compare():
                 Benchmark.is_primary == True,
             ).all()
         ]
+        if not matching_primary_bm_ids:
+            matching_primary_bm_ids = [
+                bm.id for bm in Benchmark.query.filter(
+                    Benchmark.title == primary_benchmark.title,
+                    Benchmark.app_version == primary_benchmark.app_version,
+                    Benchmark.display_format == 'BAR_GRAPH',
+                ).all()
+            ]
         if not matching_primary_bm_ids:
             matching_primary_bm_ids = [primary_benchmark.id]
 
@@ -581,11 +591,10 @@ def api_compare():
                     "is_primary": True
                 })
 
-            sensors = Benchmark.query.filter_by(
-                identifier=primary_benchmark.identifier,
-                title=primary_benchmark.title,
-                app_version=primary_benchmark.app_version,
-                display_format='LINE_GRAPH'
+            sensors = Benchmark.query.filter(
+                Benchmark.title == primary_benchmark.title,
+                Benchmark.app_version == primary_benchmark.app_version,
+                Benchmark.display_format == 'LINE_GRAPH',
             ).all()
 
             for s_bm in sensors:
@@ -694,19 +703,16 @@ def api_common_benchmarks():
         res_bm_ids = [r.benchmark_id for r in results]
         primary_bms = Benchmark.query.filter(Benchmark.id.in_(res_bm_ids), Benchmark.is_primary == True).all()
         
-        # Group benchmarks logically by title/version/identifier
-        # We use a tuple key so varying options map to the same abstract test suite.
+        # Group benchmarks logically by (title, version); identifier can differ across systems
+        # (e.g. pts/blender-1.2 vs pts/blender-1.2.0), so we treat same title+version as one suite.
         sys_bm_keys = set()
         for bm in primary_bms:
-            key = (bm.title, bm.app_version, bm.identifier)
+            key = (bm.title, bm.app_version)
             sys_bm_keys.add((key, bm.id))
 
         if common_bms is None:
             common_bms = sys_bm_keys
         else:
-            # We want benchmarks where the (title, version, id) tuple exists in all systems.
-            # But the specific benchmark.id might be slightly different.
-            # Intersect based purely on the (title, version, id) key.
             current_keys = {k[0] for k in sys_bm_keys}
             common_bms = set((k, id_val) for (k, id_val) in common_bms if k in current_keys)
             
@@ -730,8 +736,7 @@ def api_common_benchmarks():
 
     unique_common_suites = {}
     for key, bm_ids in key_to_bm_ids.items():
-        id_str = f" [{key[2]}]" if key[2] else ""
-        # Distinct configurations (arguments) for this benchmark across ALL its IDs and selected systems
+        # key is (title, app_version)
         config_rows = db.session.query(BenchmarkResult.arguments).filter(
             BenchmarkResult.benchmark_id.in_(bm_ids),
             BenchmarkResult.system_id.in_(sys_id_ints)
@@ -739,9 +744,9 @@ def api_common_benchmarks():
         configs = [r[0] or "" for r in config_rows if (r[0] or "").strip()]
         unique_common_suites[key] = {
             'id': key_to_one_bm_id[key],
-            'label': f"{key[0]} ({key[1]}){id_str}",
+            'label': f"{key[0]} ({key[1]})",
             'configs': configs
-            }
+        }
 
     output_list = sorted(list(unique_common_suites.values()), key=lambda x: x['label'])
 
