@@ -863,7 +863,17 @@
                         expandHeading.textContent = '▲ Individual options';
                     }
                 } else if (bGroup.configs.length === 1) {
-                    renderOneCompGroup(bGroup.configs[0].group, groupWrapper, true);
+                    const anySensorOn = Object.values(globalToggleState).some(v => v === true);
+                    if (anySensorOn) {
+                        const sensorSection = document.createElement('div');
+                        sensorSection.style.marginTop = '1.5rem';
+                        const sensorHeading = document.createElement('div');
+                        sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;font-size:0.9rem;';
+                        sensorHeading.textContent = 'Sensor data';
+                        sensorSection.appendChild(sensorHeading);
+                        groupWrapper.appendChild(sensorSection);
+                        renderOneCompGroup(bGroup.configs[0].group, sensorSection, true);
+                    }
                 }
 
                 chartsContainer.appendChild(groupWrapper);
