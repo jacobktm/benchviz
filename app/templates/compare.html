@@ -560,12 +560,14 @@
             }
 
             const BAR_THICKNESS = 30;
+            const BAR_CHART_TICK_COLOR = '#c9d1d9';
+            const BAR_CHART_HEIGHT_PADDING = 20;
             function addBarChart(parent, labels, values, xAxisLabel, formatter) {
                 const wrap = document.createElement('div');
                 wrap.style.width = '100%';
                 wrap.style.marginBottom = '1rem';
                 const canvas = document.createElement('canvas');
-                const h = labels.length * BAR_THICKNESS;
+                const h = labels.length * BAR_THICKNESS + BAR_CHART_HEIGHT_PADDING;
                 canvas.height = h;
                 canvas.style.height = `${h}px`;
                 canvas.style.width = '100%';
@@ -581,10 +583,55 @@
                         responsive: false,
                         layout: { padding: { top: 4, bottom: 4, left: 4, right: 8 } },
                         scales: {
-                            x: { title: { display: true, text: xAxisLabel || '' } },
-                            y: { title: { display: false }, ticks: { autoSkip: false } }
+                            x: {
+                                title: { display: true, text: xAxisLabel || '', color: BAR_CHART_TICK_COLOR },
+                                ticks: { color: BAR_CHART_TICK_COLOR }
+                            },
+                            y: { title: { display: false }, ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 12 } } }
                         },
                         plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: fmt, clip: true } }
+                    }
+                });
+                activeCharts.push(ch);
+                return ch;
+            }
+
+            function addPieChart(parent, systemLabels, values, title) {
+                const wrap = document.createElement('div');
+                wrap.style.marginBottom = '1rem';
+                wrap.style.width = '260px';
+                wrap.style.flexShrink = '0';
+                const titleEl = document.createElement('div');
+                titleEl.style.cssText = 'font-size:0.9rem;font-weight:600;color:' + BAR_CHART_TICK_COLOR + ';margin-bottom:0.35rem;';
+                titleEl.textContent = title;
+                wrap.appendChild(titleEl);
+                const canvas = document.createElement('canvas');
+                canvas.width = 240;
+                canvas.height = 240;
+                canvas.style.width = '240px';
+                canvas.style.height = '240px';
+                wrap.appendChild(canvas);
+                parent.appendChild(wrap);
+                const data = systemLabels.map((_, i) => values[i] != null && !isNaN(values[i]) ? values[i] : 0);
+                const bgColors = systemLabels.map((_, i) => defaultColors[i % defaultColors.length]);
+                const ch = new Chart(canvas.getContext('2d'), {
+                    type: 'pie',
+                    data: { labels: systemLabels, datasets: [{ data, backgroundColor: bgColors, borderColor: 'rgba(0,0,0,0.2)', borderWidth: 1 }] },
+                    options: {
+                        responsive: false,
+                        layout: { padding: 8 },
+                        plugins: {
+                            legend: { display: true, position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR, padding: 12 } },
+                            datalabels: {
+                                color: '#fff',
+                                font: { size: 12, weight: '600' },
+                                formatter: (v, ctx) => {
+                                    if (v == null || isNaN(v) || v === 0) return '';
+                                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                    return total > 0 ? Math.round(v) + ' (' + Math.round(100 * v / total) + '%)' : '';
+                                }
+                            }
+                        }
                     }
                 });
                 activeCharts.push(ch);
@@ -614,13 +661,22 @@
                         });
                         const labels = Array.from(byName.keys());
                         const values = Array.from(byName.values());
-                        const h = labels.length * BAR_THICKNESS;
+                        const h = labels.length * BAR_THICKNESS + BAR_CHART_HEIGHT_PADDING;
                         canvas.height = h;
                         canvas.style.height = `${h}px`;
                         chartInstance = new Chart(canvas.getContext('2d'), {
                             type: 'bar',
                             data: { labels, datasets: [{ label: chartData.metric, data: values, backgroundColor: labels.map((_, i) => defaultColors[i % defaultColors.length]), borderRadius: 4, barThickness: BAR_THICKNESS }] },
-                            options: { indexAxis: 'y', responsive: false, layout: { padding: { top: 4, bottom: 4, left: 4, right: 8 } }, scales: { x: { title: { display: true, text: chartData.scale || '' } }, y: { title: { display: false }, ticks: { autoSkip: false } } }, plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } } }
+                            options: {
+                                indexAxis: 'y',
+                                responsive: false,
+                                layout: { padding: { top: 4, bottom: 4, left: 4, right: 8 } },
+                                scales: {
+                                    x: { title: { display: true, text: chartData.scale || '', color: BAR_CHART_TICK_COLOR }, ticks: { color: BAR_CHART_TICK_COLOR } },
+                                    y: { title: { display: false }, ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 12 } } }
+                                },
+                                plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } }
+                            }
                         });
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         canvas.style.display = 'none';
@@ -718,9 +774,16 @@
                 groupWrapper.appendChild(aggSection);
                 addBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), (bGroup.scale ? `Aggregate (${bGroup.scale})` : 'Aggregate'));
                 if (systems.length >= 2) {
-                    const intFmt = v => (v == null || isNaN(v)) ? '' : String(Math.round(v));
-                    addBarChart(aggSection, systems, wins, 'Wins (best score per option)', intFmt);
-                    addBarChart(aggSection, systems, losses, 'Losses (worst score per option)', intFmt);
+                    const pieRow = document.createElement('div');
+                    pieRow.style.display = 'flex';
+                    pieRow.style.flexDirection = 'row';
+                    pieRow.style.flexWrap = 'wrap';
+                    pieRow.style.gap = '1.5rem';
+                    pieRow.style.marginTop = '0.5rem';
+                    pieRow.style.alignItems = 'flex-start';
+                    aggSection.appendChild(pieRow);
+                    addPieChart(pieRow, systems, wins, 'Wins (best score per option)');
+                    addPieChart(pieRow, systems, losses, 'Losses (worst score per option)');
                 } else if (systems.length === 1) {
                     const oneSystemNote = document.createElement('div');
                     oneSystemNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.25rem;';
