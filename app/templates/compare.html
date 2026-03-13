@@ -328,6 +328,7 @@
                     configRow.style.color = 'var(--text-secondary)';
                     const configText = document.createElement('span');
                     configText.textContent = argStr.length > 60 ? argStr.slice(0, 57) + '...' : argStr;
+                    configText.title = argStr;
                     configText.style.flex = '1';
                     configText.style.minWidth = 0;
                     configText.style.marginRight = '0.5rem';
