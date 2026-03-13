@@ -85,6 +85,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         const systemSelect = document.getElementById('systemSelect');
@@ -105,6 +106,11 @@
         const metricToggles = document.getElementById('metricToggles');
         const chartTitle = document.getElementById('chartTitle');
         const configureAccordion = document.getElementById('configureAccordion');
+
+        const defaultColors = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        ];
 
         let currentComparisonGroups = [];
         let globalToggleState = {};   // Sensor visibility across all charts
@@ -330,7 +336,17 @@
             await syncSystemConstraints();
         });
 
+        let activeCharts = [];
+
+        function destroyCharts() {
+            activeCharts.forEach(ch => {
+                try { ch.destroy(); } catch (e) { console.error(e); }
+            });
+            activeCharts = [];
+        }
+
         function renderCharts() {
+            destroyCharts();
             chartsContainer.innerHTML = '';
             
             if (currentComparisonGroups.length > 0 && currentComparisonGroups[0].system_details && currentComparisonGroups[0].system_details.length > 0) {
@@ -376,15 +392,7 @@
                 groupWrapper.appendChild(groupHeader);
             
                 let primaryChartData = compGroup.charts.find(c => c.is_primary);
-                let primaryScoresMap = {};
-                if (primaryChartData) {
-                    primaryChartData.traces.forEach(t => {
-                        primaryScoresMap[t.name] = t.y[0];
-                    });
-                }
-
-                let correlationTraces = [];
-                
+                                
                 const primarySection = document.createElement('div');
                 primarySection.style.width = '100%';
                 
@@ -407,18 +415,15 @@
                     chartDiv.style.display = 'flex';
                     chartDiv.style.flexDirection = 'column';
                     
-                    const plotContainer = document.createElement('div');
-                    plotContainer.style.width = '100%';
-                    plotContainer.style.height = chartData.is_primary ? '350px' : '250px';
-                    chartDiv.appendChild(plotContainer);
+                    const canvas = document.createElement('canvas');
+                    canvas.style.width = '100%';
+                    chartDiv.appendChild(canvas);
                     
                     if (chartData.is_primary) {
                         primarySection.appendChild(chartDiv);
                     } else {
                         secondarySection.appendChild(chartDiv);
                     }
-                    
-                    let plotTraces = JSON.parse(JSON.stringify(chartData.traces));
                     // Derive a human-friendly better-is direction when available
                     let betterText = '';
                     if (chartData.proportion === 'HIB') {
@@ -426,218 +431,104 @@
                     } else if (chartData.proportion === 'LIB') {
                         betterText = ' (lower is better)';
                     }
-                    let plotLayout = {
-                        title: { text: chartData.metric + betterText, font: { color: '#c9d1d9', size: 14 } },
-                        paper_bgcolor: 'rgba(0,0,0,0)',
-                        plot_bgcolor: 'rgba(0,0,0,0)',
-                        font: { color: '#8b949e' },
-                        xaxis: { title: chartData.display_format === 'LINE_GRAPH' ? 'Time/Samples' : 'Systems', gridcolor: 'rgba(255,255,255,0.05)' },
-                        yaxis: { title: chartData.scale, gridcolor: 'rgba(255,255,255,0.05)' },
-                        margin: { t: 60, l: 50, r: 20, b: 50 },
-                        showlegend: chartData.is_primary,
-                        legend: { orientation: "h", yanchor: "bottom", y: 1.05, xanchor: "right", x: 1 }
-                    };
+
+                    let chartInstance = null;
 
                     if (chartData.display_format === 'BAR_GRAPH') {
-                        let singleTrace = {
-                            x: [],
-                            y: [],
-                            type: 'bar',
-                            orientation: 'h',
-                            text: [],
-                            textposition: 'outside',
-                            textfont: { color: '#c9d1d9', size: 11 },
-                            customdata: [],
-                            hovertemplate: "%{customdata[0]}<br>%{x}<extra></extra>",
-                            marker: { color: [] }
-                        };
-                        
-                        const defaultColors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'];
-
-                        plotTraces.forEach((t, i) => {
-                            const val = Array.isArray(t.y) ? t.y[0] : t.y;
-                            const sysName = Array.isArray(t.x) ? t.x[0] : t.x;
-                            const custom = t.customdata ? t.customdata[0] : sysName;
-
-                            singleTrace.y.push(sysName);
-                            singleTrace.x.push(val);
-                            singleTrace.customdata.push([custom]);
-                            singleTrace.text.push(val === null || val === undefined || isNaN(val) ? '' : Number(val).toFixed(2));
-                            singleTrace.marker.color.push(defaultColors[i % defaultColors.length]);
+                        const labels = chartData.traces.map(t => t.name);
+                        const values = chartData.traces.map(t => {
+                            const raw = Array.isArray(t.y) ? t.y[0] : t.y;
+                            if (raw === null || raw === undefined || isNaN(raw)) return 0;
+                            return Number(raw);
                         });
-                        
-                        plotTraces = [singleTrace];
-                        plotLayout.xaxis.title = chartData.scale;
-                        plotLayout.yaxis.title = 'Systems';
-                        plotLayout.margin.l = 150;
-                        plotLayout.margin.r = 70; 
-                        plotLayout.bargap = 0.3;
-                        plotLayout.showlegend = false; 
 
-                        const numCategories = singleTrace.y.length;
-                        // Keep vertical space tighter so bars sit closer together
-                        const reqHeight = Math.max(150, numCategories * 26 + 80);
-                        plotContainer.style.height = `${reqHeight}px`;
-                    }
+                        const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
 
-                    let statsTableHtml = '';
-                    if (!chartData.is_primary && chartData.display_format === 'LINE_GRAPH') {
-                        let boxTraces = [];
-                        statsTableHtml = `
-                            <div style="margin-top: 1rem; padding: 0 1rem;">
-                                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.8rem; background: rgba(0,0,0,0.2); border-radius: 4px;">
-                                    <thead>
-                                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); color: #8b949e;">
-                                            <th style="padding: 0.4rem;">System</th>
-                                            <th style="padding: 0.4rem;">Min</th>
-                                            <th style="padding: 0.4rem;">Avg</th>
-                                            <th style="padding: 0.4rem;">Max</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                        `;
+                        const height = Math.max(110, labels.length * 22);
+                        canvas.height = height;
 
-                        chartData.traces.forEach(trace => {
-                            boxTraces.push({
-                                x: trace.y,
-                                type: 'box',
-                                name: trace.name,
-                                orientation: 'h',
-                                boxpoints: 'outliers'
-                            });
-                            
-                            if (trace.stats && trace.stats.mean && primaryScoresMap[trace.name]) {
-                                correlationTraces.push({
-                                    x: [trace.stats.mean],
-                                    y: [primaryScoresMap[trace.name]],
-                                    mode: 'markers+text',
-                                    type: 'scatter',
-                                    name: trace.name,
-                                    text: [trace.name],
-                                    textposition: 'top center',
-                                    marker: { size: 10 },
-                                    legendgroup: trace.name,
-                                    showlegend: false
-                                });
-                                
-                                statsTableHtml += `
-                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.02);">
-                                        <td style="padding: 0.4rem; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; max-width: 100px; overflow: hidden;">${trace.name}</td>
-                                        <td style="padding: 0.4rem; font-family: monospace;">${trace.stats.min.toFixed(2)}</td>
-                                        <td style="padding: 0.4rem; font-family: monospace; color: var(--accent); font-weight: bold;">${trace.stats.mean.toFixed(2)}</td>
-                                        <td style="padding: 0.4rem; font-family: monospace;">${trace.stats.max.toFixed(2)}</td>
-                                    </tr>
-                                `;
+                        chartInstance = new Chart(canvas.getContext('2d'), {
+                            type: 'bar',
+                            data: {
+                                labels,
+                                datasets: [{
+                                    label: chartData.metric + betterText,
+                                    data: values,
+                                    backgroundColor: bgColors,
+                                    borderRadius: 4
+                                }]
+                            },
+                            options: {
+                                indexAxis: 'y',
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                scales: {
+                                    x: {
+                                        title: { display: true, text: chartData.scale || '' }
+                                    },
+                                    y: {
+                                        title: { display: true, text: 'Systems' }
+                                    }
+                                },
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: { mode: 'index', intersect: false }
+                                }
                             }
                         });
-                        
-                        statsTableHtml += `</tbody></table></div>`;
-                        
-                        plotTraces = boxTraces;
-                        plotLayout.xaxis.title = chartData.scale;
-                        plotLayout.yaxis.title = 'Systems';
-                        plotLayout.title.text = `${chartData.metric}`;
-                        plotLayout.showlegend = false;
-                        plotLayout.margin.l = 150;
-                        plotLayout.margin.r = 20;
-                        plotLayout.boxgap = 0.5;
-                        
-                        const numCategories = boxTraces.length;
-                        const reqHeight = Math.max(180, numCategories * 30 + 80);
-                        plotContainer.style.height = `${reqHeight}px`;
+                    } else if (chartData.display_format === 'LINE_GRAPH') {
+                        const firstTrace = chartData.traces[0] || {};
+                        const labels = (firstTrace.x && firstTrace.x.length)
+                            ? firstTrace.x.map((_, idx) => idx)
+                            : (firstTrace.y || []).map((_, idx) => idx);
+
+                        const datasets = chartData.traces.map((trace, i) => ({
+                            label: trace.name,
+                            data: trace.y || [],
+                            borderColor: defaultColors[i % defaultColors.length],
+                            backgroundColor: 'rgba(0,0,0,0)',
+                            tension: 0.1,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        }));
+
+                        canvas.height = chartData.is_primary ? 260 : 220;
+
+                        chartInstance = new Chart(canvas.getContext('2d'), {
+                            type: 'line',
+                            data: {
+                                labels,
+                                datasets
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                interaction: {
+                                    mode: 'index',
+                                    intersect: false
+                                },
+                                scales: {
+                                    x: {
+                                        title: { display: true, text: 'Samples' }
+                                    },
+                                    y: {
+                                        title: { display: true, text: chartData.scale || '' }
+                                    }
+                                },
+                                plugins: {
+                                    legend: { display: true, position: 'bottom' }
+                                }
+                            }
+                        });
                     }
 
-                    Plotly.newPlot(plotContainer, plotTraces, plotLayout, { responsive: true, displayModeBar: false });
-                    
-                    if (statsTableHtml) {
-                        const inlineStatsWrapper = document.createElement('div');
-                        inlineStatsWrapper.innerHTML = statsTableHtml;
-                        chartDiv.appendChild(inlineStatsWrapper);
+                    if (chartInstance) {
+                        activeCharts.push(chartInstance);
                     }
                 });
                 
                 if (primarySection.children.length === 0) primarySection.remove();
                 if (secondarySection.children.length === 0) secondarySection.remove();
-                
-                if (correlationTraces.length > 0) {
-                    const analyticsSection = document.createElement('div');
-                    analyticsSection.style.display = 'grid';
-                    analyticsSection.style.gridTemplateColumns = 'repeat(auto-fit, minmax(450px, 1fr))';
-                    analyticsSection.style.gap = '2rem';
-                    analyticsSection.style.borderTop = '1px solid rgba(255,255,255,0.1)';
-                    analyticsSection.style.paddingTop = '1rem';
-                    groupWrapper.appendChild(analyticsSection);
-                
-                    const corrDivId = `correlation-scatter-plot-${compGroupIdx}`;
-                    const corrDiv = document.createElement('div');
-                    corrDiv.id = corrDivId;
-                    corrDiv.style.width = '100%';
-                    corrDiv.style.height = '350px';
-                    analyticsSection.appendChild(corrDiv);
-                    
-                    const corrLayout = {
-                        title: { text: "Performance vs. Averages (Scatter)", font: { color: '#c9d1d9', size: 16 } },
-                        paper_bgcolor: 'rgba(0,0,0,0)',
-                        plot_bgcolor: 'rgba(0,0,0,0)',
-                        font: { color: '#8b949e' },
-                        xaxis: { title: 'Mean Sensor Values', gridcolor: 'rgba(255,255,255,0.05)' },
-                        yaxis: { title: primaryChartData ? `Score (${primaryChartData.scale})` : 'Score', gridcolor: 'rgba(255,255,255,0.05)' },
-                        margin: { t: 40, l: 50, r: 20, b: 50 },
-                        showlegend: false,
-                        hovermode: 'closest'
-                    };
-                    
-                    Plotly.newPlot(corrDivId, correlationTraces, corrLayout, { responsive: true, displayModeBar: false });
-
-                    const statsDiv = document.createElement('div');
-                    statsDiv.style.height = '350px';
-                    statsDiv.style.overflowY = 'auto';
-                    statsDiv.style.paddingRight = '10px';
-                    
-                    statsDiv.innerHTML = `
-                        <h3 style="margin-bottom: 1rem; color: #c9d1d9; font-weight: 500; font-size: 1.1rem; text-align: center;">Raw Statistical Analysis</h3>
-                        <div class="table-container" style="margin: 0;">
-                            <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem;">
-                                <thead>
-                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
-                                        <th style="padding: 0.5rem;">System</th>
-                                        <th style="padding: 0.5rem;">Metric</th>
-                                        <th style="padding: 0.5rem;">Min</th>
-                                        <th style="padding: 0.5rem;">Max</th>
-                                        <th style="padding: 0.5rem;">Avg</th>
-                                        <th style="padding: 0.5rem;">Med</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="stats-tbody-${compGroupIdx}">
-                                </tbody>
-                            </table>
-                        </div>
-                    `;
-                    analyticsSection.appendChild(statsDiv);
-                    
-                    const tbody = document.getElementById(`stats-tbody-${compGroupIdx}`);
-                    
-                    compGroup.charts.forEach((chartData) => {
-                        if (chartData.is_primary || chartData.display_format !== 'LINE_GRAPH') return;
-                        if (!globalToggleState[chartData.metric]) return;
-                        
-                        chartData.traces.forEach(trace => {
-                            if(trace.stats) {
-                                const tr = document.createElement('tr');
-                                tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
-                                tr.innerHTML = `
-                                    <td style="padding: 0.5rem; color: var(--text-primary); font-weight: 500; font-size: 0.8rem;">${trace.name.split(' ')[0]}</td>
-                                    <td style="padding: 0.5rem; color: var(--text-secondary);">${chartData.metric}</td>
-                                    <td style="padding: 0.5rem; font-family: monospace;">${trace.stats.min.toFixed(2)}</td>
-                                    <td style="padding: 0.5rem; font-family: monospace;">${trace.stats.max.toFixed(2)}</td>
-                                    <td style="padding: 0.5rem; font-family: monospace; color: var(--accent); font-weight: bold;">${trace.stats.mean.toFixed(2)}</td>
-                                    <td style="padding: 0.5rem; font-family: monospace;">${trace.stats.median.toFixed(2)}</td>
-                                `;
-                                tbody.appendChild(tr);
-                            }
-                        });
-                    });
-                }
                 
                 chartsContainer.appendChild(groupWrapper);
             });
