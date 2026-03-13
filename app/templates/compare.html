@@ -444,7 +444,7 @@
 
                         const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
 
-                        const height = Math.max(110, labels.length * 22);
+                        const height = Math.max(110, labels.length * 18);
                         canvas.height = height;
 
                         chartInstance = new Chart(canvas.getContext('2d'), {
@@ -467,7 +467,9 @@
                                         title: { display: true, text: chartData.scale || '' }
                                     },
                                     y: {
-                                        title: { display: true, text: 'Systems' }
+                                        title: { display: true, text: 'Systems' },
+                                        categoryPercentage: 0.4,   // tighten vertical bar thickness
+                                        barPercentage: 0.4
                                     }
                                 },
                                 plugins: {
