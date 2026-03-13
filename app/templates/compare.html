@@ -609,7 +609,7 @@
                 });
             });
 
-            const aggValues = systems.map(sys => {
+            const aggValuesRaw = systems.map(sys => {
                 const vals = bGroup.configs.map(c => c.compositeBySystem[sys]).filter(v => v != null && !isNaN(v));
                 return vals.length ? geometricMean(vals) : null;
             });
@@ -623,6 +623,15 @@
                 const worstVal = Math.min(...valid.map(x => x.v));
                 valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
                 valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+            });
+            // Re-normalize aggregate bar so the scale actually spans 0–100 (best system = 100, worst = 0).
+            const validAgg = aggValuesRaw.filter(v => v != null && !isNaN(v));
+            const minAgg = validAgg.length ? Math.min(...validAgg) : 0;
+            const maxAgg = validAgg.length ? Math.max(...validAgg) : 100;
+            const span = maxAgg - minAgg;
+            const aggValues = aggValuesRaw.map(v => {
+                if (v == null || isNaN(v)) return null;
+                return span > 0 ? (v - minAgg) / span * 100 : 100;
             });
             return { aggValues, wins, losses, combinedScales: scales };
         }
@@ -883,6 +892,10 @@
                     ? `Composite score (0–100) — ${combinedScales.join(', ')}`
                     : 'Composite score (0–100)';
                 createBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), compositeLabel, (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1)), 'aggregate');
+                const aggNote = document.createElement('div');
+                aggNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.25rem;text-align:center;';
+                aggNote.textContent = 'Normalized so best system = 100, worst = 0.';
+                aggSection.appendChild(aggNote);
                 if (systems.length >= 2) {
                     const pieRow = document.createElement('div');
                     pieRow.style.display = 'flex';
