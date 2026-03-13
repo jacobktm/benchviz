@@ -490,6 +490,19 @@
         }
 
         const BAR_CHART_TICK_COLOR = '#c9d1d9';
+        /** Sort labels and values so the best system is first (top). higherIsBetter: true = max first, false = min first. */
+        function sortLabelsValuesBestFirst(labels, values, higherIsBetter) {
+            const pairs = (Array.isArray(labels) ? labels : []).map((label, i) => ({
+                label,
+                value: (values && values[i] != null && !isNaN(values[i])) ? Number(values[i]) : null
+            }));
+            const sorted = pairs.sort((a, b) => {
+                const va = a.value != null ? a.value : (higherIsBetter ? -Infinity : Infinity);
+                const vb = b.value != null ? b.value : (higherIsBetter ? -Infinity : Infinity);
+                return higherIsBetter ? vb - va : va - vb;
+            });
+            return { labels: sorted.map(p => p.label), values: sorted.map(p => p.value) };
+        }
         function createBarChart(parent, labels, values, xAxisLabel, formatter, debugSource) {
             const BAR_THICKNESS = 30;
             const BAR_GAP = 30;
@@ -917,10 +930,11 @@
                         formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1));
                     }
 
+                    const sortedOverall = sortLabelsValuesBestFirst(systems, values, true);
                     createBarChart(
                         barWrap,
-                        systems,
-                        values,
+                        sortedOverall.labels,
+                        sortedOverall.values,
                         label,
                         formatter,
                         'overall-composite'
@@ -971,10 +985,12 @@
                         } else {
                             xLabel = scale ? `${metric} (${scale}) — ${directionText}` : `${metric} — ${directionText}`;
                         }
+                        const sensorHigher = normalizeComposite || HIB;
+                        const sortedSensor = sortLabelsValuesBestFirst(systems, values, sensorHigher);
                         createBarChart(
                             wrap,
-                            systems,
-                            values,
+                            sortedSensor.labels,
+                            sortedSensor.values,
                             xLabel,
                             formatter,
                             'overall-sensor'
@@ -1082,7 +1098,9 @@
                         const xAxisLabel = (normalizeComposite && chartData.is_primary)
                             ? (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)')
                             : (chartData.scale ? `${chartData.scale} — ${directionText}` : directionText);
-                        createBarChart(chartDiv, labels, values, xAxisLabel, formatter, 'individual');
+                        const individualHigher = normalizeComposite || HIB;
+                        const sortedIndividual = sortLabelsValuesBestFirst(labels, values, individualHigher);
+                        createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual');
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         const canvas = document.createElement('canvas');
                         canvas.style.width = '100%';
@@ -1174,10 +1192,13 @@
                 const compositeLabel = combinedScales && combinedScales.length > 1
                     ? `Composite score — ${combinedScales.join(', ')}`
                     : 'Composite score (geometric mean)';
+                const aggVals = aggValues.map(v => v != null ? v : 0);
+                const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
+                const sortedAgg = sortLabelsValuesBestFirst(systems, aggVals, aggHigher);
                 createBarChart(
                     aggSection,
-                    systems,
-                    aggValues.map(v => v != null ? v : 0),
+                    sortedAgg.labels,
+                    sortedAgg.values,
                     compositeLabel,
                     (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
                     'aggregate'
