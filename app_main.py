@@ -3,6 +3,7 @@ from app.models import System, Benchmark, BenchmarkResult, SystemNvmeConfig, Ben
 from app.parser import parse_benchmark_files, parse_file
 from app.analyzer import analyze_benchmarks
 from flask import render_template, request, redirect, url_for, flash
+from urllib.parse import unquote
 import os
 import threading
 import zipfile
@@ -459,7 +460,12 @@ def api_compare():
             part = (c or "").strip()
             if "|" in part:
                 b_id_str, args_str = part.split("|", 1)
-                args_str = args_str.strip() or None
+                args_str = (args_str.strip() or None)
+                if args_str:
+                    try:
+                        args_str = unquote(args_str)
+                    except Exception:
+                        pass
                 config_list.append((b_id_str, args_str))
             else:
                 config_list.append((part.strip(), None))
@@ -484,7 +490,7 @@ def api_compare():
             b_id = int(b_id)
         except (ValueError, TypeError):
             continue
-        primary_benchmark = Benchmark.query.get(b_id)
+        primary_benchmark = db.session.get(Benchmark, b_id)
         if not primary_benchmark:
             continue
 
@@ -526,7 +532,7 @@ def api_compare():
             primary_args_set = set()
 
             for sys_id in sys_id_ints:
-                system = System.query.get(sys_id)
+                system = db.session.get(System, sys_id)
                 if not system:
                     continue
 
@@ -600,7 +606,7 @@ def api_compare():
                 sensor_bm_ids = [s.id for s in sensors]
                 for sys_id in sys_args_map:
                     target_args = sys_args_map[sys_id]
-                    system = System.query.get(sys_id)
+                    system = db.session.get(System, sys_id)
 
                     all_s_res = BenchmarkResult.query.filter(
                         BenchmarkResult.system_id == sys_id,
