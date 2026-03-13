@@ -476,6 +476,10 @@
         });
 
         let activeCharts = [];
+        // Global options (all OFF by default, like Phoronix)
+        let normalizeComposite = false;
+        let showCompositeBar = false;
+        let showWinsLossCharts = false;
 
         function destroyCharts() {
             activeCharts.forEach(ch => {
@@ -546,36 +550,110 @@
             return Math.exp(logSum / valid.length);
         }
 
+        /** Interpret proportion: HIB / LIB or "Higher is Better" / "Lower is Better" (any casing). */
+        function isHigherIsBetter(proportion) {
+            const p = (proportion || '').trim().toUpperCase();
+            if (p === 'HIB' || p === 'LIB') return p === 'HIB';
+            return (proportion || '').toLowerCase().includes('higher');
+        }
+
         /**
-         * Composite score using geometric mean of ratios (SPEC-style).
-         * For each (config, metric), express each system's value as a ratio to the reference
-         * system (first in list). HIB: ratio = value / ref_value. LIB: ratio = ref_value / value.
-         * Full composite per system = geometric mean of all such ratios → proportional score.
-         * Reference system = 100; others are relative (e.g. 115 = 15% better overall).
+         * Composite score using geometric mean of ratios.
+         * For each (config, metric), express each system's value as a ratio to the
+         * worst system for that metric on that config (\"lower value system\" in
+         * terms of performance). This makes it easy to see how many percent better
+         * the stronger system is:
+         *   - HIB (higher is better): worst has min(value), ratio = value / worst.
+         *   - LIB (lower is better): worst has max(value), ratio = worst / value.
+         * Full composite per system = geometric mean of all such ratios across
+         * configs and metrics.
+         *
+         * Display logic:
+         *   - normalizeComposite = true  → show raw ratios (worst ≈ 1.0).
+         *   - normalizeComposite = false → re-scale ratios so aggregate spans 0–100
+         *                                   (worst → 0, best → 100) for easy reading.
          */
-        function computeCompositeScores(bGroup, systems) {
+        function computeCompositeScores(bGroup, systems, opts) {
+            opts = opts || {};
+            const forGlobalAggregation = opts.forGlobalAggregation === true;
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
-            const refSystem = systems[0];
+
+            // Use ratio-based composite when normalizing OR when building global summary (so we can aggregate across benchmarks).
+            const useRatios = normalizeComposite || forGlobalAggregation;
+
+            // NON-NORMALIZED MODE: behave like the original aggregate (no cross-metric normalization).
+            if (!useRatios) {
+                const scales = bGroup.scale ? [bGroup.scale] : [];
+                const wins = systems.map(() => 0);
+                const losses = systems.map(() => 0);
+
+                // Use existing valuesBySystem (primary metric chosen in groupComparisonGroupsByBenchmark)
+                bGroup.configs.forEach(config => {
+                    config.compositeBySystem = {};
+                    systems.forEach(sys => {
+                        const v = config.valuesBySystem[sys];
+                        config.compositeBySystem[sys] = (v != null && !isNaN(v)) ? Number(v) : null;
+                    });
+                });
+
+                const aggValues = systems.map(sys => {
+                    const vals = bGroup.configs
+                        .map(c => c.valuesBySystem[sys])
+                        .filter(v => v != null && !isNaN(v) && v > 0);
+                    return vals.length ? geometricMean(vals) : null;
+                });
+
+                // Wins/losses based on raw primary values per config
+                const HIB = isHigherIsBetter(bGroup.proportion);
+                bGroup.configs.forEach(config => {
+                    const vals = systems.map(s => config.valuesBySystem[s]);
+                    const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
+                    if (!valid.length) return;
+                    const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
+                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
+                    valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
+                    valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+                });
+
+                return { aggValues, wins, losses, combinedScales: scales };
+            }
+
+            // NORMALIZED MODE: ratios to worst system per metric/config (cross-metric composite).
             const primaryChartsByConfig = bGroup.configs.map(c => (c.group.charts || []).filter(ch => ch.is_primary));
             const scales = [];
             const allRatiosBySystem = systems.map(() => []);
             const perConfigRatios = bGroup.configs.map(() => systems.map(() => []));
 
+            const groupHIB = isHigherIsBetter(bGroup.proportion);
+            const multiPrimary = primaryChartsByConfig.some(charts => charts.length > 1);
             primaryChartsByConfig.forEach((charts, cIdx) => {
                 charts.forEach(ch => {
                     const scale = ch.scale || ch.metric || 'Score';
+                    const chHIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
+                    // When multiple primary metrics exist (e.g. ONNX: time + throughput), only include
+                    // metrics that match the group's direction so the composite matches the subtitle and doesn't tie.
+                    if (multiPrimary && chHIB !== groupHIB) return;
                     if (scales.indexOf(scale) === -1) scales.push(scale);
-                    const isHIB = ch.proportion === 'HIB';
-                    const refTrace = (ch.traces || []).find(t => t.name === refSystem);
-                    const refVal = refTrace != null ? (Array.isArray(refTrace.y) ? refTrace.y[0] : refTrace.y) : null;
-                    const refNum = (refVal != null && !isNaN(refVal)) ? Number(refVal) : null;
-                    if (refNum == null || refNum <= 0) return;
+                    const isHIB = chHIB;
+                    // Determine the worst-performing system for this metric on this config.
+                    let worstVal = null;
+                    (ch.traces || []).forEach(t => {
+                        const v = Array.isArray(t.y) ? t.y[0] : t.y;
+                        const num = (v != null && !isNaN(v)) ? Number(v) : null;
+                        if (num == null || num <= 0) return;
+                        if (worstVal === null) {
+                            worstVal = num;
+                        } else if (isHIB ? num < worstVal : num > worstVal) {
+                            worstVal = num;
+                        }
+                    });
+                    if (worstVal == null || worstVal <= 0) return;
                     systems.forEach((sys, sIdx) => {
                         const trace = (ch.traces || []).find(t => t.name === sys);
                         const v = trace != null ? (Array.isArray(trace.y) ? trace.y[0] : trace.y) : null;
                         const num = (v != null && !isNaN(v)) ? Number(v) : null;
                         if (num == null || num <= 0) return;
-                        const ratio = isHIB ? num / refNum : refNum / num;
+                        const ratio = isHIB ? num / worstVal : worstVal / num;
                         allRatiosBySystem[sIdx].push(ratio);
                         perConfigRatios[cIdx][sIdx].push(ratio);
                     });
@@ -587,6 +665,11 @@
                 return arr.length ? geometricMean(arr) : null;
             });
 
+            // Normalize so the worst system (minimum composite ratio) = 1.0 for display.
+            const validRatios = fullCompositeRatio.filter(r => r != null && !isNaN(r) && r > 0);
+            const minRatio = validRatios.length ? Math.min(...validRatios) : 1;
+            const normalizedComposite = fullCompositeRatio.map(r => (r != null && r > 0) ? r / minRatio : null);
+
             bGroup.configs.forEach((config, cIdx) => {
                 config.compositeBySystem = {};
                 systems.forEach((sys, sIdx) => {
@@ -595,24 +678,80 @@
                 });
             });
 
+            // Wins/losses: always based on raw primary values per config (same as non-normalized)
+            // so they do not change when the user toggles normalization.
             const wins = systems.map(() => 0);
             const losses = systems.map(() => 0);
+            const HIB = isHigherIsBetter(bGroup.proportion);
             bGroup.configs.forEach(config => {
-                const vals = systems.map(s => config.compositeBySystem[s]);
-                const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v) && x.v > 0);
+                const vals = systems.map(s => config.valuesBySystem[s]);
+                const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
                 if (!valid.length) return;
-                const bestVal = Math.max(...valid.map(x => x.v));
-                const worstVal = Math.min(...valid.map(x => x.v));
+                const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
+                const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
                 valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
                 valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
             });
 
+            // In normalized mode: worst = 1.0, better > 1.0.
+            const aggValues = normalizedComposite;
+
             return {
-                aggValues: fullCompositeRatio.map(r => r != null ? r * 100 : null),
+                aggValues,
                 wins,
                 losses,
                 combinedScales: scales
             };
+        }
+
+        /**
+         * Global summary across ALL benchmark groups.
+         * Builds one ratio per (benchmark, option/config) per system so the overall composite
+         * reflects who won more options—not one value per benchmark (which can tie when each
+         * system wins different benchmarks). Same HIB/LIB and primary metric as wins/losses.
+         */
+        function computeGlobalSummary(benchmarkGroups, systems) {
+            if (!systems.length || !benchmarkGroups.length) {
+                return { globalComposite: [], globalWins: [], globalLosses: [] };
+            }
+            const ratiosBySystem = systems.map(() => []);
+            const globalWins = systems.map(() => 0);
+            const globalLosses = systems.map(() => 0);
+
+            benchmarkGroups.forEach(bGroup => {
+                const { wins, losses } = computeCompositeScores(bGroup, systems, { forGlobalAggregation: true });
+                globalWins.forEach((_, i) => { globalWins[i] += (wins[i] || 0); });
+                globalLosses.forEach((_, i) => { globalLosses[i] += (losses[i] || 0); });
+
+                // Per-option ratios (one per config) so overall composite aligns with win/loss counts.
+                const HIB = isHigherIsBetter(bGroup.proportion);
+                bGroup.configs.forEach(config => {
+                    const vals = systems.map(s => config.valuesBySystem[s]);
+                    const valid = vals.map((v, i) => ({ v: Number(v), i })).filter(x => !isNaN(x.v) && x.v > 0);
+                    if (!valid.length) return;
+                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
+                    if (worstVal <= 0) return;
+                    systems.forEach((sys, sIdx) => {
+                        const v = config.valuesBySystem[sys];
+                        const num = (v != null && !isNaN(v)) ? Number(v) : null;
+                        if (num == null || num <= 0) return;
+                        const ratio = HIB ? num / worstVal : worstVal / num;
+                        ratiosBySystem[sIdx].push(ratio);
+                    });
+                });
+            });
+
+            let globalComposite = systems.map((_, idx) => {
+                const arr = ratiosBySystem[idx];
+                return arr.length ? geometricMean(arr) : null;
+            });
+
+            // Normalize so worst system = 1.0 (for when we display in normalized mode).
+            const validGlobal = globalComposite.filter(v => v != null && !isNaN(v) && v > 0);
+            const minGlobal = validGlobal.length ? Math.min(...validGlobal) : 1;
+            globalComposite = globalComposite.map(v => (v != null && v > 0) ? v / minGlobal : v);
+
+            return { globalComposite, globalWins, globalLosses };
         }
 
         function groupComparisonGroupsByBenchmark() {
@@ -715,6 +854,69 @@
                 return;
             }
 
+            // Global summary across all benchmarks (Phoronix-style options)
+            if ((showCompositeBar || showWinsLossCharts) && benchmarkGroups.length) {
+                const firstGroup = benchmarkGroups[0];
+                const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
+                const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+
+                const globalSection = document.createElement('div');
+                globalSection.style.cssText = 'width:100%;margin-bottom:2.5rem;padding:1.5rem;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);';
+                const globalTitle = document.createElement('div');
+                globalTitle.textContent = 'Overall results across all benchmarks';
+                globalTitle.style.cssText = 'font-weight:600;color:var(--text-primary);margin-bottom:0.5rem;font-size:0.95rem;text-align:left;';
+                globalSection.appendChild(globalTitle);
+
+                const { globalComposite, globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
+                if (showCompositeBar) {
+                    const barWrap = document.createElement('div');
+                    barWrap.style.marginBottom = '1rem';
+                    globalSection.appendChild(barWrap);
+
+                    let values;
+                    let label;
+                    let formatter;
+
+                    if (normalizeComposite) {
+                        // Normalized mode: globalComposite is already normalized so worst = 1.0 in computeGlobalSummary.
+                        values = globalComposite.map(v => v != null ? v : 0);
+                        label = 'Overall composite (normalized: worst = 1.0; e.g. 1.30 = 30% faster across all benchmarks)';
+                        formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
+                    } else {
+                        // Non-normalized mode: re-scale to a 100-based index (worst = 100; e.g. 130 = 30% faster)
+                        const valid = globalComposite.filter(v => v != null && !isNaN(v) && v > 0);
+                        const minR = valid.length ? Math.min(...valid) : 1;
+                        values = globalComposite.map(v => (v != null && v > 0) ? (v / minR) * 100 : 0);
+                        label = 'Overall composite (worst = 100; e.g. 130 = 30% faster across all benchmarks)';
+                        formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1));
+                    }
+
+                    createBarChart(
+                        barWrap,
+                        systems,
+                        values,
+                        label,
+                        formatter,
+                        'overall-composite'
+                    );
+                }
+                if (showWinsLossCharts && systems.length >= 2) {
+                    const pieRow = document.createElement('div');
+                    pieRow.style.display = 'flex';
+                    pieRow.style.flexDirection = 'row';
+                    pieRow.style.flexWrap = 'wrap';
+                    pieRow.style.gap = '1.5rem';
+                    pieRow.style.marginTop = '0.5rem';
+                    pieRow.style.alignItems = 'flex-start';
+                    pieRow.style.justifyContent = 'center';
+                    globalSection.appendChild(pieRow);
+                    addPieChart(pieRow, systems, globalWins, 'Overall wins (best score per option)');
+                    addPieChart(pieRow, systems, globalLosses, 'Overall losses (worst score per option)');
+                }
+
+                chartsContainer.appendChild(globalSection);
+            }
+
             function addPieChart(parent, systemLabels, values, title) {
                 const PIE_SIZE = 200;
                 const wrap = document.createElement('div');
@@ -775,12 +977,37 @@
                     let chartInstance = null;
                     if (chartData.display_format === 'BAR_GRAPH') {
                         const labels = chartData.traces.map(t => t.name != null ? t.name : '');
-                        const values = chartData.traces.map(t => {
+                        let values = chartData.traces.map(t => {
                             const raw = Array.isArray(t.y) ? t.y[0] : t.y;
                             return (raw != null && !isNaN(raw)) ? Number(raw) : 0;
                         });
-                        const formatter = (value) => { if (value == null || value === undefined || isNaN(value)) return ''; return Number(value).toFixed(2); };
-                        createBarChart(chartDiv, labels, values, chartData.scale || '', formatter, 'individual');
+
+                        // When normalization is enabled, normalize BAR_GRAPH charts for primary
+                        // results so that the weakest system is 1.0 and others are > 1.0.
+                        if (normalizeComposite && chartData.is_primary) {
+                            const HIB = isHigherIsBetter(chartData.proportion);
+                            let worstVal = null;
+                            values.forEach(v => {
+                                if (v == null || isNaN(v) || v <= 0) return;
+                                if (worstVal === null) worstVal = v;
+                                else if (HIB ? v < worstVal : v > worstVal) worstVal = v;
+                            });
+                            if (worstVal && worstVal > 0) {
+                                values = values.map(v => {
+                                    if (v == null || isNaN(v) || v <= 0) return 0;
+                                    return HIB ? v / worstVal : worstVal / v;
+                                });
+                            }
+                        }
+
+                        const formatter = (value) => {
+                            if (value == null || value === undefined || isNaN(value)) return '';
+                            return Number(value).toFixed(2);
+                        };
+                        const xAxisLabel = (normalizeComposite && chartData.is_primary)
+                            ? (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)')
+                            : (chartData.scale || '');
+                        createBarChart(chartDiv, labels, values, xAxisLabel, formatter, 'individual');
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         const canvas = document.createElement('canvas');
                         canvas.style.width = '100%';
@@ -855,7 +1082,8 @@
                 subtitle.style.fontSize = '0.9rem';
                 subtitle.style.marginBottom = '1rem';
                 subtitle.style.textAlign = 'center';
-                subtitle.textContent = bGroup.proportion === 'HIB' ? 'Higher is better' : bGroup.proportion === 'LIB' ? 'Lower is better' : '';
+                // When normalized, scores are always "higher = better"; when off, show raw metric direction.
+                subtitle.textContent = normalizeComposite ? 'Higher is better' : (isHigherIsBetter(bGroup.proportion) ? 'Higher is better' : (bGroup.proportion != null && String(bGroup.proportion).trim() !== '') ? 'Lower is better' : '');
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -867,14 +1095,18 @@
                 const aggSection = document.createElement('div');
                 aggSection.style.marginBottom = '1.5rem';
                 groupWrapper.appendChild(aggSection);
+                // Always show per-benchmark composite bar (this is the original behavior).
                 const compositeLabel = combinedScales && combinedScales.length > 1
-                    ? `Composite score — ${combinedScales.join(', ')} (geom. mean of ratios)`
-                    : 'Composite score (geometric mean of ratios)';
-                createBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), compositeLabel, (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1)), 'aggregate');
-                const aggNote = document.createElement('div');
-                aggNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.25rem;text-align:center;';
-                aggNote.textContent = 'First system = 100; others are relative (e.g. 115 = 15% better).';
-                aggSection.appendChild(aggNote);
+                    ? `Composite score — ${combinedScales.join(', ')}`
+                    : 'Composite score (geometric mean)';
+                createBarChart(
+                    aggSection,
+                    systems,
+                    aggValues.map(v => v != null ? v : 0),
+                    compositeLabel,
+                    (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
+                    'aggregate'
+                );
                 if (systems.length >= 2) {
                     const pieRow = document.createElement('div');
                     pieRow.style.display = 'flex';
@@ -1006,6 +1238,60 @@
                     chartControls.style.display = 'block';
                     chartTitle.textContent = "Global Sensor Controls";
                     chartTitle.style.display = 'block';
+                    
+                    // Result mode toggles (composite, normalization, wins/losses)
+                    let modeWrap = chartControls.querySelector('.result-mode-toggles');
+                    if (!modeWrap) {
+                        modeWrap = document.createElement('div');
+                        modeWrap.className = 'result-mode-toggles';
+                        modeWrap.style.cssText = 'margin-bottom:0.5rem;display:flex;flex-direction:column;align-items:flex-start;gap:0.35rem;';
+                        const optionsHeader = document.createElement('div');
+                        optionsHeader.textContent = 'Options';
+                        optionsHeader.style.cssText = 'font-weight:600;color:var(--text-secondary);font-size:0.85rem;margin-bottom:0.1rem;';
+                        modeWrap.appendChild(optionsHeader);
+                        const toggleRow = document.createElement('div');
+                        toggleRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.75rem;';
+                        const mkToggle = (labelText, stateKey) => {
+                            const label = document.createElement('label');
+                            label.className = 'checkbox-item';
+                            label.style.display = 'inline-flex';
+                            label.style.alignItems = 'center';
+                            label.style.gap = '0.4rem';
+                            const input = document.createElement('input');
+                            input.type = 'checkbox';
+                            input.dataset.modeKey = stateKey;
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : showWinsLossCharts);
+                            input.addEventListener('change', (e) => {
+                                const key = e.target.dataset.modeKey;
+                                const val = e.target.checked;
+                                if (key === 'normalizeComposite') normalizeComposite = val;
+                                else if (key === 'showCompositeBar') showCompositeBar = val;
+                                else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
+                                renderCharts();
+                            });
+                            const span = document.createElement('span');
+                            span.textContent = labelText;
+                            span.style.fontSize = '0.8rem';
+                            label.appendChild(input);
+                            label.appendChild(span);
+                            return label;
+                        };
+                        
+                        toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
+                        toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
+                        toggleRow.appendChild(mkToggle('Normalize scores across benchmarks (ratios to worst system)', 'normalizeComposite'));
+                        modeWrap.appendChild(toggleRow);
+                        
+                        chartControls.insertBefore(modeWrap, chartTitle);
+                    } else {
+                        const inputs = modeWrap.querySelectorAll('input[type=\"checkbox\"][data-mode-key]');
+                        inputs.forEach(input => {
+                            const key = input.dataset.modeKey;
+                            if (key === 'normalizeComposite') input.checked = normalizeComposite;
+                            else if (key === 'showCompositeBar') input.checked = showCompositeBar;
+                            else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
+                        });
+                    }
                     
                     let allDistinctSensors = new Set();
                     currentComparisonGroups.forEach(cg => {
