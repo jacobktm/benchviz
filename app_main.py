@@ -11,6 +11,7 @@ import tempfile
 import shutil
 import statistics
 import json
+from collections import defaultdict
 from werkzeug.utils import secure_filename
 
 app = create_app()
@@ -536,74 +537,90 @@ def api_compare():
 
         for args_val in args_list:
             charts = []
-            primary_traces = []
             sys_args_map = {}
             system_details = []
             primary_args_set = set()
 
+            # Fetch all primary (BAR_GRAPH) results for this args_val so we get every
+            # metric per run (e.g. FIO: MB/s and IOPS per option).
+            q_prim = BenchmarkResult.query.filter(
+                BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+                BenchmarkResult.system_id.in_(sys_id_ints),
+            )
+            if args_val is None or (isinstance(args_val, str) and args_val.strip() == ""):
+                q_prim = q_prim.filter(
+                    (BenchmarkResult.arguments.is_(None)) | (BenchmarkResult.arguments == "")
+                )
+            else:
+                q_prim = q_prim.filter(BenchmarkResult.arguments == args_val)
+            all_prim_results = q_prim.all()
+
+            # Group by benchmark_id so we get one chart per primary metric (e.g. MB/s, IOPS).
+            by_bm_id = defaultdict(list)
+            for r in all_prim_results:
+                by_bm_id[r.benchmark_id].append(r)
+                sys_args_map[r.system_id] = r.arguments
+                if r.arguments:
+                    primary_args_set.add(r.arguments.strip())
+
             for sys_id in sys_id_ints:
+                if sys_id not in sys_args_map:
+                    continue
                 system = db.session.get(System, sys_id)
                 if not system:
                     continue
-
-                q = BenchmarkResult.query.filter(
-                    BenchmarkResult.system_id == sys_id,
-                    BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
-                )
-                if args_val is None or (isinstance(args_val, str) and args_val.strip() == ""):
-                    q = q.filter(
-                        (BenchmarkResult.arguments.is_(None)) | (BenchmarkResult.arguments == "")
-                    )
-                else:
-                    q = q.filter(BenchmarkResult.arguments == args_val)
-                prim_res = q.first()
-
-                if not prim_res:
-                    continue
-
-                sys_args_map[sys_id] = prim_res.arguments
-                if prim_res.arguments:
-                    primary_args_set.add(prim_res.arguments.strip())
-
-                system_label = format_system_profile_label(system)
-                short_name = system.identifier
-
                 if not any(s['id'] == sys_id for s in system_details):
                     system_details.append({
                         'id': sys_id,
-                        'short_name': short_name,
-                        'full_label': system_label
+                        'short_name': system.identifier,
+                        'full_label': format_system_profile_label(system)
                     })
 
-                trace = {
-                    "name": short_name,
-                    "type": "bar" if primary_benchmark.display_format == "BAR_GRAPH" else "scatter",
-                    "customdata": [system_label],
-                    "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if primary_benchmark.display_format == "BAR_GRAPH" else None
-                }
-
-                if primary_benchmark.display_format == "BAR_GRAPH":
-                    trace["x"] = [short_name]
-                    trace["y"] = [prim_res.value]
-                elif primary_benchmark.display_format == "LINE_GRAPH":
-                    y_data = prim_res.data_json or []
-                    trace["x"] = list(range(len(y_data)))
-                    trace["y"] = y_data
-                    trace["mode"] = "lines"
-
-                primary_traces.append(trace)
-
-            if primary_traces:
-                charts.append({
-                    "metric": "Primary Result",
-                    "description": primary_benchmark.description,
-                    "scale": primary_benchmark.scale,
-                    "display_format": primary_benchmark.display_format,
-                    "proportion": primary_benchmark.proportion,
-                    "options": sorted(primary_args_set),
-                    "traces": primary_traces,
-                    "is_primary": True
-                })
+            # Build one chart per primary benchmark that has results (e.g. MB/s and IOPS).
+            primary_benchmarks = Benchmark.query.filter(
+                Benchmark.id.in_(by_bm_id.keys())
+            ).all()
+            for bm in sorted(primary_benchmarks, key=lambda x: (x.scale or "", x.description or "")):
+                results_for_bm = by_bm_id.get(bm.id, [])
+                if not results_for_bm:
+                    continue
+                primary_traces = []
+                for sys_id in sys_id_ints:
+                    res = next((r for r in results_for_bm if r.system_id == sys_id), None)
+                    if not res:
+                        continue
+                    system = db.session.get(System, sys_id)
+                    if not system:
+                        continue
+                    system_label = format_system_profile_label(system)
+                    short_name = system.identifier
+                    trace = {
+                        "name": short_name,
+                        "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
+                        "customdata": [system_label],
+                        "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if bm.display_format == "BAR_GRAPH" else None
+                    }
+                    if bm.display_format == "BAR_GRAPH":
+                        trace["x"] = [short_name]
+                        trace["y"] = [res.value]
+                    elif bm.display_format == "LINE_GRAPH":
+                        y_data = res.data_json or []
+                        trace["x"] = list(range(len(y_data)))
+                        trace["y"] = y_data
+                        trace["mode"] = "lines"
+                    primary_traces.append(trace)
+                if primary_traces:
+                    metric_label = bm.scale or (bm.description or "Primary Result")[:50]
+                    charts.append({
+                        "metric": metric_label,
+                        "description": bm.description,
+                        "scale": bm.scale,
+                        "display_format": bm.display_format,
+                        "proportion": bm.proportion,
+                        "options": sorted(primary_args_set),
+                        "traces": primary_traces,
+                        "is_primary": True
+                    })
 
             sensors = Benchmark.query.filter(
                 Benchmark.title == primary_benchmark.title,
