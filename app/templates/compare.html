@@ -546,11 +546,98 @@
             return Math.exp(logSum / valid.length);
         }
 
+        /**
+         * Normalize a value to 0-100 given min/max and proportion (Phoronix-style).
+         * HIB: higher is better -> best (max) = 100, worst (min) = 0.
+         * LIB: lower is better -> best (min) = 100, worst (max) = 0.
+         */
+        function normalizeToScore(value, minVal, maxVal, proportionHIB) {
+            if (value == null || isNaN(value) || maxVal === minVal) return 50;
+            const pct = (Number(value) - minVal) / (maxVal - minVal);
+            return proportionHIB ? Math.max(0, Math.min(100, pct * 100)) : Math.max(0, Math.min(100, (1 - pct) * 100));
+        }
+
+        /**
+         * Compute a single composite score per (config, system) by normalizing each
+         * primary metric to 0-100 then taking the geometric mean across metrics.
+         * Returns { configsWithComposite, aggValues, wins, losses } and sets
+         * compositeBySystem on each config. Uses all primary charts (e.g. MB/s + IOPS).
+         */
+        function computeCompositeScores(bGroup, systems) {
+            const HIB = bGroup.proportion === 'HIB';
+            const primaryChartsByConfig = bGroup.configs.map(c => (c.group.charts || []).filter(ch => ch.is_primary));
+            const scales = [];
+            const minMaxByScale = {};
+            primaryChartsByConfig.forEach(charts => {
+                charts.forEach(ch => {
+                    const scale = ch.scale || ch.metric || 'Score';
+                    if (!minMaxByScale[scale]) {
+                        minMaxByScale[scale] = { proportion: ch.proportion, values: [] };
+                        scales.push(scale);
+                    }
+                    (ch.traces || []).forEach(t => {
+                        const v = Array.isArray(t.y) ? t.y[0] : t.y;
+                        if (v != null && !isNaN(v)) minMaxByScale[scale].values.push(Number(v));
+                    });
+                });
+            });
+            const rangeByScale = {};
+            scales.forEach(scale => {
+                const arr = minMaxByScale[scale].values;
+                const proportion = minMaxByScale[scale].proportion;
+                const isHIB = proportion === 'HIB';
+                rangeByScale[scale] = arr.length
+                    ? { min: Math.min(...arr), max: Math.max(...arr), isHIB }
+                    : { min: 0, max: 100, isHIB };
+            });
+
+            bGroup.configs.forEach((config, cIdx) => {
+                const charts = primaryChartsByConfig[cIdx] || [];
+                config.compositeBySystem = {};
+                systems.forEach(sys => {
+                    const normalized = [];
+                    charts.forEach(ch => {
+                        const scale = ch.scale || ch.metric || 'Score';
+                        const trace = (ch.traces || []).find(t => t.name === sys);
+                        const v = trace != null ? (Array.isArray(trace.y) ? trace.y[0] : trace.y) : null;
+                        if (v == null || isNaN(v)) return;
+                        const r = rangeByScale[scale];
+                        const score = normalizeToScore(v, r.min, r.max, r.isHIB);
+                        normalized.push(Math.max(0.01, score));
+                    });
+                    config.compositeBySystem[sys] = normalized.length ? geometricMean(normalized) : null;
+                });
+            });
+
+            const aggValues = systems.map(sys => {
+                const vals = bGroup.configs.map(c => c.compositeBySystem[sys]).filter(v => v != null && !isNaN(v));
+                return vals.length ? geometricMean(vals) : null;
+            });
+            const wins = systems.map(() => 0);
+            const losses = systems.map(() => 0);
+            bGroup.configs.forEach(config => {
+                const vals = systems.map(s => config.compositeBySystem[s]);
+                const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
+                if (!valid.length) return;
+                const bestVal = Math.max(...valid.map(x => x.v));
+                const worstVal = Math.min(...valid.map(x => x.v));
+                valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
+                valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+            });
+            return { aggValues, wins, losses, combinedScales: scales };
+        }
+
         function groupComparisonGroupsByBenchmark() {
             const byKey = new Map();
             currentComparisonGroups.forEach(compGroup => {
-                const primary = compGroup.charts.find(c => c.is_primary);
-                if (!primary || !primary.traces || !primary.traces.length) return;
+                const primaryCharts = (compGroup.charts || []).filter(c => c.is_primary);
+                if (!primaryCharts.length || !primaryCharts[0].traces || !primaryCharts[0].traces.length) return;
+                // Prefer MB/s as the aggregate metric when multiple primary
+                // charts exist (e.g. FIO reports both MB/s and IOPS). Fall
+                // back to the first primary chart otherwise.
+                let primary = primaryCharts[0];
+                const preferredPrimary = primaryCharts.find(c => (c.scale || '').toLowerCase().includes('mb/s'));
+                if (preferredPrimary) primary = preferredPrimary;
                 const sep = ' — ';
                 const idx = compGroup.title.indexOf(sep);
                 const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
@@ -787,27 +874,15 @@
                     const firstPrimary = bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts.find(c => c.is_primary);
                     return firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
                 })();
-                const HIB = bGroup.proportion === 'HIB';
-                const aggValues = systems.map(sys => {
-                    const vals = bGroup.configs.map(c => c.valuesBySystem[sys]).filter(v => v != null && !isNaN(v));
-                    return vals.length ? geometricMean(vals) : null;
-                });
-                const wins = systems.map(() => 0);
-                const losses = systems.map(() => 0);
-                bGroup.configs.forEach(config => {
-                    const vals = systems.map(s => config.valuesBySystem[s]);
-                    const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
-                    if (!valid.length) return;
-                    const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
-                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
-                    valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
-                    valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
-                });
+                const { aggValues, wins, losses, combinedScales } = computeCompositeScores(bGroup, systems);
 
                 const aggSection = document.createElement('div');
                 aggSection.style.marginBottom = '1.5rem';
                 groupWrapper.appendChild(aggSection);
-                createBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), (bGroup.scale ? `Geometric mean (${bGroup.scale})` : 'Geometric mean'), undefined, 'aggregate');
+                const compositeLabel = combinedScales && combinedScales.length > 1
+                    ? `Composite score (0–100) — ${combinedScales.join(', ')}`
+                    : 'Composite score (0–100)';
+                createBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), compositeLabel, (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1)), 'aggregate');
                 if (systems.length >= 2) {
                     const pieRow = document.createElement('div');
                     pieRow.style.display = 'flex';
