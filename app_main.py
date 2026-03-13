@@ -600,6 +600,10 @@ def api_compare():
                 Benchmark.app_version == primary_benchmark.app_version,
                 Benchmark.display_format == 'LINE_GRAPH',
             ).all()
+            # Only attach charts that are clearly sensor metrics (temp, freq, usage, power);
+            # skip other LINE_GRAPH data (e.g. sample indices or raw timestamps) that would show wrong scale.
+            sensor_keywords = ('temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts')
+            sensors = [s for s in sensors if s.description and any(k in s.description.lower() for k in sensor_keywords)]
 
             for s_bm in sensors:
                 s_traces = []
@@ -612,7 +616,13 @@ def api_compare():
                         BenchmarkResult.system_id == sys_id,
                         BenchmarkResult.benchmark_id.in_(sensor_bm_ids),
                     ).all()
-                    matching_s_res = [r for r in all_s_res if target_args and target_args in (r.arguments or "")]
+                    # Match sensor results to this exact primary run by arguments (exact match
+                    # so we don't attach another run's sensor data, e.g. wrong temps).
+                    if not target_args:
+                        matching_s_res = [r for r in all_s_res if (r.arguments or "").strip() == ""]
+                    else:
+                        exact = [r for r in all_s_res if (r.arguments or "").strip() == target_args.strip()]
+                        matching_s_res = exact if exact else [r for r in all_s_res if target_args in (r.arguments or "")]
 
                     if not matching_s_res:
                         continue

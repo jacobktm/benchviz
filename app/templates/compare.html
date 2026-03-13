@@ -657,6 +657,17 @@
                         // Compact stats table by default, with optional expandable time series.
                         canvas.style.display = 'none';
 
+                        const sensorTitle = document.createElement('div');
+                        sensorTitle.style.fontSize = '0.85rem';
+                        sensorTitle.style.fontWeight = '600';
+                        sensorTitle.style.color = 'var(--text-secondary)';
+                        sensorTitle.style.marginTop = '0.75rem';
+                        sensorTitle.style.marginBottom = '0.25rem';
+                        const scaleStr = (chartData.scale && chartData.scale.trim()) ? ` (${chartData.scale.trim()})` : '';
+                        const sensorLabel = `${chartData.metric || 'Sensor'}${scaleStr}`;
+                        sensorTitle.textContent = sensorLabel;
+                        chartDiv.appendChild(sensorTitle);
+
                         const statsWrapper = document.createElement('div');
                         statsWrapper.style.marginTop = '0.35rem';
                         statsWrapper.style.padding = '0.4rem 0.75rem';
@@ -665,7 +676,8 @@
                         statsWrapper.style.fontSize = '0.8rem';
 
                         let statsHtml = `
-                            <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                            <table style="width: 100%; border-collapse: collapse; text-align: left;" aria-label="${sensorLabel.replace(/"/g, '&quot;')}">
+                                <caption style="text-align: left; padding: 0 0 0.35rem 0; font-weight: 600; color: var(--text-secondary); font-size: 0.8rem;">${sensorLabel}</caption>
                                 <thead>
                                     <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
                                         <th style="padding: 0.25rem 0.4rem;">System</th>
