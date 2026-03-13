@@ -444,7 +444,8 @@
 
                         const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
 
-                        const height = Math.max(110, labels.length * 18);
+                        // Keep the whole chart fairly compact while leaving room for labels
+                        const height = Math.max(90, labels.length * 26);
                         canvas.height = height;
 
                         chartInstance = new Chart(canvas.getContext('2d'), {
@@ -456,20 +457,32 @@
                                     data: values,
                                     backgroundColor: bgColors,
                                     borderRadius: 4,
-                                    // Force a relatively thin bar thickness (in px)
-                                    barThickness: 10
+                                    // Slightly thicker bars than before (about 2x),
+                                    // still explicitly controlled in pixels.
+                                    barThickness: 20
                                 }]
                             },
                             options: {
                                 indexAxis: 'y',
                                 responsive: true,
                                 maintainAspectRatio: false,
+                                layout: {
+                                    padding: {
+                                        top: 10,
+                                        bottom: 10,
+                                        left: 0,
+                                        right: 16
+                                    }
+                                },
                                 scales: {
                                     x: {
                                         title: { display: true, text: chartData.scale || '' }
                                     },
                                     y: {
-                                        title: { display: true, text: 'Systems' }
+                                        title: { display: true, text: 'Systems' },
+                                        // Slightly tighten vertical spacing between bars
+                                        categoryPercentage: 0.6,
+                                        barPercentage: 0.8
                                     }
                                 },
                                 plugins: {
