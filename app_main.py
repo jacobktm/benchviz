@@ -488,24 +488,22 @@ def api_compare():
         if not primary_benchmark:
             continue
 
-        # Same logical benchmark can have different benchmark_id (and sometimes identifier) per
-        # import; match strictly first, then by title+version so results from all systems show.
+        # Resolve benchmark IDs that actually have results for the selected systems and match
+        # this test (title + app_version). Use results as source of truth so we never miss
+        # benchmarks like Blender that may differ by identifier or is_primary across imports.
+        ids_with_results = [
+            r[0] for r in db.session.query(BenchmarkResult.benchmark_id)
+            .filter(BenchmarkResult.system_id.in_(sys_id_ints))
+            .distinct().all()
+        ]
         matching_primary_bm_ids = [
             bm.id for bm in Benchmark.query.filter(
-                Benchmark.identifier == primary_benchmark.identifier,
+                Benchmark.id.in_(ids_with_results),
                 Benchmark.title == primary_benchmark.title,
                 Benchmark.app_version == primary_benchmark.app_version,
-                Benchmark.is_primary == True,
+                Benchmark.display_format == 'BAR_GRAPH',
             ).all()
         ]
-        if not matching_primary_bm_ids:
-            matching_primary_bm_ids = [
-                bm.id for bm in Benchmark.query.filter(
-                    Benchmark.title == primary_benchmark.title,
-                    Benchmark.app_version == primary_benchmark.app_version,
-                    Benchmark.display_format == 'BAR_GRAPH',
-                ).all()
-            ]
         if not matching_primary_bm_ids:
             matching_primary_bm_ids = [primary_benchmark.id]
 
