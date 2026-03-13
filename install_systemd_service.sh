@@ -24,6 +24,14 @@ fi
 SERVICE_NAME="benchviz"
 
 DEFAULT_USER="${SUDO_USER:-$USER}"
+
+# If the target directory already exists and has a non-root owner,
+# prefer that owner as the default service user.
+DIR_OWNER="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
+if [[ -n "${DIR_OWNER:-}" && "${DIR_OWNER}" != "root" ]]; then
+  DEFAULT_USER="${DIR_OWNER}"
+fi
+
 read -r -p "System user to run BenchViz as [${DEFAULT_USER}]: " SERVICE_USER
 SERVICE_USER="${SERVICE_USER:-$DEFAULT_USER}"
 
