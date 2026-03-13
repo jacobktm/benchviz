@@ -547,93 +547,72 @@
         }
 
         /**
-         * Normalize a value to 0-100 given min/max and proportion (Phoronix-style).
-         * HIB: higher is better -> best (max) = 100, worst (min) = 0.
-         * LIB: lower is better -> best (min) = 100, worst (max) = 0.
-         */
-        function normalizeToScore(value, minVal, maxVal, proportionHIB) {
-            if (value == null || isNaN(value) || maxVal === minVal) return 50;
-            const pct = (Number(value) - minVal) / (maxVal - minVal);
-            return proportionHIB ? Math.max(0, Math.min(100, pct * 100)) : Math.max(0, Math.min(100, (1 - pct) * 100));
-        }
-
-        /**
-         * Compute a single composite score per (config, system) by normalizing each
-         * primary metric to 0-100 then taking the geometric mean across metrics.
-         * Returns { configsWithComposite, aggValues, wins, losses } and sets
-         * compositeBySystem on each config. Uses all primary charts (e.g. MB/s + IOPS).
+         * Composite score using geometric mean of ratios (SPEC-style).
+         * For each (config, metric), express each system's value as a ratio to the reference
+         * system (first in list). HIB: ratio = value / ref_value. LIB: ratio = ref_value / value.
+         * Full composite per system = geometric mean of all such ratios → proportional score.
+         * Reference system = 100; others are relative (e.g. 115 = 15% better overall).
          */
         function computeCompositeScores(bGroup, systems) {
-            const HIB = bGroup.proportion === 'HIB';
+            if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
+            const refSystem = systems[0];
             const primaryChartsByConfig = bGroup.configs.map(c => (c.group.charts || []).filter(ch => ch.is_primary));
             const scales = [];
-            const minMaxByScale = {};
-            primaryChartsByConfig.forEach(charts => {
+            const allRatiosBySystem = systems.map(() => []);
+            const perConfigRatios = bGroup.configs.map(() => systems.map(() => []));
+
+            primaryChartsByConfig.forEach((charts, cIdx) => {
                 charts.forEach(ch => {
                     const scale = ch.scale || ch.metric || 'Score';
-                    if (!minMaxByScale[scale]) {
-                        minMaxByScale[scale] = { proportion: ch.proportion, values: [] };
-                        scales.push(scale);
-                    }
-                    (ch.traces || []).forEach(t => {
-                        const v = Array.isArray(t.y) ? t.y[0] : t.y;
-                        if (v != null && !isNaN(v)) minMaxByScale[scale].values.push(Number(v));
+                    if (scales.indexOf(scale) === -1) scales.push(scale);
+                    const isHIB = ch.proportion === 'HIB';
+                    const refTrace = (ch.traces || []).find(t => t.name === refSystem);
+                    const refVal = refTrace != null ? (Array.isArray(refTrace.y) ? refTrace.y[0] : refTrace.y) : null;
+                    const refNum = (refVal != null && !isNaN(refVal)) ? Number(refVal) : null;
+                    if (refNum == null || refNum <= 0) return;
+                    systems.forEach((sys, sIdx) => {
+                        const trace = (ch.traces || []).find(t => t.name === sys);
+                        const v = trace != null ? (Array.isArray(trace.y) ? trace.y[0] : trace.y) : null;
+                        const num = (v != null && !isNaN(v)) ? Number(v) : null;
+                        if (num == null || num <= 0) return;
+                        const ratio = isHIB ? num / refNum : refNum / num;
+                        allRatiosBySystem[sIdx].push(ratio);
+                        perConfigRatios[cIdx][sIdx].push(ratio);
                     });
                 });
             });
-            const rangeByScale = {};
-            scales.forEach(scale => {
-                const arr = minMaxByScale[scale].values;
-                const proportion = minMaxByScale[scale].proportion;
-                const isHIB = proportion === 'HIB';
-                rangeByScale[scale] = arr.length
-                    ? { min: Math.min(...arr), max: Math.max(...arr), isHIB }
-                    : { min: 0, max: 100, isHIB };
+
+            const fullCompositeRatio = systems.map((_, sIdx) => {
+                const arr = allRatiosBySystem[sIdx].filter(r => r > 0);
+                return arr.length ? geometricMean(arr) : null;
             });
 
             bGroup.configs.forEach((config, cIdx) => {
-                const charts = primaryChartsByConfig[cIdx] || [];
                 config.compositeBySystem = {};
-                systems.forEach(sys => {
-                    const normalized = [];
-                    charts.forEach(ch => {
-                        const scale = ch.scale || ch.metric || 'Score';
-                        const trace = (ch.traces || []).find(t => t.name === sys);
-                        const v = trace != null ? (Array.isArray(trace.y) ? trace.y[0] : trace.y) : null;
-                        if (v == null || isNaN(v)) return;
-                        const r = rangeByScale[scale];
-                        const score = normalizeToScore(v, r.min, r.max, r.isHIB);
-                        normalized.push(Math.max(0.01, score));
-                    });
-                    config.compositeBySystem[sys] = normalized.length ? geometricMean(normalized) : null;
+                systems.forEach((sys, sIdx) => {
+                    const arr = (perConfigRatios[cIdx] && perConfigRatios[cIdx][sIdx]) ? perConfigRatios[cIdx][sIdx].filter(r => r > 0) : [];
+                    config.compositeBySystem[sys] = arr.length ? geometricMean(arr) : null;
                 });
             });
 
-            const aggValuesRaw = systems.map(sys => {
-                const vals = bGroup.configs.map(c => c.compositeBySystem[sys]).filter(v => v != null && !isNaN(v));
-                return vals.length ? geometricMean(vals) : null;
-            });
             const wins = systems.map(() => 0);
             const losses = systems.map(() => 0);
             bGroup.configs.forEach(config => {
                 const vals = systems.map(s => config.compositeBySystem[s]);
-                const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
+                const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v) && x.v > 0);
                 if (!valid.length) return;
                 const bestVal = Math.max(...valid.map(x => x.v));
                 const worstVal = Math.min(...valid.map(x => x.v));
                 valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
                 valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
             });
-            // Re-normalize aggregate bar so the scale actually spans 0–100 (best system = 100, worst = 0).
-            const validAgg = aggValuesRaw.filter(v => v != null && !isNaN(v));
-            const minAgg = validAgg.length ? Math.min(...validAgg) : 0;
-            const maxAgg = validAgg.length ? Math.max(...validAgg) : 100;
-            const span = maxAgg - minAgg;
-            const aggValues = aggValuesRaw.map(v => {
-                if (v == null || isNaN(v)) return null;
-                return span > 0 ? (v - minAgg) / span * 100 : 100;
-            });
-            return { aggValues, wins, losses, combinedScales: scales };
+
+            return {
+                aggValues: fullCompositeRatio.map(r => r != null ? r * 100 : null),
+                wins,
+                losses,
+                combinedScales: scales
+            };
         }
 
         function groupComparisonGroupsByBenchmark() {
@@ -889,12 +868,12 @@
                 aggSection.style.marginBottom = '1.5rem';
                 groupWrapper.appendChild(aggSection);
                 const compositeLabel = combinedScales && combinedScales.length > 1
-                    ? `Composite score (0–100) — ${combinedScales.join(', ')}`
-                    : 'Composite score (0–100)';
+                    ? `Composite score — ${combinedScales.join(', ')} (geom. mean of ratios)`
+                    : 'Composite score (geometric mean of ratios)';
                 createBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), compositeLabel, (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1)), 'aggregate');
                 const aggNote = document.createElement('div');
                 aggNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.25rem;text-align:center;';
-                aggNote.textContent = 'Normalized so best system = 100, worst = 0.';
+                aggNote.textContent = 'First system = 100; others are relative (e.g. 115 = 15% better).';
                 aggSection.appendChild(aggNote);
                 if (systems.length >= 2) {
                     const pieRow = document.createElement('div');
