@@ -78,7 +78,17 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   echo
   echo "Installing BenchViz as a systemd service..."
   if [ -x "./install_systemd_service.sh" ]; then
-      ./install_systemd_service.sh
+      # If the install root already exists and is owned by a non-root user,
+      # prefer that owner as the default service user.
+      BENCHVIZ_DEFAULT_SERVICE_USER=""
+      if [ -d "$PROJECT_ROOT" ]; then
+        dir_owner="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
+        if [[ -n "${dir_owner:-}" && "${dir_owner}" != "root" ]]; then
+          BENCHVIZ_DEFAULT_SERVICE_USER="$dir_owner"
+        fi
+      fi
+
+      BENCHVIZ_DEFAULT_SERVICE_USER="$BENCHVIZ_DEFAULT_SERVICE_USER" ./install_systemd_service.sh
   else
       echo "install_systemd_service.sh not found or not executable. Skipping systemd setup."
   fi
