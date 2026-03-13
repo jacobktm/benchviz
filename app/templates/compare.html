@@ -818,7 +818,7 @@
                 const url = new URL('/api/compare', window.location.origin);
                 selectedBenchmarks.forEach(b => {
                     const config = b.args != null && b.args !== ''
-                        ? `${b.id}|${b.args}` : String(b.id);
+                        ? `${b.id}|${encodeURIComponent(b.args)}` : String(b.id);
                     url.searchParams.append('config', config);
                 });
                 systemIds.forEach(id => url.searchParams.append('system_ids', id));
