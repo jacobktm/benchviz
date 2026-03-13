@@ -708,16 +708,16 @@
         /**
          * Aggregate sensor means across all comparison groups: for each sensor type (e.g. CPU Temp),
          * for each system, compute the mean of that sensor's mean values from each run.
-         * Returns [{ metric, scale, valuesBySystem }] where valuesBySystem is an array in systems order.
+         * Returns [{ metric, scale, proportion, valuesBySystem }] where valuesBySystem is an array in systems order.
          */
         function computeOverallSensorMeans(compGroups, systems) {
-            const bySensor = new Map(); // metric -> { scale, bySystem: system -> [mean values] }
+            const bySensor = new Map(); // metric -> { scale, proportion, bySystem: system -> [mean values] }
             compGroups.forEach(cg => {
                 (cg.charts || []).forEach(ch => {
                     if (ch.is_primary || ch.display_format !== 'LINE_GRAPH' || !ch.traces) return;
                     const metric = ch.metric || ch.description || 'Sensor';
                     const scale = ch.scale || '';
-                    if (!bySensor.has(metric)) bySensor.set(metric, { scale, bySystem: systems.reduce((o, s) => { o[s] = []; return o; }, {}) });
+                    if (!bySensor.has(metric)) bySensor.set(metric, { scale, proportion: ch.proportion, bySystem: systems.reduce((o, s) => { o[s] = []; return o; }, {}) });
                     const rec = bySensor.get(metric);
                     ch.traces.forEach(t => {
                         const meanVal = t.stats && typeof t.stats.mean === 'number' && !isNaN(t.stats.mean) ? t.stats.mean : null;
@@ -725,12 +725,12 @@
                     });
                 });
             });
-            return Array.from(bySensor.entries()).map(([metric, { scale, bySystem }]) => {
+            return Array.from(bySensor.entries()).map(([metric, { scale, proportion, bySystem }]) => {
                 const valuesBySystem = systems.map(s => {
                     const arr = bySystem[s].filter(v => v != null && !isNaN(v));
                     return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
                 });
-                return { metric, scale, valuesBySystem };
+                return { metric, scale, proportion, valuesBySystem };
             }).filter(s => s.valuesBySystem.some(v => v != null && !isNaN(v)));
         }
 
@@ -947,18 +947,36 @@
                     sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.75rem;font-size:0.9rem;';
                     sensorHeading.textContent = 'Overall sensor data (mean across all runs)';
                     globalSection.appendChild(sensorHeading);
-                    sensorsToShow.forEach(({ metric, scale, valuesBySystem }) => {
+                    sensorsToShow.forEach(({ metric, scale, proportion, valuesBySystem }) => {
                         const wrap = document.createElement('div');
                         wrap.style.marginBottom = '1.25rem';
                         globalSection.appendChild(wrap);
-                        const values = systems.map((s, i) => valuesBySystem[i] != null ? valuesBySystem[i] : 0);
-                        const xLabel = scale ? `${metric} (${scale})` : metric;
+                        const HIB = isHigherIsBetter(proportion);
+                        const directionText = HIB ? 'Higher is better' : 'Lower is better';
+                        const directionEl = document.createElement('div');
+                        directionEl.style.cssText = 'font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.25rem;';
+                        directionEl.textContent = normalizeComposite ? 'Higher is better (normalized)' : directionText;
+                        wrap.appendChild(directionEl);
+                        let values = systems.map((s, i) => valuesBySystem[i] != null ? valuesBySystem[i] : 0);
+                        let xLabel;
+                        let formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
+                        if (normalizeComposite) {
+                            const valid = values.filter(v => v != null && !isNaN(v) && v > 0);
+                            const worstVal = valid.length ? (HIB ? Math.min(...valid) : Math.max(...valid)) : 1;
+                            if (worstVal > 0) {
+                                values = values.map(v => (v != null && v > 0) ? (HIB ? v / worstVal : worstVal / v) : 0);
+                            }
+                            xLabel = scale ? `${metric} (${scale}) — normalized (worst = 1.0)` : `${metric} — normalized (worst = 1.0)`;
+                            formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
+                        } else {
+                            xLabel = scale ? `${metric} (${scale}) — ${directionText}` : `${metric} — ${directionText}`;
+                        }
                         createBarChart(
                             wrap,
                             systems,
                             values,
                             xLabel,
-                            (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
+                            formatter,
                             'overall-sensor'
                         );
                     });
