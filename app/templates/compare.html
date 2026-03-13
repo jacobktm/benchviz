@@ -482,6 +482,42 @@
             activeCharts = [];
         }
 
+        function geometricMean(arr) {
+            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
+            if (!valid.length) return null;
+            if (valid.some(v => v <= 0)) return valid.reduce((a, b) => a + b, 0) / valid.length;
+            const logSum = valid.reduce((acc, v) => acc + Math.log(v), 0);
+            return Math.exp(logSum / valid.length);
+        }
+
+        function groupComparisonGroupsByBenchmark() {
+            const byKey = new Map();
+            currentComparisonGroups.forEach(compGroup => {
+                const primary = compGroup.charts.find(c => c.is_primary);
+                if (!primary || !primary.traces || !primary.traces.length) return;
+                const sep = ' — ';
+                const idx = compGroup.title.indexOf(sep);
+                const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
+                const args = idx >= 0 ? compGroup.title.slice(idx + sep.length) : '';
+                const valuesBySystem = {};
+                primary.traces.forEach(t => {
+                    const v = Array.isArray(t.y) ? t.y[0] : t.y;
+                    const num = (v != null && !isNaN(v)) ? Number(v) : null;
+                    if (t.name != null) valuesBySystem[t.name] = num;
+                });
+                if (!byKey.has(benchmarkName)) {
+                    byKey.set(benchmarkName, {
+                        benchmarkName,
+                        proportion: primary.proportion,
+                        scale: primary.scale || '',
+                        configs: []
+                    });
+                }
+                byKey.get(benchmarkName).configs.push({ args, group: compGroup, valuesBySystem });
+            });
+            return Array.from(byKey.values());
+        }
+
         function renderCharts() {
             destroyCharts();
             chartsContainer.innerHTML = '';
@@ -513,300 +549,210 @@
                 `;
                 chartsContainer.appendChild(detailsDiv);
             }
-            
-            currentComparisonGroups.forEach((compGroup, compGroupIdx) => {
-                const groupWrapper = document.createElement('div');
-                groupWrapper.style.width = '100%';
-                groupWrapper.style.marginBottom = '2.5rem';
-                groupWrapper.style.paddingBottom = '2.5rem';
-                groupWrapper.style.borderBottom = compGroupIdx < currentComparisonGroups.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none';
-                
-                const groupHeader = document.createElement('h2');
-                groupHeader.textContent = compGroup.title;
-                groupHeader.style.color = 'var(--text-primary)';
-                groupHeader.style.marginBottom = '0.25rem';
-                groupHeader.style.textAlign = 'center';
-                groupWrapper.appendChild(groupHeader);
-            
-                let primaryChartData = compGroup.charts.find(c => c.is_primary);
 
-                // Subtitle under the test name: better/worse direction and options
-                const subtitleParts = [];
-                if (primaryChartData && primaryChartData.proportion === 'HIB') {
-                    subtitleParts.push('Higher is better');
-                } else if (primaryChartData && primaryChartData.proportion === 'LIB') {
-                    subtitleParts.push('Lower is better');
-                }
-                if (primaryChartData && primaryChartData.options && primaryChartData.options.length) {
-                    const optionsText = primaryChartData.options.join(' · ');
-                    subtitleParts.push(`Options: ${optionsText}`);
-                }
-                if (subtitleParts.length) {
-                    const subtitle = document.createElement('div');
-                    subtitle.textContent = subtitleParts.join(' — ');
-                    subtitle.style.color = 'var(--text-secondary)';
-                    subtitle.style.fontSize = '0.9rem';
-                    subtitle.style.marginBottom = '1.5rem';
-                    subtitle.style.textAlign = 'center';
-                    groupWrapper.appendChild(subtitle);
-                }
-                                
-                const primarySection = document.createElement('div');
-                primarySection.style.width = '100%';
-                
-                const secondarySection = document.createElement('div');
-                secondarySection.style.display = 'grid';
-                // Stack secondary charts; keep gaps modest so page stays dense
-                secondarySection.style.gridTemplateColumns = '1fr';
-                secondarySection.style.rowGap = '1rem';
-                
-                groupWrapper.appendChild(primarySection);
-                groupWrapper.appendChild(secondarySection);
-                
-                compGroup.charts.forEach((chartData) => {
-                    if (!chartData.is_primary && !globalToggleState[chartData.metric]) {
-                        return; 
+            const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            if (!benchmarkGroups.length) {
+                chartsContainer.appendChild(Object.assign(document.createElement('div'), {
+                    textContent: 'No data successfully plotted.',
+                    style: { color: 'var(--text-secondary)', width: '100%', textAlign: 'center', padding: '2rem' }
+                }));
+                return;
+            }
+
+            const BAR_THICKNESS = 30;
+            function addBarChart(parent, labels, values, xAxisLabel) {
+                const wrap = document.createElement('div');
+                wrap.style.width = '100%';
+                wrap.style.marginBottom = '1rem';
+                const canvas = document.createElement('canvas');
+                const h = labels.length * BAR_THICKNESS;
+                canvas.height = h;
+                canvas.style.height = `${h}px`;
+                canvas.style.width = '100%';
+                wrap.appendChild(canvas);
+                parent.appendChild(wrap);
+                const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
+                const ch = new Chart(canvas.getContext('2d'), {
+                    type: 'bar',
+                    data: { labels, datasets: [{ label: '', data: values, backgroundColor: bgColors, borderRadius: 4, barThickness: BAR_THICKNESS }] },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: false,
+                        layout: { padding: { top: 4, bottom: 4, left: 0, right: 8 } },
+                        scales: { x: { title: { display: true, text: xAxisLabel || '' } }, y: { title: { display: true, text: 'Systems' } } },
+                        plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } }
                     }
-                    
+                });
+                activeCharts.push(ch);
+                return ch;
+            }
+
+            function renderOneCompGroup(compGroup, container, skipPrimary) {
+                compGroup.charts.forEach((chartData) => {
+                    if (skipPrimary && chartData.is_primary) return;
+                    if (!chartData.is_primary && !globalToggleState[chartData.metric]) return;
                     const chartDiv = document.createElement('div');
                     chartDiv.style.width = '100%';
                     chartDiv.style.display = 'flex';
                     chartDiv.style.flexDirection = 'column';
-                    
                     const canvas = document.createElement('canvas');
                     canvas.style.width = '100%';
                     chartDiv.appendChild(canvas);
-                    
-                    if (chartData.is_primary) {
-                        primarySection.appendChild(chartDiv);
-                    } else {
-                        secondarySection.appendChild(chartDiv);
-                    }
+                    container.appendChild(chartDiv);
                     let chartInstance = null;
-
                     if (chartData.display_format === 'BAR_GRAPH') {
                         const labels = chartData.traces.map(t => t.name);
-                        const values = chartData.traces.map(t => {
-                            const raw = Array.isArray(t.y) ? t.y[0] : t.y;
-                            if (raw === null || raw === undefined || isNaN(raw)) return 0;
-                            return Number(raw);
-                        });
-
-                        const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
-
-                        // Keep the whole chart compact and derive height directly from
-                        // bar thickness + a very small fixed gap between bars.
-                        const BAR_THICKNESS = 30; // must stay in sync with dataset.barThickness
-                        const height = labels.length * (BAR_THICKNESS);
-                        canvas.height = height;
-                        canvas.style.height = `${height}px`;
-
+                        const values = chartData.traces.map(t => { const raw = Array.isArray(t.y) ? t.y[0] : t.y; return (raw == null || isNaN(raw)) ? 0 : Number(raw); });
+                        const h = labels.length * BAR_THICKNESS;
+                        canvas.height = h;
+                        canvas.style.height = `${h}px`;
                         chartInstance = new Chart(canvas.getContext('2d'), {
                             type: 'bar',
-                            data: {
-                                labels,
-                                datasets: [{
-                                    label: chartData.metric,
-                                    data: values,
-                                    backgroundColor: bgColors,
-                                    borderRadius: 4,
-                                    // Final bar styling – fixed thickness, do not change.
-                                    barThickness: 30
-                                }]
-                            },
-                            options: {
-                                indexAxis: 'y',
-                                // Use explicit canvas height to tightly control spacing
-                                layout: {
-                                    padding: {
-                                        top: 4,
-                                        bottom: 4,
-                                        left: 0,
-                                        right: 8
-                                    }
-                                },
-                                scales: {
-                                    x: {
-                                        title: { display: true, text: chartData.scale || '' }
-                                    },
-                                    y: {
-                                        title: { display: true, text: 'Systems' }
-                                    }
-                                },
-                                plugins: {
-                                    legend: { display: false },
-                                    tooltip: { mode: 'index', intersect: false },
-                                    datalabels: {
-                                        anchor: 'center',
-                                        align: 'center',
-                                        color: '#ffffff',
-                                        font: {
-                                            size: 11,
-                                            weight: '600'
-                                        },
-                                        formatter: (value) => {
-                                            if (value === null || value === undefined || isNaN(value)) return '';
-                                            return Number(value).toFixed(2);
-                                        },
-                                        clip: true
-                                    }
-                                }
-                            }
+                            data: { labels, datasets: [{ label: chartData.metric, data: values, backgroundColor: labels.map((_, i) => defaultColors[i % defaultColors.length]), borderRadius: 4, barThickness: BAR_THICKNESS }] },
+                            options: { indexAxis: 'y', responsive: false, layout: { padding: { top: 4, bottom: 4, left: 0, right: 8 } }, scales: { x: { title: { display: true, text: chartData.scale || '' } }, y: { title: { display: true, text: 'Systems' } } }, plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } } }
                         });
                     } else if (chartData.display_format === 'LINE_GRAPH') {
-                        // Compact stats table by default, with optional expandable time series.
                         canvas.style.display = 'none';
-
-                        const sensorTitle = document.createElement('div');
-                        sensorTitle.style.fontSize = '0.85rem';
-                        sensorTitle.style.fontWeight = '600';
-                        sensorTitle.style.color = 'var(--text-secondary)';
-                        sensorTitle.style.marginTop = '0.75rem';
-                        sensorTitle.style.marginBottom = '0.25rem';
                         const scaleStr = (chartData.scale && chartData.scale.trim()) ? ` (${chartData.scale.trim()})` : '';
                         const sensorLabel = `${chartData.metric || 'Sensor'}${scaleStr}`;
-                        sensorTitle.textContent = sensorLabel;
-                        chartDiv.appendChild(sensorTitle);
-
-                        const statsWrapper = document.createElement('div');
-                        statsWrapper.style.marginTop = '0.35rem';
-                        statsWrapper.style.padding = '0.4rem 0.75rem';
-                        statsWrapper.style.background = 'rgba(0,0,0,0.25)';
-                        statsWrapper.style.borderRadius = '8px';
-                        statsWrapper.style.fontSize = '0.8rem';
-
-                        let statsHtml = `
-                            <table style="width: 100%; border-collapse: collapse; text-align: left;">
-                                <thead>
-                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-                                        <th style="padding: 0.25rem 0.4rem;">System</th>
-                                        <th style="padding: 0.25rem 0.4rem;">Min</th>
-                                        <th style="padding: 0.25rem 0.4rem;">25%</th>
-                                        <th style="padding: 0.25rem 0.4rem;">Median</th>
-                                        <th style="padding: 0.25rem 0.4rem;">75%</th>
-                                        <th style="padding: 0.25rem 0.4rem;">Max</th>
-                                        <th style="padding: 0.25rem 0.4rem;">Mean</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                        `;
-
+                        const titleEl = document.createElement('div');
+                        titleEl.style.cssText = 'font-size:0.85rem;font-weight:600;color:var(--text-secondary);margin-top:0.75rem;margin-bottom:0.25rem;';
+                        titleEl.textContent = sensorLabel;
+                        chartDiv.appendChild(titleEl);
+                        let statsHtml = '<table style="width:100%;border-collapse:collapse;text-align:left;"><thead><tr style="border-bottom:1px solid rgba(255,255,255,0.08);"><th style="padding:0.25rem 0.4rem;">System</th><th style="padding:0.25rem 0.4rem;">Min</th><th style="padding:0.25rem 0.4rem;">25%</th><th style="padding:0.25rem 0.4rem;">Median</th><th style="padding:0.25rem 0.4rem;">75%</th><th style="padding:0.25rem 0.4rem;">Max</th><th style="padding:0.25rem 0.4rem;">Mean</th></tr></thead><tbody>';
                         chartData.traces.forEach(trace => {
                             const s = trace.stats || {};
                             const fmt = v => (v === undefined || v === null || isNaN(v)) ? '' : Number(v).toFixed(2);
-                            statsHtml += `
-                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
-                                    <td style="padding: 0.25rem 0.4rem; color: var(--text-primary);">${trace.name}</td>
-                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.min)}</td>
-                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.q1)}</td>
-                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace; color: var(--accent); font-weight: 600;">${fmt(s.median)}</td>
-                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.q3)}</td>
-                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.max)}</td>
-                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.mean)}</td>
-                                </tr>
-                            `;
+                            statsHtml += `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);"><td style="padding:0.25rem 0.4rem;">${trace.name}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.min)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.q1)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;color:var(--accent);font-weight:600;">${fmt(s.median)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.q3)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.max)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.mean)}</td></tr>`;
                         });
-
-                        statsHtml += `
-                                </tbody>
-                            </table>
-                        `;
-
-                        statsWrapper.innerHTML = statsHtml;
-                        chartDiv.appendChild(statsWrapper);
-
-                        // Optional expandable time-series line chart for this sensor metric.
-                        const lineToggle = document.createElement('button');
-                        lineToggle.type = 'button';
-                        lineToggle.textContent = 'Show time series';
-                        lineToggle.style.alignSelf = 'flex-end';
-                        lineToggle.style.marginTop = '0.35rem';
-                        lineToggle.style.padding = '0.2rem 0.6rem';
-                        lineToggle.style.fontSize = '0.75rem';
-                        lineToggle.style.borderRadius = '999px';
-                        lineToggle.style.border = '1px solid rgba(255,255,255,0.15)';
-                        lineToggle.style.background = 'rgba(0,0,0,0.3)';
-                        lineToggle.style.color = 'var(--text-secondary)';
-                        lineToggle.style.cursor = 'pointer';
-
+                        statsHtml += '</tbody></table>';
+                        const statsWrap = document.createElement('div');
+                        statsWrap.style.cssText = 'margin-top:0.35rem;padding:0.4rem 0.75rem;background:rgba(0,0,0,0.25);border-radius:8px;font-size:0.8rem;';
+                        statsWrap.innerHTML = statsHtml;
+                        chartDiv.appendChild(statsWrap);
+                        const lineBtn = document.createElement('button');
+                        lineBtn.type = 'button';
+                        lineBtn.textContent = 'Show time series';
+                        lineBtn.style.cssText = 'align-self:flex-end;margin-top:0.35rem;padding:0.2rem 0.6rem;font-size:0.75rem;border-radius:999px;border:1px solid rgba(255,255,255,0.15);background:rgba(0,0,0,0.3);color:var(--text-secondary);cursor:pointer;';
                         const lineContainer = document.createElement('div');
-                        lineContainer.style.display = 'none';
-                        lineContainer.style.marginTop = '0.5rem';
-                        lineContainer.style.width = '100%';
-                        lineContainer.style.height = '480px';
-
+                        lineContainer.style.cssText = 'display:none;margin-top:0.5rem;width:100%;height:480px;';
                         const lineCanvas = document.createElement('canvas');
                         lineCanvas.style.width = '100%';
                         lineContainer.appendChild(lineCanvas);
-
-                        chartDiv.appendChild(lineToggle);
+                        chartDiv.appendChild(lineBtn);
                         chartDiv.appendChild(lineContainer);
-
                         let lineChartInstance = null;
-
-                        lineToggle.addEventListener('click', () => {
-                            const opening = lineContainer.style.display === 'none';
-                            if (opening) {
+                        lineBtn.addEventListener('click', () => {
+                            if (lineContainer.style.display === 'none') {
                                 const firstTrace = chartData.traces[0] || {};
-                                const labels = (firstTrace.x && firstTrace.x.length)
-                                    ? firstTrace.x.map((_, idx) => idx)
-                                    : (firstTrace.y || []).map((_, idx) => idx);
-
-                                const datasets = chartData.traces.map((trace, i) => ({
-                                    label: trace.name,
-                                    data: trace.y || [],
-                                    borderColor: defaultColors[i % defaultColors.length],
-                                    backgroundColor: 'rgba(0,0,0,0)',
-                                    tension: 0.1,
-                                    pointRadius: 0,
-                                    borderWidth: 2
-                                }));
-
-                                lineChartInstance = new Chart(lineCanvas.getContext('2d'), {
-                                    type: 'line',
-                                    data: { labels, datasets },
-                                    options: {
-                                        responsive: true,
-                                        maintainAspectRatio: false,
-                                        interaction: { mode: 'index', intersect: false },
-                                        scales: {
-                                            x: { title: { display: true, text: 'Samples' } },
-                                            y: { title: { display: true, text: chartData.scale || '' } }
-                                        },
-                                        plugins: {
-                                            legend: { display: true, position: 'bottom' },
-                                            datalabels: { display: false }
-                                        }
-                                    }
-                                });
+                                const labels = (firstTrace.x && firstTrace.x.length) ? firstTrace.x.map((_, i) => i) : (firstTrace.y || []).map((_, i) => i);
+                                const datasets = chartData.traces.map((t, i) => ({ label: t.name, data: t.y || [], borderColor: defaultColors[i % defaultColors.length], backgroundColor: 'rgba(0,0,0,0)', tension: 0.1, pointRadius: 0, borderWidth: 2 }));
+                                lineChartInstance = new Chart(lineCanvas.getContext('2d'), { type: 'line', data: { labels, datasets }, options: { responsive: true, maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Samples' } }, y: { title: { display: true, text: chartData.scale || '' } } }, plugins: { legend: { display: true, position: 'bottom' }, datalabels: { display: false } } } });
                                 activeCharts.push(lineChartInstance);
                                 lineContainer.style.display = 'block';
-                                lineToggle.textContent = 'Hide time series';
+                                lineBtn.textContent = 'Hide time series';
                             } else {
-                                if (lineChartInstance) {
-                                    try { lineChartInstance.destroy(); } catch (e) { console.error(e); }
-                                    activeCharts = activeCharts.filter(ch => ch !== lineChartInstance);
-                                    lineChartInstance = null;
-                                }
+                                if (lineChartInstance) { try { lineChartInstance.destroy(); } catch (e) {} activeCharts = activeCharts.filter(ch => ch !== lineChartInstance); lineChartInstance = null; }
                                 lineContainer.style.display = 'none';
-                                lineToggle.textContent = 'Show time series';
+                                lineBtn.textContent = 'Show time series';
                             }
                         });
                     }
-
-                    if (chartInstance) {
-                        activeCharts.push(chartInstance);
-                    }
+                    if (chartInstance) activeCharts.push(chartInstance);
                 });
-                
-                if (primarySection.children.length === 0) primarySection.remove();
-                if (secondarySection.children.length === 0) secondarySection.remove();
-                
+            }
+
+            benchmarkGroups.forEach((bGroup, bGroupIdx) => {
+                const groupWrapper = document.createElement('div');
+                groupWrapper.style.width = '100%';
+                groupWrapper.style.marginBottom = '2.5rem';
+                groupWrapper.style.paddingBottom = '2.5rem';
+                groupWrapper.style.borderBottom = bGroupIdx < benchmarkGroups.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none';
+
+                const groupHeader = document.createElement('h2');
+                groupHeader.textContent = bGroup.benchmarkName;
+                groupHeader.style.color = 'var(--text-primary)';
+                groupHeader.style.marginBottom = '0.25rem';
+                groupHeader.style.textAlign = 'center';
+                groupWrapper.appendChild(groupHeader);
+
+                const subtitle = document.createElement('div');
+                subtitle.style.color = 'var(--text-secondary)';
+                subtitle.style.fontSize = '0.9rem';
+                subtitle.style.marginBottom = '1rem';
+                subtitle.style.textAlign = 'center';
+                subtitle.textContent = bGroup.proportion === 'HIB' ? 'Higher is better' : bGroup.proportion === 'LIB' ? 'Lower is better' : '';
+                if (subtitle.textContent) groupWrapper.appendChild(subtitle);
+
+                const systems = bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : [];
+                const HIB = bGroup.proportion === 'HIB';
+                const aggValues = systems.map(sys => {
+                    const vals = bGroup.configs.map(c => c.valuesBySystem[sys]).filter(v => v != null && !isNaN(v));
+                    return vals.length ? geometricMean(vals) : null;
+                });
+                const wins = systems.map(() => 0);
+                const losses = systems.map(() => 0);
+                bGroup.configs.forEach(config => {
+                    const vals = systems.map(s => config.valuesBySystem[s]);
+                    const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
+                    if (!valid.length) return;
+                    const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
+                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
+                    valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
+                    valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+                });
+
+                const aggSection = document.createElement('div');
+                aggSection.style.marginBottom = '1.5rem';
+                groupWrapper.appendChild(aggSection);
+                addBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), (bGroup.scale ? `Aggregate (${bGroup.scale})` : 'Aggregate'));
+                addBarChart(aggSection, systems, wins, 'Wins (best score per option)');
+                addBarChart(aggSection, systems, losses, 'Losses (worst score per option)');
+
+                if (bGroup.configs.length > 1) {
+                    const sensorNote = document.createElement('div');
+                    sensorNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.5rem;';
+                    sensorNote.textContent = 'Sensor data (e.g. CPU temp) is shown for each option when you expand it below.';
+                    aggSection.appendChild(sensorNote);
+                    const expandHeading = document.createElement('div');
+                    expandHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.5rem;cursor:pointer;font-size:0.9rem;';
+                    expandHeading.textContent = '▼ Individual options';
+                    const expandContent = document.createElement('div');
+                    expandContent.style.display = 'none';
+                    groupWrapper.appendChild(expandHeading);
+                    groupWrapper.appendChild(expandContent);
+                    expandHeading.addEventListener('click', () => {
+                        const open = expandContent.style.display !== 'none';
+                        expandContent.style.display = open ? 'none' : 'block';
+                        expandHeading.textContent = open ? '▼ Individual options' : '▲ Individual options';
+                    });
+                    bGroup.configs.forEach((config, cIdx) => {
+                        const optWrap = document.createElement('div');
+                        optWrap.style.marginTop = '1rem';
+                        const optHeader = document.createElement('div');
+                        optHeader.style.cssText = 'padding:0.4rem 0.5rem;background:rgba(255,255,255,0.05);border-radius:4px;cursor:pointer;font-size:0.85rem;margin-bottom:0.25rem;';
+                        optHeader.textContent = (config.args && config.args.length > 80) ? config.args.slice(0, 77) + '...' : (config.args || 'Option ' + (cIdx + 1));
+                        const optBody = document.createElement('div');
+                        optBody.style.display = 'none';
+                        optBody.style.paddingLeft = '0.75rem';
+                        optWrap.appendChild(optHeader);
+                        optWrap.appendChild(optBody);
+                        expandContent.appendChild(optWrap);
+                        optHeader.addEventListener('click', () => {
+                            const open = optBody.style.display !== 'none';
+                            optBody.style.display = open ? 'none' : 'block';
+                            if (!open && optBody.children.length === 0) renderOneCompGroup(config.group, optBody);
+                        });
+                    });
+                } else if (bGroup.configs.length === 1) {
+                    renderOneCompGroup(bGroup.configs[0].group, groupWrapper, true);
+                }
+
                 chartsContainer.appendChild(groupWrapper);
             });
-            
-            if (!chartsContainer.children.length) {
-                chartsContainer.innerHTML = `<div style="color: var(--text-secondary); width: 100%; text-align: center; padding: 2rem;">No data successfully plotted.</div>`;
+
+            if (!chartsContainer.querySelector('div')) {
+                chartsContainer.innerHTML = '<div style="color:var(--text-secondary);width:100%;text-align:center;padding:2rem;">No data successfully plotted.</div>';
             }
         }
 
