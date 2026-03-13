@@ -687,20 +687,27 @@ def api_common_benchmarks():
     except (ValueError, TypeError):
         sys_id_ints = system_ids
 
-    unique_common_suites = {}
+    # Group all benchmark IDs by logical key (same benchmark can have different IDs per system)
+    key_to_bm_ids = {}
+    key_to_one_bm_id = {}
     for key, bm_id in common_bms:
-        if key not in unique_common_suites:
-            id_str = f" [{key[2]}]" if key[2] else ""
-            # Distinct configurations (arguments) for this benchmark in selected systems
-            config_rows = db.session.query(BenchmarkResult.arguments).filter(
-                BenchmarkResult.benchmark_id == bm_id,
-                BenchmarkResult.system_id.in_(sys_id_ints)
-            ).distinct().all()
-            configs = [r[0] or "" for r in config_rows if (r[0] or "").strip()]
-            unique_common_suites[key] = {
-                'id': bm_id,
-                'label': f"{key[0]} ({key[1]}){id_str}",
-                'configs': configs
+        key_to_bm_ids.setdefault(key, set()).add(bm_id)
+        if key not in key_to_one_bm_id:
+            key_to_one_bm_id[key] = bm_id
+
+    unique_common_suites = {}
+    for key, bm_ids in key_to_bm_ids.items():
+        id_str = f" [{key[2]}]" if key[2] else ""
+        # Distinct configurations (arguments) for this benchmark across ALL its IDs and selected systems
+        config_rows = db.session.query(BenchmarkResult.arguments).filter(
+            BenchmarkResult.benchmark_id.in_(bm_ids),
+            BenchmarkResult.system_id.in_(sys_id_ints)
+        ).distinct().all()
+        configs = [r[0] or "" for r in config_rows if (r[0] or "").strip()]
+        unique_common_suites[key] = {
+            'id': key_to_one_bm_id[key],
+            'label': f"{key[0]} ({key[1]}){id_str}",
+            'configs': configs
             }
 
     output_list = sorted(list(unique_common_suites.values()), key=lambda x: x['label'])
