@@ -455,7 +455,9 @@
                                     label: chartData.metric + betterText,
                                     data: values,
                                     backgroundColor: bgColors,
-                                    borderRadius: 4
+                                    borderRadius: 4,
+                                    // Force a relatively thin bar thickness (in px)
+                                    barThickness: 10
                                 }]
                             },
                             options: {
@@ -467,9 +469,7 @@
                                         title: { display: true, text: chartData.scale || '' }
                                     },
                                     y: {
-                                        title: { display: true, text: 'Systems' },
-                                        categoryPercentage: 0.4,   // tighten vertical bar thickness
-                                        barPercentage: 0.4
+                                        title: { display: true, text: 'Systems' }
                                     }
                                 },
                                 plugins: {
