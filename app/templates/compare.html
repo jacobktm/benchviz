@@ -982,6 +982,13 @@
                             return (raw != null && !isNaN(raw)) ? Number(raw) : 0;
                         });
 
+                        // Show "Higher is better" / "Lower is better" per metric (helps when multiple primary results).
+                        const directionText = isHigherIsBetter(chartData.proportion) ? 'Higher is better' : 'Lower is better';
+                        const directionEl = document.createElement('div');
+                        directionEl.style.cssText = 'font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.25rem;';
+                        directionEl.textContent = directionText;
+                        chartDiv.appendChild(directionEl);
+
                         // When normalization is enabled, normalize BAR_GRAPH charts for primary
                         // results so that the weakest system is 1.0 and others are > 1.0.
                         if (normalizeComposite && chartData.is_primary) {
@@ -1006,7 +1013,7 @@
                         };
                         const xAxisLabel = (normalizeComposite && chartData.is_primary)
                             ? (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)')
-                            : (chartData.scale || '');
+                            : (chartData.scale ? `${chartData.scale} — ${directionText}` : directionText);
                         createBarChart(chartDiv, labels, values, xAxisLabel, formatter, 'individual');
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         const canvas = document.createElement('canvas');
