@@ -503,7 +503,7 @@
             });
             return { labels: sorted.map(p => p.label), values: sorted.map(p => p.value) };
         }
-        function createBarChart(parent, labels, values, xAxisLabel, formatter, debugSource) {
+        function createBarChart(parent, labels, values, xAxisLabel, formatter, debugSource, systemOrder) {
             const BAR_THICKNESS = 30;
             const BAR_GAP = 30;
             const BAR_CHART_HEIGHT_PADDING = 24;
@@ -520,7 +520,13 @@
             const canvas = document.createElement('canvas');
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
-            const bgColors = labelList.map((_, i) => defaultColors[i % defaultColors.length]);
+            // Colors by system identity (systemOrder) so each system keeps the same color across charts and sort order.
+            const order = Array.isArray(systemOrder) && systemOrder.length ? systemOrder : labelList;
+            const bgColors = labelList.map((l, i) => {
+                const idx = order.indexOf(l);
+                const colorIndex = idx >= 0 ? idx : i;
+                return defaultColors[colorIndex % defaultColors.length];
+            });
             const chartData = {
                 labels: labelList,
                 datasets: [{
@@ -937,7 +943,8 @@
                         sortedOverall.values,
                         label,
                         formatter,
-                        'overall-composite'
+                        'overall-composite',
+                        systems
                     );
                 }
                 if (showWinsLossCharts && systems.length >= 2) {
@@ -993,7 +1000,8 @@
                             sortedSensor.values,
                             xLabel,
                             formatter,
-                            'overall-sensor'
+                            'overall-sensor',
+                            systems
                         );
                     });
                 }
@@ -1060,6 +1068,7 @@
                     container.appendChild(chartDiv);
                     let chartInstance = null;
                     if (chartData.display_format === 'BAR_GRAPH') {
+                        if (!chartData.traces || !chartData.traces.length) return;
                         const labels = chartData.traces.map(t => t.name != null ? t.name : '');
                         let values = chartData.traces.map(t => {
                             const raw = Array.isArray(t.y) ? t.y[0] : t.y;
@@ -1100,7 +1109,7 @@
                             : (chartData.scale ? `${chartData.scale} — ${directionText}` : directionText);
                         const individualHigher = normalizeComposite || HIB;
                         const sortedIndividual = sortLabelsValuesBestFirst(labels, values, individualHigher);
-                        createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual');
+                        createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual', labels);
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         const canvas = document.createElement('canvas');
                         canvas.style.width = '100%';
@@ -1201,7 +1210,8 @@
                     sortedAgg.values,
                     compositeLabel,
                     (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
-                    'aggregate'
+                    'aggregate',
+                    systems
                 );
                 if (systems.length >= 2) {
                     const pieRow = document.createElement('div');
