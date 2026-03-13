@@ -23,18 +23,14 @@ if [ ! -f "$PROJECT_ROOT/app_main.py" ]; then
 fi
 SERVICE_NAME="benchviz"
 
-# Allow caller (e.g. setup.sh) to suggest a default service user
-if [[ -n "${BENCHVIZ_DEFAULT_SERVICE_USER:-}" ]]; then
+# Prefer the owner of PROJECT_ROOT as the default service user when possible.
+DIR_OWNER="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
+if [[ -n "${DIR_OWNER:-}" ]]; then
+  DEFAULT_USER="${DIR_OWNER}"
+elif [[ -n "${BENCHVIZ_DEFAULT_SERVICE_USER:-}" ]]; then
   DEFAULT_USER="${BENCHVIZ_DEFAULT_SERVICE_USER}"
 else
   DEFAULT_USER="${SUDO_USER:-$USER}"
-
-  # If the target directory already exists and has a non-root owner,
-  # prefer that owner as the default service user.
-  DIR_OWNER="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
-  if [[ -n "${DIR_OWNER:-}" && "${DIR_OWNER}" != "root" ]]; then
-    DEFAULT_USER="${DIR_OWNER}"
-  fi
 fi
 
 read -r -p "System user to run BenchViz as [${DEFAULT_USER}]: " SERVICE_USER
