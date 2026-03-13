@@ -136,7 +136,7 @@
             generateBtn.disabled = !(selectedSystems.length > 0 && selectedBenchmarks.length > 0);
         }
 
-        function refreshSystemSelectOptions() {
+        function refreshSystemSelectOptions(allowedSystemIds) {
             const selectedIds = new Set(selectedSystems.map(s => String(s.id)));
             systemSelect.innerHTML = '';
 
@@ -147,6 +147,7 @@
 
             allSystemOptions.forEach(sys => {
                 if (selectedIds.has(String(sys.value))) return;
+                if (allowedSystemIds != null && !allowedSystemIds.has(String(sys.value))) return;
                 const opt = document.createElement('option');
                 opt.value = sys.value;
                 opt.textContent = sys.text;
@@ -416,8 +417,8 @@
 
         async function syncSystemConstraints() {
             if (!selectedBenchmarks.length) {
-                renderSelectedSystems();
-                await syncBenchmarkOptions();
+                refreshSystemSelectOptions(null);
+                refreshGenerateButtonState();
                 return;
             }
 
@@ -446,10 +447,7 @@
                     allowed = new Set([...allowed].filter(id => next.has(id)));
                 }
 
-                selectedSystems = selectedSystems.filter(s => allowed.has(String(s.id)));
-                renderSelectedSystems();
-                refreshSystemSelectOptions();
-                await syncBenchmarkOptions();
+                refreshSystemSelectOptions(allowed);
             } catch (err) {
                 console.error(err);
             } finally {
