@@ -560,7 +560,7 @@
             }
 
             const BAR_THICKNESS = 30;
-            function addBarChart(parent, labels, values, xAxisLabel) {
+            function addBarChart(parent, labels, values, xAxisLabel, formatter) {
                 const wrap = document.createElement('div');
                 wrap.style.width = '100%';
                 wrap.style.marginBottom = '1rem';
@@ -572,15 +572,19 @@
                 wrap.appendChild(canvas);
                 parent.appendChild(wrap);
                 const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
+                const fmt = formatter || (v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2));
                 const ch = new Chart(canvas.getContext('2d'), {
                     type: 'bar',
                     data: { labels, datasets: [{ label: '', data: values, backgroundColor: bgColors, borderRadius: 4, barThickness: BAR_THICKNESS }] },
                     options: {
                         indexAxis: 'y',
                         responsive: false,
-                        layout: { padding: { top: 4, bottom: 4, left: 0, right: 8 } },
-                        scales: { x: { title: { display: true, text: xAxisLabel || '' } }, y: { title: { display: true, text: 'Systems' } } },
-                        plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } }
+                        layout: { padding: { top: 4, bottom: 4, left: 4, right: 8 } },
+                        scales: {
+                            x: { title: { display: true, text: xAxisLabel || '' } },
+                            y: { title: { display: false }, ticks: { autoSkip: false } }
+                        },
+                        plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: fmt, clip: true } }
                     }
                 });
                 activeCharts.push(ch);
@@ -601,15 +605,22 @@
                     container.appendChild(chartDiv);
                     let chartInstance = null;
                     if (chartData.display_format === 'BAR_GRAPH') {
-                        const labels = chartData.traces.map(t => t.name);
-                        const values = chartData.traces.map(t => { const raw = Array.isArray(t.y) ? t.y[0] : t.y; return (raw == null || isNaN(raw)) ? 0 : Number(raw); });
+                        const byName = new Map();
+                        chartData.traces.forEach(t => {
+                            const raw = Array.isArray(t.y) ? t.y[0] : t.y;
+                            const val = (raw == null || isNaN(raw)) ? 0 : Number(raw);
+                            if (!byName.has(t.name)) byName.set(t.name, val);
+                            else byName.set(t.name, (byName.get(t.name) + val) / 2);
+                        });
+                        const labels = Array.from(byName.keys());
+                        const values = Array.from(byName.values());
                         const h = labels.length * BAR_THICKNESS;
                         canvas.height = h;
                         canvas.style.height = `${h}px`;
                         chartInstance = new Chart(canvas.getContext('2d'), {
                             type: 'bar',
                             data: { labels, datasets: [{ label: chartData.metric, data: values, backgroundColor: labels.map((_, i) => defaultColors[i % defaultColors.length]), borderRadius: 4, barThickness: BAR_THICKNESS }] },
-                            options: { indexAxis: 'y', responsive: false, layout: { padding: { top: 4, bottom: 4, left: 0, right: 8 } }, scales: { x: { title: { display: true, text: chartData.scale || '' } }, y: { title: { display: true, text: 'Systems' } } }, plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } } }
+                            options: { indexAxis: 'y', responsive: false, layout: { padding: { top: 4, bottom: 4, left: 4, right: 8 } }, scales: { x: { title: { display: true, text: chartData.scale || '' } }, y: { title: { display: false }, ticks: { autoSkip: false } } }, plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2), clip: true } } }
                         });
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         canvas.style.display = 'none';
@@ -706,8 +717,16 @@
                 aggSection.style.marginBottom = '1.5rem';
                 groupWrapper.appendChild(aggSection);
                 addBarChart(aggSection, systems, aggValues.map(v => v != null ? v : 0), (bGroup.scale ? `Aggregate (${bGroup.scale})` : 'Aggregate'));
-                addBarChart(aggSection, systems, wins, 'Wins (best score per option)');
-                addBarChart(aggSection, systems, losses, 'Losses (worst score per option)');
+                if (systems.length >= 2) {
+                    const intFmt = v => (v == null || isNaN(v)) ? '' : String(Math.round(v));
+                    addBarChart(aggSection, systems, wins, 'Wins (best score per option)', intFmt);
+                    addBarChart(aggSection, systems, losses, 'Losses (worst score per option)', intFmt);
+                } else if (systems.length === 1) {
+                    const oneSystemNote = document.createElement('div');
+                    oneSystemNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.25rem;';
+                    oneSystemNote.textContent = 'Add another system to compare wins and losses.';
+                    aggSection.appendChild(oneSystemNote);
+                }
 
                 if (bGroup.configs.length > 1) {
                     const sensorNote = document.createElement('div');
