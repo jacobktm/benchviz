@@ -520,9 +520,19 @@ def api_compare():
                 BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
                 BenchmarkResult.system_id.in_(sys_id_ints),
             ).distinct().all()
+            # Include None/empty arguments so options like "Unix Makefiles"
+            # (which may not have an explicit arguments string) still appear
+            # as separate configurations.
             args_list = [r[0] for r in distinct_rows]
             if not args_list:
                 continue
+
+        # Track non-empty primary arguments for this benchmark so we can
+        # associate sensor runs even when the primary run's arguments are empty.
+        nonempty_primary_args = [
+            a.strip() for a in args_list
+            if isinstance(a, str) and a.strip()
+        ]
 
         for args_val in args_list:
             charts = []
@@ -616,13 +626,30 @@ def api_compare():
                         BenchmarkResult.system_id == sys_id,
                         BenchmarkResult.benchmark_id == s_bm.id,
                     ).all()
-                    # Match sensor results to this exact primary run by arguments (exact match
-                    # so we don't attach another run's sensor data, e.g. wrong temps).
+                    # Match sensor results to this primary run by arguments so we don't
+                    # attach another run's sensor data (e.g. wrong temps).
                     if not target_args:
-                        matching_s_res = [r for r in all_s_res if (r.arguments or "").strip() == ""]
+                        # For runs whose primary arguments are empty (e.g. "Unix Makefiles"
+                        # vs "Ninja"), prefer sensor runs that do NOT contain any of the
+                        # non-empty primary argument strings. This lets us pair the
+                        # "no-args" run with sensors like "CPU Temp " instead of
+                        # "CPU Temp Ninja".
+                        if nonempty_primary_args:
+                            matching_s_res = [
+                                r for r in all_s_res
+                                if not any(pa in (r.arguments or "") for pa in nonempty_primary_args)
+                            ]
+                        else:
+                            matching_s_res = list(all_s_res)
                     else:
-                        exact = [r for r in all_s_res if (r.arguments or "").strip() == target_args.strip()]
-                        matching_s_res = exact if exact else [r for r in all_s_res if target_args in (r.arguments or "")]
+                        exact = [
+                            r for r in all_s_res
+                            if (r.arguments or "").strip() == target_args.strip()
+                        ]
+                        matching_s_res = exact if exact else [
+                            r for r in all_s_res
+                            if target_args in (r.arguments or "")
+                        ]
 
                     if not matching_s_res:
                         continue
@@ -691,16 +718,92 @@ def api_compare():
                 title = f"{primary_benchmark.title} ({primary_benchmark.app_version})"
                 if args_val and (isinstance(args_val, str) and args_val.strip()):
                     title += f" — {args_val}"
+                # Compute display label for this run so sensor data is explicitly correlated
+                # (e.g. "Unix Makefiles" for empty-args run when other option is "Ninja").
+                args_label = None
+                if args_val and (isinstance(args_val, str) and args_val.strip()):
+                    args_label = args_val
+                else:
+                    # Get the benchmark that corresponds to this args_val (for description).
+                    first_sys_id = sys_id_ints[0] if sys_id_ints else None
+                    if first_sys_id:
+                        q_prim = BenchmarkResult.query.filter(
+                            BenchmarkResult.system_id == first_sys_id,
+                            BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+                        )
+                        if args_val is None or (isinstance(args_val, str) and not args_val.strip()):
+                            q_prim = q_prim.filter(
+                                (BenchmarkResult.arguments.is_(None)) | (BenchmarkResult.arguments == "")
+                            )
+                        else:
+                            q_prim = q_prim.filter(BenchmarkResult.arguments == args_val)
+                        prim_res = q_prim.first()
+                        if prim_res:
+                            bm_for_args = db.session.get(Benchmark, prim_res.benchmark_id)
+                            if bm_for_args and bm_for_args.description:
+                                other_bms = Benchmark.query.filter(
+                                    Benchmark.title == primary_benchmark.title,
+                                    Benchmark.app_version == primary_benchmark.app_version,
+                                    Benchmark.display_format == "BAR_GRAPH",
+                                    Benchmark.id != bm_for_args.id,
+                                ).all()
+                                other_descriptions = [b.description for b in other_bms if b.description]
+                                args_label = _unique_part_of_description(
+                                    bm_for_args.description, other_descriptions
+                                ) or (args_val if isinstance(args_val, str) else "")
                 comparison_groups.append({
                     "title": title,
                     "charts": charts,
-                    "system_details": system_details
+                    "system_details": system_details,
+                    "args": args_val if args_val is not None else "",
+                    "args_label": args_label or args_val or "",
                 })
 
     if not comparison_groups:
         return {"error": "Could not find benchmark data"}, 404
         
     return {"comparison_groups": comparison_groups}
+
+
+def _longest_common_prefix(strs):
+    """Return the longest string that is a prefix of all non-empty strings in strs."""
+    strs = [s for s in strs if s]
+    if not strs:
+        return ""
+    s0, s1 = min(strs), max(strs)
+    for i, c in enumerate(s0):
+        if i >= len(s1) or c != s1[i]:
+            return s0[:i]
+    return s0
+
+
+def _longest_common_suffix(strs):
+    rev = [s[::-1] for s in strs if s]
+    return _longest_common_prefix(rev)[::-1] if rev else ""
+
+
+def _unique_part_of_description(empty_description, other_descriptions):
+    """
+    Given the description for the no-arguments config and descriptions for other
+    configs, return the part of empty_description that is not common to all
+    (e.g. strip common prefix/suffix so "Build System: Unix Makefiles" with
+    others "Build System: Ninja" yields "Unix Makefiles").
+    """
+    if not (empty_description or "").strip():
+        return empty_description or ""
+    empty_description = (empty_description or "").strip()
+    others = [(d or "").strip() for d in (other_descriptions or []) if (d or "").strip()]
+    if not others:
+        return empty_description
+    common_prefix = _longest_common_prefix([empty_description] + others)
+    common_suffix = _longest_common_suffix([empty_description] + others)
+    out = empty_description
+    if common_prefix:
+        out = out.removeprefix(common_prefix)
+    if common_suffix:
+        out = out.removesuffix(common_suffix)
+    return out.strip() or empty_description
+
 
 @app.route('/api/common_benchmarks')
 def api_common_benchmarks():
@@ -751,11 +854,46 @@ def api_common_benchmarks():
     unique_common_suites = {}
     for key, bm_ids in key_to_bm_ids.items():
         # key is (title, app_version)
-        config_rows = db.session.query(BenchmarkResult.arguments).filter(
+        config_rows = db.session.query(
+            BenchmarkResult.arguments,
+            BenchmarkResult.benchmark_id
+        ).filter(
             BenchmarkResult.benchmark_id.in_(bm_ids),
             BenchmarkResult.system_id.in_(sys_id_ints)
         ).distinct().all()
-        configs = [r[0] or "" for r in config_rows if (r[0] or "").strip()]
+        # One benchmark_id per arguments value to resolve description
+        args_to_bm_id = {}
+        for r in config_rows:
+            a = r[0] if r[0] is not None else ""
+            if a not in args_to_bm_id:
+                args_to_bm_id[a] = r[1]
+        if not args_to_bm_id:
+            unique_common_suites[key] = {
+                'id': key_to_one_bm_id[key],
+                'label': f"{key[0]} ({key[1]})",
+                'configs': []
+            }
+            continue
+        bm_ids_for_desc = list(set(args_to_bm_id.values()))
+        benchmarks_by_id = {bm.id: bm for bm in Benchmark.query.filter(Benchmark.id.in_(bm_ids_for_desc)).all()}
+        args_to_description = {}
+        for a, bid in args_to_bm_id.items():
+            bm = benchmarks_by_id.get(bid)
+            if bm and bm.description:
+                args_to_description[a] = bm.description
+        # Keep all distinct arguments (including empty) and assign a display label.
+        # For empty-args configs, use the part of the description that is unique
+        # vs other configs' descriptions (e.g. "Unix Makefiles" from "Build System: Unix Makefiles").
+        config_values = list(args_to_bm_id.keys())
+        configs = []
+        for i, a in enumerate(config_values):
+            desc = args_to_description.get(a) or ""
+            if (a or "").strip():
+                label = a
+            else:
+                other_descriptions = [args_to_description.get(x) or "" for x in config_values if (x or "").strip()]
+                label = _unique_part_of_description(desc, other_descriptions) or ("Option " + str(i + 1))
+            configs.append({"value": a, "label": label or a or ("Option " + str(i + 1))})
         unique_common_suites[key] = {
             'id': key_to_one_bm_id[key],
             'label': f"{key[0]} ({key[1]})",

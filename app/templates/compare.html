@@ -318,7 +318,9 @@
                     body.appendChild(allRow);
                 }
 
-                (bm.configs || []).forEach(argStr => {
+                (bm.configs || []).forEach(config => {
+                    const argStr = typeof config === 'string' ? config : config.value;
+                    const displayLabel = typeof config === 'string' ? config : (config.label || config.value || '');
                     if (isBenchmarkConfigSelected(bm.id, argStr)) return;
                     const configRow = document.createElement('div');
                     configRow.style.display = 'flex';
@@ -328,8 +330,8 @@
                     configRow.style.fontSize = '0.8rem';
                     configRow.style.color = 'var(--text-secondary)';
                     const configText = document.createElement('span');
-                    configText.textContent = argStr.length > 60 ? argStr.slice(0, 57) + '...' : argStr;
-                    configText.title = argStr;
+                    configText.textContent = displayLabel.length > 60 ? displayLabel.slice(0, 57) + '...' : displayLabel;
+                    configText.title = argStr !== undefined && argStr !== null ? String(argStr) : displayLabel;
                     configText.style.flex = '1';
                     configText.style.minWidth = 0;
                     configText.style.marginRight = '0.5rem';
@@ -394,7 +396,7 @@
                         const bm = bmMap.get(String(b.id));
                         if (!bm) return false;
                         if (b.args == null) return true;
-                        return (bm.configs || []).indexOf(b.args) !== -1;
+                        return (bm.configs || []).some(c => (typeof c === 'string' ? c : c.value) === b.args);
                     });
                     renderBenchmarkPanel();
                     renderSelectedBenchmarks();
@@ -552,7 +554,8 @@
                 const sep = ' — ';
                 const idx = compGroup.title.indexOf(sep);
                 const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
-                const args = idx >= 0 ? compGroup.title.slice(idx + sep.length) : '';
+                const args = compGroup.args !== undefined ? compGroup.args : (idx >= 0 ? compGroup.title.slice(idx + sep.length) : '');
+                const argsLabel = compGroup.args_label != null && compGroup.args_label !== '' ? compGroup.args_label : null;
                 const valuesBySystem = {};
                 primary.traces.forEach(t => {
                     const v = Array.isArray(t.y) ? t.y[0] : t.y;
@@ -567,7 +570,7 @@
                         configs: []
                     });
                 }
-                byKey.get(benchmarkName).configs.push({ args, group: compGroup, valuesBySystem });
+                byKey.get(benchmarkName).configs.push({ args, args_label: argsLabel, group: compGroup, valuesBySystem });
             });
             return Array.from(byKey.values());
         }
@@ -620,6 +623,15 @@
             }
 
             const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            const configLabelsMap = {};
+            (availableBenchmarks || []).forEach(bm => {
+                configLabelsMap[bm.label] = {};
+                (bm.configs || []).forEach(c => {
+                    const val = typeof c === 'string' ? c : c.value;
+                    const lbl = typeof c === 'string' ? c : (c.label || c.value);
+                    configLabelsMap[bm.label][val] = lbl;
+                });
+            });
             if (!benchmarkGroups.length) {
                 chartsContainer.appendChild(Object.assign(document.createElement('div'), {
                     textContent: 'No data successfully plotted.',
@@ -841,7 +853,12 @@
                         optWrap.style.marginTop = '1rem';
                         const optHeader = document.createElement('div');
                         optHeader.style.cssText = 'padding:0.4rem 0.5rem;background:rgba(255,255,255,0.05);border-radius:4px;cursor:pointer;font-size:0.85rem;margin-bottom:0.25rem;';
-                        optHeader.textContent = (config.args && config.args.length > 80) ? config.args.slice(0, 77) + '...' : (config.args || 'Option ' + (cIdx + 1));
+                        const optLabel = (config.args_label != null && config.args_label !== '')
+                            ? config.args_label
+                            : (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined)
+                                ? configLabelsMap[bGroup.benchmarkName][config.args]
+                                : (config.args && config.args.length > 80) ? config.args.slice(0, 77) + '...' : (config.args || 'Option ' + (cIdx + 1));
+                        optHeader.textContent = (optLabel && optLabel.length > 80) ? optLabel.slice(0, 77) + '...' : (optLabel || 'Option ' + (cIdx + 1));
                         const optBody = document.createElement('div');
                         optBody.style.display = 'none';
                         optBody.style.paddingLeft = '0.75rem';
