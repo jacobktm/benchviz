@@ -759,12 +759,8 @@
             currentComparisonGroups.forEach(compGroup => {
                 const primaryCharts = (compGroup.charts || []).filter(c => c.is_primary);
                 if (!primaryCharts.length || !primaryCharts[0].traces || !primaryCharts[0].traces.length) return;
-                // Prefer MB/s as the aggregate metric when multiple primary
-                // charts exist (e.g. FIO reports both MB/s and IOPS). Fall
-                // back to the first primary chart otherwise.
-                let primary = primaryCharts[0];
-                const preferredPrimary = primaryCharts.find(c => (c.scale || '').toLowerCase().includes('mb/s'));
-                if (preferredPrimary) primary = preferredPrimary;
+                // Use the first primary result for wins/losses and composite (API returns primaries in definition order).
+                const primary = primaryCharts[0];
                 const sep = ' — ';
                 const idx = compGroup.title.indexOf(sep);
                 const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;

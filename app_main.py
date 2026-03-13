@@ -580,7 +580,8 @@ def api_compare():
             primary_benchmarks = Benchmark.query.filter(
                 Benchmark.id.in_(by_bm_id.keys())
             ).all()
-            for bm in sorted(primary_benchmarks, key=lambda x: (x.scale or "", x.description or "")):
+            # Keep primary charts in definition order (e.g. first in XML = first) so wins/losses use the first result.
+            for bm in sorted(primary_benchmarks, key=lambda x: x.id):
                 results_for_bm = by_bm_id.get(bm.id, [])
                 if not results_for_bm:
                     continue
