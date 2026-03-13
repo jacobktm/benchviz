@@ -607,14 +607,14 @@ def api_compare():
 
             for s_bm in sensors:
                 s_traces = []
-                sensor_bm_ids = [s.id for s in sensors]
                 for sys_id in sys_args_map:
                     target_args = sys_args_map[sys_id]
                     system = db.session.get(System, sys_id)
 
+                    # Fetch results for this system and this sensor only (s_bm.id), not all sensors.
                     all_s_res = BenchmarkResult.query.filter(
                         BenchmarkResult.system_id == sys_id,
-                        BenchmarkResult.benchmark_id.in_(sensor_bm_ids),
+                        BenchmarkResult.benchmark_id == s_bm.id,
                     ).all()
                     # Match sensor results to this exact primary run by arguments (exact match
                     # so we don't attach another run's sensor data, e.g. wrong temps).
