@@ -39,18 +39,15 @@
             </div>
         </div>
 
-        <!-- Step 2: Select Benchmarks (dropdown + chips) -->
+        <!-- Step 2: Select Benchmarks (expandable list + chips) -->
         <div>
             <h3 style="margin-bottom: 1rem; color: #fff;">2. Select Benchmarks</h3>
             <p class="card-meta" id="benchmarkHelperText" style="margin-bottom: 0.75rem;">
-                Select one or more benchmarks shared by the chosen systems.
+                Select one or more benchmarks shared by the chosen systems. Expand a benchmark to choose specific configurations.
             </p>
 
-            <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
-                <select id="benchmarkSelect" style="flex: 1;" disabled>
-                    <option value="">-- Select at least one system first --</option>
-                </select>
-                <button type="button" id="addBenchmarkBtn" class="btn-primary-sm" disabled>Add</button>
+            <div id="benchmarkPanel" class="glass" style="max-height: 280px; overflow-y: auto; padding: 0.75rem; border-radius: 8px; margin-bottom: 0.75rem;">
+                <span id="benchmarkPanelPlaceholder" style="color: var(--text-secondary); font-size: 0.85rem;">Select at least one system first.</span>
             </div>
 
             <div id="selectedBenchmarks" class="glass" style="min-height: 48px; padding: 0.75rem 1rem; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 0.5rem;">
@@ -86,6 +83,7 @@
 
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         const systemSelect = document.getElementById('systemSelect');
@@ -93,8 +91,8 @@
         const selectedSystemsEl = document.getElementById('selectedSystems');
         const noSystemsSelectedEl = document.getElementById('noSystemsSelected');
 
-        const benchmarkSelect = document.getElementById('benchmarkSelect');
-        const addBenchmarkBtn = document.getElementById('addBenchmarkBtn');
+        const benchmarkPanel = document.getElementById('benchmarkPanel');
+        const benchmarkPanelPlaceholder = document.getElementById('benchmarkPanelPlaceholder');
         const selectedBenchmarksEl = document.getElementById('selectedBenchmarks');
         const noBenchmarksSelectedEl = document.getElementById('noBenchmarksSelected');
         const benchmarkHelperText = document.getElementById('benchmarkHelperText');
@@ -107,6 +105,10 @@
         const chartTitle = document.getElementById('chartTitle');
         const configureAccordion = document.getElementById('configureAccordion');
 
+        if (window.Chart && window.ChartDataLabels) {
+            Chart.register(ChartDataLabels);
+        }
+
         const defaultColors = [
             '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
             '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
@@ -115,11 +117,44 @@
         let currentComparisonGroups = [];
         let globalToggleState = {};   // Sensor visibility across all charts
         let selectedSystems = [];     // { id, shortName, primaryName, label }
-        let selectedBenchmarks = [];  // { id, label }
-        let availableBenchmarks = []; // from /api/common_benchmarks
+        let selectedBenchmarks = [];  // { id, label, args } — args null = whole benchmark
+        let availableBenchmarks = []; // from /api/common_benchmarks (each has .configs)
+
+        // Capture all system options up-front so we can rebuild the dropdown
+        // and hide already-selected systems.
+        const allSystemOptions = Array.from(systemSelect.options)
+            .filter(opt => opt.value)
+            .map(opt => ({
+                value: opt.value,
+                text: opt.textContent,
+                shortName: opt.dataset.shortName || '',
+                primaryName: opt.dataset.primaryName || '',
+                label: opt.dataset.label || ''
+            }));
 
         function refreshGenerateButtonState() {
             generateBtn.disabled = !(selectedSystems.length > 0 && selectedBenchmarks.length > 0);
+        }
+
+        function refreshSystemSelectOptions() {
+            const selectedIds = new Set(selectedSystems.map(s => String(s.id)));
+            systemSelect.innerHTML = '';
+
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '-- Choose a system profile --';
+            systemSelect.appendChild(placeholder);
+
+            allSystemOptions.forEach(sys => {
+                if (selectedIds.has(String(sys.value))) return;
+                const opt = document.createElement('option');
+                opt.value = sys.value;
+                opt.textContent = sys.text;
+                opt.dataset.shortName = sys.shortName;
+                opt.dataset.primaryName = sys.primaryName;
+                opt.dataset.label = sys.label;
+                systemSelect.appendChild(opt);
+            });
         }
 
         function renderSelectedSystems() {
@@ -147,7 +182,12 @@
                 btn.style.color = 'inherit';
                 btn.style.cursor = 'pointer';
                 btn.addEventListener('click', async () => {
+                    // Update internal selection state
                     selectedSystems = selectedSystems.filter(s => s.id !== sys.id);
+                    // Immediately refresh UI chips and dropdown options
+                    renderSelectedSystems();
+                    refreshSystemSelectOptions();
+                    // Then update dependent benchmark options
                     await syncBenchmarkOptions();
                 });
 
@@ -171,7 +211,7 @@
                 chip.style.display = 'inline-flex';
                 chip.style.alignItems = 'center';
                 chip.style.gap = '0.4rem';
-                chip.textContent = bm.label;
+                chip.textContent = bm.args ? `${bm.label}: ${bm.args}` : bm.label;
 
                 const btn = document.createElement('button');
                 btn.type = 'button';
@@ -181,7 +221,11 @@
                 btn.style.color = 'inherit';
                 btn.style.cursor = 'pointer';
                 btn.addEventListener('click', async () => {
-                    selectedBenchmarks = selectedBenchmarks.filter(b => b.id !== bm.id);
+                    selectedBenchmarks = selectedBenchmarks.filter(b =>
+                        String(b.id) !== String(bm.id) || b.args !== bm.args
+                    );
+                    renderSelectedBenchmarks();
+                    renderBenchmarkPanel();
                     await syncSystemConstraints();
                 });
 
@@ -190,44 +234,141 @@
             });
         }
 
-        function populateBenchmarkSelect() {
-            benchmarkSelect.innerHTML = '';
+        const expandedBenchmarkIds = new Set();
+
+        function isBenchmarkConfigSelected(bmId, args) {
+            return selectedBenchmarks.some(b =>
+                String(b.id) === String(bmId) && b.args === args
+            );
+        }
+
+        function addBenchmarkConfig(bmId, label, args) {
+            if (isBenchmarkConfigSelected(bmId, args)) return;
+            selectedBenchmarks.push({ id: String(bmId), label, args: args || null });
+            expandedBenchmarkIds.add(String(bmId));
+            renderSelectedBenchmarks();
+            renderBenchmarkPanel();
+            syncSystemConstraints();
+            refreshGenerateButtonState();
+        }
+
+        function renderBenchmarkPanel() {
+            benchmarkPanel.innerHTML = '';
             if (!availableBenchmarks.length) {
-                const opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = selectedSystems.length
-                    ? 'No common benchmarks for current systems'
-                    : '-- Select at least one system first --';
-                benchmarkSelect.appendChild(opt);
-                benchmarkSelect.disabled = true;
-                addBenchmarkBtn.disabled = true;
+                benchmarkPanelPlaceholder.textContent = selectedSystems.length
+                    ? 'No common benchmarks for current systems.'
+                    : 'Select at least one system first.';
+                benchmarkPanel.appendChild(benchmarkPanelPlaceholder);
                 return;
             }
-
-            const placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.textContent = '-- Choose a benchmark suite --';
-            benchmarkSelect.appendChild(placeholder);
+            benchmarkPanelPlaceholder.remove();
 
             availableBenchmarks.forEach(bm => {
-                const opt = document.createElement('option');
-                opt.value = String(bm.id);
-                opt.textContent = bm.label;
-                benchmarkSelect.appendChild(opt);
-            });
+                if (isBenchmarkConfigSelected(bm.id, null)) return;
 
-            benchmarkSelect.disabled = false;
-            addBenchmarkBtn.disabled = false;
+                const row = document.createElement('div');
+                row.style.marginBottom = '0.5rem';
+                const header = document.createElement('div');
+                header.style.display = 'flex';
+                header.style.alignItems = 'center';
+                header.style.gap = '0.5rem';
+                header.style.cursor = 'pointer';
+                header.style.padding = '0.35rem 0.5rem';
+                header.style.borderRadius = '4px';
+                header.style.background = 'rgba(255,255,255,0.03)';
+                const arrow = document.createElement('span');
+                arrow.className = 'bm-toggle';
+                arrow.textContent = expandedBenchmarkIds.has(String(bm.id)) ? '▾' : '▸';
+                arrow.style.fontSize = '0.85rem';
+                const labelSpan = document.createElement('span');
+                labelSpan.textContent = bm.label;
+                labelSpan.style.fontSize = '0.9rem';
+                header.appendChild(arrow);
+                header.appendChild(labelSpan);
+
+                const body = document.createElement('div');
+                body.className = 'bm-configs';
+                body.style.display = expandedBenchmarkIds.has(String(bm.id)) ? 'block' : 'none';
+                body.style.paddingLeft = '1.25rem';
+                body.style.paddingTop = '0.35rem';
+                body.style.paddingBottom = '0.35rem';
+
+                if (!isBenchmarkConfigSelected(bm.id, null)) {
+                    const allRow = document.createElement('div');
+                    allRow.style.display = 'flex';
+                    allRow.style.alignItems = 'center';
+                    allRow.style.justifyContent = 'space-between';
+                    allRow.style.marginBottom = '0.25rem';
+                    allRow.style.fontSize = '0.85rem';
+                    const allText = document.createElement('span');
+                    allText.textContent = 'All configurations';
+                    const allBtn = document.createElement('button');
+                    allBtn.type = 'button';
+                    allBtn.textContent = 'Add';
+                    allBtn.className = 'btn-primary-sm';
+                    allBtn.style.padding = '0.2rem 0.5rem';
+                    allBtn.style.fontSize = '0.8rem';
+                    allBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        addBenchmarkConfig(bm.id, bm.label, null);
+                    });
+                    allRow.appendChild(allText);
+                    allRow.appendChild(allBtn);
+                    body.appendChild(allRow);
+                }
+
+                (bm.configs || []).forEach(argStr => {
+                    if (isBenchmarkConfigSelected(bm.id, argStr)) return;
+                    const configRow = document.createElement('div');
+                    configRow.style.display = 'flex';
+                    configRow.style.alignItems = 'center';
+                    configRow.style.justifyContent = 'space-between';
+                    configRow.style.marginBottom = '0.2rem';
+                    configRow.style.fontSize = '0.8rem';
+                    configRow.style.color = 'var(--text-secondary)';
+                    const configText = document.createElement('span');
+                    configText.textContent = argStr.length > 60 ? argStr.slice(0, 57) + '...' : argStr;
+                    configText.style.flex = '1';
+                    configText.style.minWidth = 0;
+                    configText.style.marginRight = '0.5rem';
+                    const configBtn = document.createElement('button');
+                    configBtn.type = 'button';
+                    configBtn.textContent = 'Add';
+                    configBtn.className = 'btn-primary-sm';
+                    configBtn.style.padding = '0.2rem 0.5rem';
+                    configBtn.style.fontSize = '0.8rem';
+                    configBtn.style.flexShrink = 0;
+                    configBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        addBenchmarkConfig(bm.id, bm.label, argStr);
+                    });
+                    configRow.appendChild(configText);
+                    configRow.appendChild(configBtn);
+                    body.appendChild(configRow);
+                });
+
+                header.addEventListener('click', () => {
+                    const open = body.style.display !== 'none';
+                    body.style.display = open ? 'none' : 'block';
+                    arrow.textContent = open ? '▸' : '▾';
+                    if (open) expandedBenchmarkIds.delete(String(bm.id));
+                    else expandedBenchmarkIds.add(String(bm.id));
+                });
+
+                row.appendChild(header);
+                row.appendChild(body);
+                benchmarkPanel.appendChild(row);
+            });
         }
 
         async function syncBenchmarkOptions() {
             if (!selectedSystems.length) {
                 availableBenchmarks = [];
                 selectedBenchmarks = [];
-                populateBenchmarkSelect();
+                renderBenchmarkPanel();
                 renderSelectedBenchmarks();
                 refreshGenerateButtonState();
-                benchmarkHelperText.textContent = 'Select one or more benchmarks shared by the chosen systems.';
+                benchmarkHelperText.textContent = 'Select one or more benchmarks shared by the chosen systems. Expand a benchmark to choose specific configurations.';
                 return;
             }
 
@@ -241,26 +382,31 @@
                 if (data.error) {
                     availableBenchmarks = [];
                     selectedBenchmarks = [];
-                    populateBenchmarkSelect();
+                    renderBenchmarkPanel();
                     renderSelectedBenchmarks();
                     benchmarkHelperText.textContent = data.error;
                 } else {
                     availableBenchmarks = data.benchmarks || [];
-                    const validIds = new Set(availableBenchmarks.map(b => String(b.id)));
-                    selectedBenchmarks = selectedBenchmarks.filter(b => validIds.has(String(b.id)));
-                    populateBenchmarkSelect();
+                    const bmMap = new Map(availableBenchmarks.map(b => [String(b.id), b]));
+                    selectedBenchmarks = selectedBenchmarks.filter(b => {
+                        const bm = bmMap.get(String(b.id));
+                        if (!bm) return false;
+                        if (b.args == null) return true;
+                        return (bm.configs || []).indexOf(b.args) !== -1;
+                    });
+                    renderBenchmarkPanel();
                     renderSelectedBenchmarks();
 
                     if (selectedSystems.length === 1) {
-                        benchmarkHelperText.textContent = 'All benchmarks recorded on this system are available.';
+                        benchmarkHelperText.textContent = 'All benchmarks recorded on this system are available. Expand to pick configurations.';
                     } else {
-                        benchmarkHelperText.textContent = 'Only benchmarks common to all selected systems are shown.';
+                        benchmarkHelperText.textContent = 'Only benchmarks common to all selected systems are shown. Expand to pick configurations.';
                     }
                 }
             } catch (err) {
                 console.error(err);
                 availableBenchmarks = [];
-                populateBenchmarkSelect();
+                renderBenchmarkPanel();
                 benchmarkHelperText.textContent = 'Failed to load shared benchmarks.';
             } finally {
                 refreshGenerateButtonState();
@@ -279,6 +425,9 @@
                 for (const bm of selectedBenchmarks) {
                     const url = new URL('/api/systems_for_benchmark', window.location.origin);
                     url.searchParams.append('benchmark_id', bm.id);
+                    if (bm.args != null && bm.args !== '') {
+                        url.searchParams.append('args', bm.args);
+                    }
                     const resp = await fetch(url.toString());
                     const data = await resp.json();
                     if (data.error) continue;
@@ -298,6 +447,7 @@
 
                 selectedSystems = selectedSystems.filter(s => allowed.has(String(s.id)));
                 renderSelectedSystems();
+                refreshSystemSelectOptions();
                 await syncBenchmarkOptions();
             } catch (err) {
                 console.error(err);
@@ -320,20 +470,8 @@
             };
             selectedSystems.push(sys);
             renderSelectedSystems();
+            refreshSystemSelectOptions();
             await syncBenchmarkOptions();
-        });
-
-        addBenchmarkBtn.addEventListener('click', async () => {
-            const val = benchmarkSelect.value;
-            if (!val) return;
-            if (selectedBenchmarks.some(b => String(b.id) === String(val))) return;
-
-            const bm = availableBenchmarks.find(b => String(b.id) === String(val));
-            if (!bm) return;
-
-            selectedBenchmarks.push({ id: String(bm.id), label: bm.label });
-            renderSelectedBenchmarks();
-            await syncSystemConstraints();
         });
 
         let activeCharts = [];
@@ -387,11 +525,32 @@
                 const groupHeader = document.createElement('h2');
                 groupHeader.textContent = compGroup.title;
                 groupHeader.style.color = 'var(--text-primary)';
-                groupHeader.style.marginBottom = '2rem';
+                groupHeader.style.marginBottom = '0.25rem';
                 groupHeader.style.textAlign = 'center';
                 groupWrapper.appendChild(groupHeader);
             
                 let primaryChartData = compGroup.charts.find(c => c.is_primary);
+
+                // Subtitle under the test name: better/worse direction and options
+                const subtitleParts = [];
+                if (primaryChartData && primaryChartData.proportion === 'HIB') {
+                    subtitleParts.push('Higher is better');
+                } else if (primaryChartData && primaryChartData.proportion === 'LIB') {
+                    subtitleParts.push('Lower is better');
+                }
+                if (primaryChartData && primaryChartData.options && primaryChartData.options.length) {
+                    const optionsText = primaryChartData.options.join(' · ');
+                    subtitleParts.push(`Options: ${optionsText}`);
+                }
+                if (subtitleParts.length) {
+                    const subtitle = document.createElement('div');
+                    subtitle.textContent = subtitleParts.join(' — ');
+                    subtitle.style.color = 'var(--text-secondary)';
+                    subtitle.style.fontSize = '0.9rem';
+                    subtitle.style.marginBottom = '1.5rem';
+                    subtitle.style.textAlign = 'center';
+                    groupWrapper.appendChild(subtitle);
+                }
                                 
                 const primarySection = document.createElement('div');
                 primarySection.style.width = '100%';
@@ -424,14 +583,6 @@
                     } else {
                         secondarySection.appendChild(chartDiv);
                     }
-                    // Derive a human-friendly better-is direction when available
-                    let betterText = '';
-                    if (chartData.proportion === 'HIB') {
-                        betterText = ' (higher is better)';
-                    } else if (chartData.proportion === 'LIB') {
-                        betterText = ' (lower is better)';
-                    }
-
                     let chartInstance = null;
 
                     if (chartData.display_format === 'BAR_GRAPH') {
@@ -444,34 +595,35 @@
 
                         const bgColors = labels.map((_, i) => defaultColors[i % defaultColors.length]);
 
-                        // Keep the whole chart fairly compact while leaving room for labels
-                        const height = Math.max(90, labels.length * 26);
+                        // Keep the whole chart compact and derive height directly from
+                        // bar thickness + a very small fixed gap between bars.
+                        const BAR_THICKNESS = 30; // must stay in sync with dataset.barThickness
+                        const height = labels.length * (BAR_THICKNESS);
                         canvas.height = height;
+                        canvas.style.height = `${height}px`;
 
                         chartInstance = new Chart(canvas.getContext('2d'), {
                             type: 'bar',
                             data: {
                                 labels,
                                 datasets: [{
-                                    label: chartData.metric + betterText,
+                                    label: chartData.metric,
                                     data: values,
                                     backgroundColor: bgColors,
                                     borderRadius: 4,
-                                    // Slightly thicker bars than before (about 2x),
-                                    // still explicitly controlled in pixels.
-                                    barThickness: 20
+                                    // Final bar styling – fixed thickness, do not change.
+                                    barThickness: 30
                                 }]
                             },
                             options: {
                                 indexAxis: 'y',
-                                responsive: true,
-                                maintainAspectRatio: false,
+                                // Use explicit canvas height to tightly control spacing
                                 layout: {
                                     padding: {
-                                        top: 10,
-                                        bottom: 10,
+                                        top: 4,
+                                        bottom: 4,
                                         left: 0,
-                                        right: 16
+                                        right: 8
                                     }
                                 },
                                 scales: {
@@ -479,60 +631,155 @@
                                         title: { display: true, text: chartData.scale || '' }
                                     },
                                     y: {
-                                        title: { display: true, text: 'Systems' },
-                                        // Slightly tighten vertical spacing between bars
-                                        categoryPercentage: 0.6,
-                                        barPercentage: 0.8
+                                        title: { display: true, text: 'Systems' }
                                     }
                                 },
                                 plugins: {
                                     legend: { display: false },
-                                    tooltip: { mode: 'index', intersect: false }
+                                    tooltip: { mode: 'index', intersect: false },
+                                    datalabels: {
+                                        anchor: 'center',
+                                        align: 'center',
+                                        color: '#ffffff',
+                                        font: {
+                                            size: 11,
+                                            weight: '600'
+                                        },
+                                        formatter: (value) => {
+                                            if (value === null || value === undefined || isNaN(value)) return '';
+                                            return Number(value).toFixed(2);
+                                        },
+                                        clip: true
+                                    }
                                 }
                             }
                         });
                     } else if (chartData.display_format === 'LINE_GRAPH') {
-                        const firstTrace = chartData.traces[0] || {};
-                        const labels = (firstTrace.x && firstTrace.x.length)
-                            ? firstTrace.x.map((_, idx) => idx)
-                            : (firstTrace.y || []).map((_, idx) => idx);
+                        // Compact stats table by default, with optional expandable time series.
+                        canvas.style.display = 'none';
 
-                        const datasets = chartData.traces.map((trace, i) => ({
-                            label: trace.name,
-                            data: trace.y || [],
-                            borderColor: defaultColors[i % defaultColors.length],
-                            backgroundColor: 'rgba(0,0,0,0)',
-                            tension: 0.1,
-                            pointRadius: 0,
-                            borderWidth: 2
-                        }));
+                        const statsWrapper = document.createElement('div');
+                        statsWrapper.style.marginTop = '0.35rem';
+                        statsWrapper.style.padding = '0.4rem 0.75rem';
+                        statsWrapper.style.background = 'rgba(0,0,0,0.25)';
+                        statsWrapper.style.borderRadius = '8px';
+                        statsWrapper.style.fontSize = '0.8rem';
 
-                        canvas.height = chartData.is_primary ? 260 : 220;
+                        let statsHtml = `
+                            <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                                <thead>
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.08);">
+                                        <th style="padding: 0.25rem 0.4rem;">System</th>
+                                        <th style="padding: 0.25rem 0.4rem;">Min</th>
+                                        <th style="padding: 0.25rem 0.4rem;">25%</th>
+                                        <th style="padding: 0.25rem 0.4rem;">Median</th>
+                                        <th style="padding: 0.25rem 0.4rem;">75%</th>
+                                        <th style="padding: 0.25rem 0.4rem;">Max</th>
+                                        <th style="padding: 0.25rem 0.4rem;">Mean</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                        `;
 
-                        chartInstance = new Chart(canvas.getContext('2d'), {
-                            type: 'line',
-                            data: {
-                                labels,
-                                datasets
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                interaction: {
-                                    mode: 'index',
-                                    intersect: false
-                                },
-                                scales: {
-                                    x: {
-                                        title: { display: true, text: 'Samples' }
-                                    },
-                                    y: {
-                                        title: { display: true, text: chartData.scale || '' }
+                        chartData.traces.forEach(trace => {
+                            const s = trace.stats || {};
+                            const fmt = v => (v === undefined || v === null || isNaN(v)) ? '' : Number(v).toFixed(2);
+                            statsHtml += `
+                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+                                    <td style="padding: 0.25rem 0.4rem; color: var(--text-primary);">${trace.name}</td>
+                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.min)}</td>
+                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.q1)}</td>
+                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace; color: var(--accent); font-weight: 600;">${fmt(s.median)}</td>
+                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.q3)}</td>
+                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.max)}</td>
+                                    <td style="padding: 0.25rem 0.4rem; font-family: monospace;">${fmt(s.mean)}</td>
+                                </tr>
+                            `;
+                        });
+
+                        statsHtml += `
+                                </tbody>
+                            </table>
+                        `;
+
+                        statsWrapper.innerHTML = statsHtml;
+                        chartDiv.appendChild(statsWrapper);
+
+                        // Optional expandable time-series line chart for this sensor metric.
+                        const lineToggle = document.createElement('button');
+                        lineToggle.type = 'button';
+                        lineToggle.textContent = 'Show time series';
+                        lineToggle.style.alignSelf = 'flex-end';
+                        lineToggle.style.marginTop = '0.35rem';
+                        lineToggle.style.padding = '0.2rem 0.6rem';
+                        lineToggle.style.fontSize = '0.75rem';
+                        lineToggle.style.borderRadius = '999px';
+                        lineToggle.style.border = '1px solid rgba(255,255,255,0.15)';
+                        lineToggle.style.background = 'rgba(0,0,0,0.3)';
+                        lineToggle.style.color = 'var(--text-secondary)';
+                        lineToggle.style.cursor = 'pointer';
+
+                        const lineContainer = document.createElement('div');
+                        lineContainer.style.display = 'none';
+                        lineContainer.style.marginTop = '0.5rem';
+                        lineContainer.style.width = '100%';
+                        lineContainer.style.height = '480px';
+
+                        const lineCanvas = document.createElement('canvas');
+                        lineCanvas.style.width = '100%';
+                        lineContainer.appendChild(lineCanvas);
+
+                        chartDiv.appendChild(lineToggle);
+                        chartDiv.appendChild(lineContainer);
+
+                        let lineChartInstance = null;
+
+                        lineToggle.addEventListener('click', () => {
+                            const opening = lineContainer.style.display === 'none';
+                            if (opening) {
+                                const firstTrace = chartData.traces[0] || {};
+                                const labels = (firstTrace.x && firstTrace.x.length)
+                                    ? firstTrace.x.map((_, idx) => idx)
+                                    : (firstTrace.y || []).map((_, idx) => idx);
+
+                                const datasets = chartData.traces.map((trace, i) => ({
+                                    label: trace.name,
+                                    data: trace.y || [],
+                                    borderColor: defaultColors[i % defaultColors.length],
+                                    backgroundColor: 'rgba(0,0,0,0)',
+                                    tension: 0.1,
+                                    pointRadius: 0,
+                                    borderWidth: 2
+                                }));
+
+                                lineChartInstance = new Chart(lineCanvas.getContext('2d'), {
+                                    type: 'line',
+                                    data: { labels, datasets },
+                                    options: {
+                                        responsive: true,
+                                        maintainAspectRatio: false,
+                                        interaction: { mode: 'index', intersect: false },
+                                        scales: {
+                                            x: { title: { display: true, text: 'Samples' } },
+                                            y: { title: { display: true, text: chartData.scale || '' } }
+                                        },
+                                        plugins: {
+                                            legend: { display: true, position: 'bottom' },
+                                            datalabels: { display: false }
+                                        }
                                     }
-                                },
-                                plugins: {
-                                    legend: { display: true, position: 'bottom' }
+                                });
+                                activeCharts.push(lineChartInstance);
+                                lineContainer.style.display = 'block';
+                                lineToggle.textContent = 'Hide time series';
+                            } else {
+                                if (lineChartInstance) {
+                                    try { lineChartInstance.destroy(); } catch (e) { console.error(e); }
+                                    activeCharts = activeCharts.filter(ch => ch !== lineChartInstance);
+                                    lineChartInstance = null;
                                 }
+                                lineContainer.style.display = 'none';
+                                lineToggle.textContent = 'Show time series';
                             }
                         });
                     }
@@ -555,14 +802,13 @@
 
         generateBtn.addEventListener('click', async () => {
             const systemIds = selectedSystems.map(s => s.id);
-            const benchmarkIds = selectedBenchmarks.map(b => b.id);
 
             if (!systemIds.length) {
                 alert("Please select at least one system to compare.");
                 return;
             }
-            if (!benchmarkIds.length) {
-                alert("Please select at least one benchmark.");
+            if (!selectedBenchmarks.length) {
+                alert("Please select at least one benchmark or configuration.");
                 return;
             }
 
@@ -571,7 +817,11 @@
 
             try {
                 const url = new URL('/api/compare', window.location.origin);
-                benchmarkIds.forEach(id => url.searchParams.append('benchmark_id', id));
+                selectedBenchmarks.forEach(b => {
+                    const config = b.args != null && b.args !== ''
+                        ? `${b.id}|${b.args}` : String(b.id);
+                    url.searchParams.append('config', config);
+                });
                 systemIds.forEach(id => url.searchParams.append('system_ids', id));
 
                 const response = await fetch(url.toString());

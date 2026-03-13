@@ -445,15 +445,38 @@ def compare():
 
 @app.route('/api/compare')
 def api_compare():
-    benchmark_ids = request.args.getlist('benchmark_id')
     system_ids = request.args.getlist('system_ids')
-    
-    if not benchmark_ids or not system_ids:
-        return {"error": "Missing benchmark_id or system_ids parameter(s)"}, 400
-        
+    config_params = request.args.getlist('config')
+    benchmark_ids = request.args.getlist('benchmark_id')
+
+    if not system_ids:
+        return {"error": "Missing system_ids parameter(s)"}, 400
+
+    # Build list of (benchmark_id, args_filter). args_filter None = all configs (first per system).
+    config_list = []
+    if config_params:
+        for c in config_params:
+            part = (c or "").strip()
+            if "|" in part:
+                b_id_str, args_str = part.split("|", 1)
+                args_str = args_str.strip() or None
+                config_list.append((b_id_str, args_str))
+            else:
+                config_list.append((part.strip(), None))
+    elif benchmark_ids:
+        for b_id in benchmark_ids:
+            config_list.append((b_id, None))
+
+    if not config_list:
+        return {"error": "Missing benchmark_id or config parameter(s)"}, 400
+
     comparison_groups = []
-        
-    for b_id in benchmark_ids:
+
+    for b_id, args_filter in config_list:
+        try:
+            b_id = int(b_id)
+        except (ValueError, TypeError):
+            continue
         primary_benchmark = Benchmark.query.get(b_id)
         if not primary_benchmark:
             continue
@@ -462,21 +485,31 @@ def api_compare():
         primary_traces = []
         sys_args_map = {}
         system_details = []
-        
+        primary_args_set = set()
+
         for sys_id in system_ids:
+            try:
+                sys_id = int(sys_id)
+            except (ValueError, TypeError):
+                continue
             system = System.query.get(sys_id)
             if not system:
                 continue
-                
-            prim_res = BenchmarkResult.query.filter_by(
-                system_id=sys_id, 
+
+            q = BenchmarkResult.query.filter_by(
+                system_id=sys_id,
                 benchmark_id=primary_benchmark.id
-            ).first()
-            
+            )
+            if args_filter is not None:
+                q = q.filter(BenchmarkResult.arguments == args_filter)
+            prim_res = q.first()
+
             if not prim_res:
                 continue
-            
+
             sys_args_map[sys_id] = prim_res.arguments
+            if prim_res.arguments:
+                primary_args_set.add(prim_res.arguments.strip())
             
             system_label = format_system_profile_label(system)
             short_name = system.identifier
@@ -513,6 +546,7 @@ def api_compare():
                 "scale": primary_benchmark.scale,
                 "display_format": primary_benchmark.display_format,
                 "proportion": primary_benchmark.proportion,
+                "options": sorted(primary_args_set),
                 "traces": primary_traces,
                 "is_primary": True
             })
@@ -526,9 +560,7 @@ def api_compare():
         
         for s_bm in sensors:
             s_traces = []
-            for sys_id in system_ids:
-                if sys_id not in sys_args_map:
-                    continue
+            for sys_id in sys_args_map:
                 target_args = sys_args_map[sys_id]
                 system = System.query.get(sys_id)
                 
@@ -559,12 +591,21 @@ def api_compare():
                     if y_data:
                         clean_y = [val for val in y_data if isinstance(val, (int, float))]
                         if clean_y:
-                            trace["stats"] = {
+                            stats_dict = {
                                 "min": min(clean_y),
                                 "max": max(clean_y),
                                 "mean": statistics.mean(clean_y),
                                 "median": statistics.median(clean_y)
                             }
+                            # Best-effort quartiles (25th/75th percentile)
+                            try:
+                                qs = statistics.quantiles(clean_y, n=4, method="inclusive")
+                                if len(qs) >= 3:
+                                    stats_dict["q1"] = qs[0]
+                                    stats_dict["q3"] = qs[2]
+                            except (statistics.StatisticsError, ValueError):
+                                pass
+                            trace["stats"] = stats_dict
                     
                 s_traces.append(trace)
             
@@ -591,8 +632,11 @@ def api_compare():
         
         if charts:
             charts.sort(key=lambda x: not x["is_primary"])
+            title = f"{primary_benchmark.title} ({primary_benchmark.app_version})"
+            if args_filter:
+                title += f" — {args_filter}"
             comparison_groups.append({
-                "title": f"{primary_benchmark.title} ({primary_benchmark.app_version})",
+                "title": title,
                 "charts": charts,
                 "system_details": system_details
             })
@@ -636,21 +680,31 @@ def api_common_benchmarks():
     if common_bms is None:
         common_bms = set()
 
-    # Form response based on the common abstract suite key
-    # We just need to return ONE benchmark ID per shared suite that frontend can query /api/compare with 
-    # to extract all relevant specific argument variations underneath that suite.
-    
+    # Form response based on the common abstract suite key.
+    # Include distinct arguments (configurations) per benchmark for the selected systems.
+    try:
+        sys_id_ints = [int(s) for s in system_ids]
+    except (ValueError, TypeError):
+        sys_id_ints = system_ids
+
     unique_common_suites = {}
     for key, bm_id in common_bms:
         if key not in unique_common_suites:
             id_str = f" [{key[2]}]" if key[2] else ""
+            # Distinct configurations (arguments) for this benchmark in selected systems
+            config_rows = db.session.query(BenchmarkResult.arguments).filter(
+                BenchmarkResult.benchmark_id == bm_id,
+                BenchmarkResult.system_id.in_(sys_id_ints)
+            ).distinct().all()
+            configs = [r[0] or "" for r in config_rows if (r[0] or "").strip()]
             unique_common_suites[key] = {
                 'id': bm_id,
-                'label': f"{key[0]} ({key[1]}){id_str}"
+                'label': f"{key[0]} ({key[1]}){id_str}",
+                'configs': configs
             }
-            
+
     output_list = sorted(list(unique_common_suites.values()), key=lambda x: x['label'])
-    
+
     return {"benchmarks": output_list}
 
 @app.route('/insights')
@@ -662,10 +716,19 @@ def insights():
 @app.route('/api/systems_for_benchmark')
 def api_systems_for_benchmark():
     benchmark_id = request.args.get('benchmark_id')
+    args_filter = request.args.get('args')
     if not benchmark_id:
         return {"error": "Missing benchmark_id parameter"}, 400
-        
-    results = BenchmarkResult.query.filter_by(benchmark_id=benchmark_id).all()
+
+    try:
+        benchmark_id = int(benchmark_id)
+    except (ValueError, TypeError):
+        return {"error": "Invalid benchmark_id"}, 400
+
+    q = BenchmarkResult.query.filter_by(benchmark_id=benchmark_id)
+    if args_filter is not None and args_filter != "":
+        q = q.filter(BenchmarkResult.arguments == args_filter)
+    results = q.all()
     sys_ids = list(set(r.system_id for r in results))
     
     systems = System.query.filter(System.id.in_(sys_ids)).all()
