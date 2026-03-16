@@ -1094,6 +1094,8 @@
             if (!panelPromises.length) return;
 
             Promise.all(panelPromises).then(panels => {
+                const sensorsOnly = !opts.showBenchmarks && !opts.showOverallComposite && !opts.showOverallWinsLosses && sensorSummaries.length > 0;
+
                 // Final slide canvas
                 // Grow width when there are many benchmarks/systems so labels don't feel cramped.
                 const baseWidth = 1920;
@@ -1102,11 +1104,23 @@
                 const extraWidthFromBenches = Math.max(0, benchSummaries.length - 8) * extraPerBenchmark;
                 const extraWidthFromSystems = Math.max(0, systems.length - 3) * extraPerSystem;
                 const slideWidth = baseWidth + extraWidthFromBenches + extraWidthFromSystems;
-                // Dynamically grow height when many sensor panels exist so nothing is clipped.
+
+                // Height: in mixed mode keep a generous base; in sensors-only mode,
+                // size tightly around the sensor grid to avoid large empty areas.
                 const sensorPanelCount = sensorSummaries.length;
-                const baseHeight = 1080;
-                const extraPerSensor = 140; // additional vertical space per sensor beyond 2
-                const slideHeight = baseHeight + Math.max(0, sensorPanelCount - 2) * extraPerSensor;
+                let slideHeight;
+                if (sensorsOnly) {
+                    const cols = 2;
+                    const rows = Math.ceil(panels.length / cols) || 1;
+                    const topMargin = 120; // title + legend
+                    const cellPadding = 40;
+                    const cellHeight = 260;
+                    slideHeight = topMargin + rows * cellHeight + (rows + 1) * cellPadding;
+                } else {
+                    const baseHeight = 1080;
+                    const extraPerSensor = 140; // additional vertical space per sensor beyond 2
+                    slideHeight = baseHeight + Math.max(0, sensorPanelCount - 2) * extraPerSensor;
+                }
                 const slide = document.createElement('canvas');
                 slide.width = slideWidth;
                 slide.height = slideHeight;
@@ -1140,75 +1154,97 @@
                 });
                 y += 46;
 
-                // Layout: main benchmark chart on left, overall + pies on right, sensors stacked below
-                let cursorX = 40;
-                let cursorY = y;
+                if (sensorsOnly) {
+                    // Sensors-only mode: draw sensor panels in a centered 2-column grid.
+                    const cols = 2;
+                    const rows = Math.ceil(panels.length / cols);
+                    const cellPadding = 40;
+                    const gridTop = y + 20;
+                    const cellWidth = (slideWidth - (cols + 1) * cellPadding) / cols;
+                    const cellHeight = 260;
 
-                const benchmarkPanel = panels.shift();
-                if (benchmarkPanel) {
-                    const targetW = 1120;
-                    const targetH = 420;
-                    ctx.drawImage(
-                        benchmarkPanel.canvas,
-                        0, 0, benchmarkPanel.canvas.width, benchmarkPanel.canvas.height,
-                        cursorX, cursorY, targetW, targetH
-                    );
-                }
-
-                let rightX = 1200;
-                let rightY = cursorY;
-
-                // Overall composite (if present)
-                if (opts.showOverallComposite && globalComposite && globalComposite.length) {
-                    const compPanel = panels.shift();
-                    if (compPanel) {
+                    panels.forEach((panel, idx) => {
+                        const row = Math.floor(idx / cols);
+                        const col = idx % cols;
+                        const x = cellPadding + col * (cellWidth + cellPadding);
+                        const y0 = gridTop + row * (cellHeight + cellPadding);
                         ctx.drawImage(
-                            compPanel.canvas,
-                            0, 0, compPanel.canvas.width, compPanel.canvas.height,
-                            rightX, rightY, 640, 260
+                            panel.canvas,
+                            0, 0, panel.canvas.width, panel.canvas.height,
+                            x, y0, cellWidth, cellHeight
                         );
-                        rightY += 270;
-                    }
-                }
-
-                // Wins/losses pies (two panels)
-                if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
-                    const winsPanel = panels.shift();
-                    const lossesPanel = panels.shift();
-                    const pieY = cursorY + 440;
-                    const pieSize = 260;
-                    if (winsPanel) {
-                        ctx.drawImage(
-                            winsPanel.canvas,
-                            0, 0, winsPanel.canvas.width, winsPanel.canvas.height,
-                            160, pieY, pieSize, pieSize
-                        );
-                    }
-                    if (lossesPanel) {
-                        ctx.drawImage(
-                            lossesPanel.canvas,
-                            0, 0, lossesPanel.canvas.width, lossesPanel.canvas.height,
-                            520, pieY, pieSize, pieSize
-                        );
-                    }
-                    cursorY = pieY + pieSize + 20;
+                    });
                 } else {
-                    cursorY = cursorY + 440;
-                }
+                    // Mixed mode: main benchmark chart on left, overall + pies on right, sensors stacked below
+                    let cursorX = 40;
+                    let cursorY = y;
 
-                // Sensor panels stacked on the right beneath composite
-                let sensorY = rightY;
-                panels.forEach(panel => {
-                    const targetW = 640;
-                    const targetH = 180;
-                    if (sensorY + targetH + 20 > slideHeight) return;
-                    ctx.drawImage(
-                        panel.canvas,
-                        0, 0, panel.canvas.width, panel.canvas.height,
-                        rightX, sensorY, targetW, targetH
-                    );
-                    sensorY += targetH + 12;
-                });
+                    const benchmarkPanel = panels.shift();
+                    if (benchmarkPanel) {
+                        const targetW = 1120;
+                        const targetH = 420;
+                        ctx.drawImage(
+                            benchmarkPanel.canvas,
+                            0, 0, benchmarkPanel.canvas.width, benchmarkPanel.canvas.height,
+                            cursorX, cursorY, targetW, targetH
+                        );
+                    }
+
+                    let rightX = 1200;
+                    let rightY = cursorY;
+
+                    // Overall composite (if present)
+                    if (opts.showOverallComposite && globalComposite && globalComposite.length) {
+                        const compPanel = panels.shift();
+                        if (compPanel) {
+                            ctx.drawImage(
+                                compPanel.canvas,
+                                0, 0, compPanel.canvas.width, compPanel.canvas.height,
+                                rightX, rightY, 640, 260
+                            );
+                            rightY += 270;
+                        }
+                    }
+
+                    // Wins/losses pies (two panels)
+                    if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
+                        const winsPanel = panels.shift();
+                        const lossesPanel = panels.shift();
+                        const pieY = cursorY + 440;
+                        const pieSize = 260;
+                        if (winsPanel) {
+                            ctx.drawImage(
+                                winsPanel.canvas,
+                                0, 0, winsPanel.canvas.width, winsPanel.canvas.height,
+                                160, pieY, pieSize, pieSize
+                            );
+                        }
+                        if (lossesPanel) {
+                            ctx.drawImage(
+                                lossesPanel.canvas,
+                                0, 0, lossesPanel.canvas.width, lossesPanel.canvas.height,
+                                520, pieY, pieSize, pieSize
+                            );
+                        }
+                        cursorY = pieY + pieSize + 20;
+                    } else {
+                        cursorY = cursorY + 440;
+                    }
+
+                    // Sensor panels stacked on the right beneath composite
+                    let sensorY = rightY;
+                    panels.forEach(panel => {
+                        const targetW = 640;
+                        const targetH = 180;
+                        if (sensorY + targetH + 20 > slideHeight) return;
+                        ctx.drawImage(
+                            panel.canvas,
+                            0, 0, panel.canvas.width, panel.canvas.height,
+                            rightX, sensorY, targetW, targetH
+                        );
+                        sensorY += targetH + 12;
+                    });
+                }
 
                 const dataUrl = slide.toDataURL('image/png');
                 console.log('[benchviz-export] Generated PNG data URL, length=', dataUrl.length);
