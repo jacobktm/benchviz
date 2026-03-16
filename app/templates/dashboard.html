@@ -19,12 +19,11 @@
 </style>
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% if messages %}
+    {% set category, message = messages[-1] %}
     <div class="animate-in delay-1">
-    {% for category, message in messages %}
       <div class="flash-message {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">
         {{ message }}
       </div>
-    {% endfor %}
     </div>
   {% endif %}
 {% endwith %}
