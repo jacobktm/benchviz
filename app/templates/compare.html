@@ -1093,7 +1093,8 @@
                                 ticks: { color: BAR_CHART_TICK_COLOR },
                                 title: {
                                     display: true,
-                                    text: 'Normalized sensor value (worst = 1.0; lower is better for temps/power)',
+                                    // Neutral wording so it applies to both HIB/LIB-style sensors.
+                                    text: 'Normalized sensor value (worst system = 1.0)',
                                     color: BAR_CHART_TICK_COLOR
                                 }
                             },
@@ -1109,17 +1110,22 @@
                                 font: { size: 14, weight: '600' }
                             },
                             datalabels: {
-                                anchor: 'end',
-                                align: 'left',
-                                // Sensor ratios are normalized using the worst system as
-                                // baseline (1.0). Values < 1.0 are better (cooler/less),
-                                // values > 1.0 are worse (hotter/more).
+                                anchor: 'center',
+                                align: 'center',
+                                // Show normalized value and relative percent vs worst baseline
+                                // together, centered inside each bar.
                                 formatter: (v) => {
-                                    if (v == null || isNaN(v) || v === 1) return '';
-                                    const pct = (Number(v) - 1) * 100;
-                                    if (!isFinite(pct)) return '';
+                                    if (v == null || isNaN(v)) return '';
+                                    const val = Number(v);
+                                    const base = '1.00';
+                                    const valStr = val.toFixed(2);
+                                    if (val === 1) {
+                                        return base; // baseline system
+                                    }
+                                    const pct = (val - 1) * 100;
+                                    if (!isFinite(pct)) return valStr;
                                     const sign = pct > 0 ? '+' : '';
-                                    return sign + pct.toFixed(1) + '%';
+                                    return `${valStr} (${sign}${pct.toFixed(1)}%)`;
                                 }
                             }
                         }
