@@ -1076,6 +1076,9 @@
             sensorSummaries.forEach(sensor => {
                 const labels = systems.slice();
                 const dataVals = systems.map((_, idx) => sensor.ratios[idx] || 0);
+                const axisDirectionText = sensor.HIB
+                    ? ' (higher is better)'
+                    : ' (lower is better)';
                 panelPromises.push(buildExportChart({
                     type: 'bar',
                     data: {
@@ -1093,8 +1096,7 @@
                                 ticks: { color: BAR_CHART_TICK_COLOR },
                                 title: {
                                     display: true,
-                                    // Neutral wording so it applies to both HIB/LIB-style sensors.
-                                    text: 'Normalized sensor value (worst system = 1.0)',
+                                    text: 'Normalized sensor value (worst system = 1.0)' + axisDirectionText,
                                     color: BAR_CHART_TICK_COLOR
                                 }
                             },
