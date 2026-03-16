@@ -1095,7 +1095,13 @@
 
             Promise.all(panelPromises).then(panels => {
                 // Final slide canvas
-                const slideWidth = 1920;
+                // Grow width when there are many benchmarks/systems so labels don't feel cramped.
+                const baseWidth = 1920;
+                const extraPerBenchmark = 60; // extra px per benchmark beyond 8
+                const extraPerSystem = 80;    // extra px per system beyond 3 (for legend / bars)
+                const extraWidthFromBenches = Math.max(0, benchSummaries.length - 8) * extraPerBenchmark;
+                const extraWidthFromSystems = Math.max(0, systems.length - 3) * extraPerSystem;
+                const slideWidth = baseWidth + extraWidthFromBenches + extraWidthFromSystems;
                 // Dynamically grow height when many sensor panels exist so nothing is clipped.
                 const sensorPanelCount = sensorSummaries.length;
                 const baseHeight = 1080;
