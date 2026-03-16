@@ -1371,48 +1371,45 @@
                         expandHeading.textContent = '▲ Individual options';
                     }
                 } else if (bGroup.configs.length === 1) {
-                    const anySensorOn = Object.values(globalToggleState).some(v => v === true);
-                    if (anySensorOn) {
-                        const sensorSection = document.createElement('div');
-                        sensorSection.style.marginTop = '1.5rem';
-                        const sensorHeading = document.createElement('div');
-                        sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;font-size:0.9rem;';
-                        sensorHeading.textContent = 'Sensor data';
-                        sensorSection.appendChild(sensorHeading);
-                        // Per-benchmark sensor toggles (hooked into globalToggleState)
-                        const benchmarkSensors = [];
-                        const firstGroupCharts = (bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts) || [];
-                        firstGroupCharts.forEach(c => {
-                            if (!c.is_primary && c.display_format === 'LINE_GRAPH' && c.metric) {
-                                if (!benchmarkSensors.includes(c.metric)) benchmarkSensors.push(c.metric);
-                                if (globalToggleState[c.metric] === undefined) globalToggleState[c.metric] = false;
-                            }
-                        });
-                        if (benchmarkSensors.length) {
-                            const sensorToggleRow = document.createElement('div');
-                            sensorToggleRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;';
-                            benchmarkSensors.forEach(sensor => {
-                                const label = document.createElement('label');
-                                label.className = 'checkbox-item';
-                                label.style.display = 'inline-flex';
-                                label.style.alignItems = 'center';
-                                label.style.gap = '0.4rem';
-                                const input = document.createElement('input');
-                                input.type = 'checkbox';
-                                input.checked = !!globalToggleState[sensor];
-                                input.addEventListener('change', (e) => {
-                                    globalToggleState[sensor] = e.target.checked;
-                                    renderCharts();
-                                });
-                                const span = document.createElement('span');
-                                span.textContent = sensor;
-                                span.style.fontSize = '0.8rem';
-                                label.appendChild(input);
-                                label.appendChild(span);
-                                sensorToggleRow.appendChild(label);
-                            });
-                            sensorSection.appendChild(sensorToggleRow);
+                    // Single-option benchmark: still offer per-benchmark sensor toggles if sensors exist.
+                    const sensorSection = document.createElement('div');
+                    sensorSection.style.marginTop = '1.5rem';
+                    const sensorHeading = document.createElement('div');
+                    sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;font-size:0.9rem;';
+                    sensorHeading.textContent = 'Sensor data';
+                    sensorSection.appendChild(sensorHeading);
+                    const benchmarkSensors = [];
+                    const firstGroupCharts = (bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts) || [];
+                    firstGroupCharts.forEach(c => {
+                        if (!c.is_primary && c.display_format === 'LINE_GRAPH' && c.metric) {
+                            if (!benchmarkSensors.includes(c.metric)) benchmarkSensors.push(c.metric);
+                            if (globalToggleState[c.metric] === undefined) globalToggleState[c.metric] = false;
                         }
+                    });
+                    if (benchmarkSensors.length) {
+                        const sensorToggleRow = document.createElement('div');
+                        sensorToggleRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;';
+                        benchmarkSensors.forEach(sensor => {
+                            const label = document.createElement('label');
+                            label.className = 'checkbox-item';
+                            label.style.display = 'inline-flex';
+                            label.style.alignItems = 'center';
+                            label.style.gap = '0.4rem';
+                            const input = document.createElement('input');
+                            input.type = 'checkbox';
+                            input.checked = !!globalToggleState[sensor];
+                            input.addEventListener('change', (e) => {
+                                globalToggleState[sensor] = e.target.checked;
+                                renderCharts();
+                            });
+                            const span = document.createElement('span');
+                            span.textContent = sensor;
+                            span.style.fontSize = '0.8rem';
+                            label.appendChild(input);
+                            label.appendChild(span);
+                            sensorToggleRow.appendChild(label);
+                        });
+                        sensorSection.appendChild(sensorToggleRow);
                         groupWrapper.appendChild(sensorSection);
                         renderOneCompGroup(bGroup.configs[0].group, sensorSection, true);
                     }
