@@ -1116,17 +1116,23 @@
                 ctx.fillStyle = '#0d1117';
                 ctx.fillRect(0, 0, slideWidth, slideHeight);
 
-                // Title
+                // Title (centered)
                 let y = 40;
                 ctx.fillStyle = '#ffffff';
                 ctx.font = '24px system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
-                ctx.fillText('SYSTEM & COMPUTE BENCHMARK COMPARISON', 40, y);
+                const titleText = 'SYSTEM & COMPUTE BENCHMARK COMPARISON';
+                const titleWidth = ctx.measureText(titleText).width;
+                const titleX = (slideWidth - titleWidth) / 2;
+                ctx.fillText(titleText, titleX, y);
                 y += 32;
 
-                // Legend row for systems
+                // Legend row for systems (centered horizontally)
                 ctx.font = '16px system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+                const legendItemWidth = 220;
+                const totalLegendWidth = Math.max(legendItemWidth * systems.length, 0);
+                let legendStartX = (slideWidth - totalLegendWidth) / 2;
                 systems.forEach((s, idx) => {
-                    const x = 40 + idx * 220;
+                    const x = legendStartX + idx * legendItemWidth;
                     ctx.fillStyle = defaultColors[idx % defaultColors.length];
                     ctx.fillRect(x, y, 18, 18);
                     ctx.fillStyle = '#c9d1d9';
