@@ -874,9 +874,12 @@
                 const worstVal = valid.length ? (HIB ? Math.min(...valid) : Math.max(...valid)) : 1;
                 const ratios = valuesBySystem.map(v => {
                     if (v == null || isNaN(v) || v <= 0) return 0;
-                    return HIB ? v / worstVal : worstVal / v;
+                    // For HIB sensors (if any), better systems have higher ratios.
+                    // For LIB sensors (typical temps/power), worse system is the baseline (1.0),
+                    // so better systems produce ratios < 1.0 (cooler/less power).
+                    return HIB ? v / worstVal : v / worstVal;
                 });
-                return { metric, scale, ratios };
+                return { metric, scale, ratios, HIB };
             });
 
             // Helper: build a Chart.js chart on an offscreen canvas and return a promise
@@ -1090,7 +1093,7 @@
                                 ticks: { color: BAR_CHART_TICK_COLOR },
                                 title: {
                                     display: true,
-                                    text: 'Normalized sensor value (worst = 1.0, higher = better)',
+                                    text: 'Normalized sensor value (worst = 1.0; lower is better for temps/power)',
                                     color: BAR_CHART_TICK_COLOR
                                 }
                             },
@@ -1108,13 +1111,15 @@
                             datalabels: {
                                 anchor: 'end',
                                 align: 'left',
-                                // Sensor ratios are normalized (worst = 1.0). Show
-                                // improvement vs that baseline.
+                                // Sensor ratios are normalized using the worst system as
+                                // baseline (1.0). Values < 1.0 are better (cooler/less),
+                                // values > 1.0 are worse (hotter/more).
                                 formatter: (v) => {
-                                    if (v == null || isNaN(v) || v <= 1) return '';
+                                    if (v == null || isNaN(v) || v === 1) return '';
                                     const pct = (Number(v) - 1) * 100;
                                     if (!isFinite(pct)) return '';
-                                    return '+' + pct.toFixed(1) + '%';
+                                    const sign = pct > 0 ? '+' : '';
+                                    return sign + pct.toFixed(1) + '%';
                                 }
                             }
                         }
