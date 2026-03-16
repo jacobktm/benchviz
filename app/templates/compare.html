@@ -4,6 +4,11 @@
 <div class="animate-in delay-1" style="margin-bottom: 2rem;">
     <h1 style="margin-top: 1rem;">Compare Systems</h1>
     <p class="card-meta">Build a report by selecting systems and one or more shared benchmarks.</p>
+    <div style="margin-top:0.35rem;">
+        <a href="{{ url_for('list_saved_comparisons') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">
+            View saved comparisons
+        </a>
+    </div>
 </div>
 
 <details class="glass animate-in delay-2" id="configureAccordion" open style="margin-bottom: 2rem; border-radius: 12px; overflow: hidden;">
@@ -64,7 +69,10 @@
 <!-- Chart Area (Results) -->
 <div class="animate-in delay-3" style="width: 100%; display: flex; flex-direction: column;">
     <div class="glass" style="padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; display: none;" id="chartControls">
-        <h3 style="margin-bottom: 1rem;" id="chartTitle"></h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <h3 style="margin:0;" id="chartTitle"></h3>
+            <div id="chartActionsRow" style="display:flex;gap:0.5rem;"></div>
+        </div>
         <div id="metricToggles" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
     </div>
     
@@ -78,6 +86,10 @@
             Expand "[+] Configure Comparison" to build a report.
         </div>
     </div>
+</div>
+<div style="margin-top:0.5rem;display:flex;flex-direction:column;gap:0.15rem;">
+    <a href="{{ url_for('list_saved_comparisons') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">View saved comparisons</a>
+    <a href="{{ url_for('list_export_slides') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">View exported slides</a>
 </div>
 {% endblock %}
 
@@ -119,6 +131,7 @@
         let selectedSystems = [];     // { id, shortName, primaryName, label }
         let selectedBenchmarks = [];  // { id, label, args } — args null = whole benchmark
         let availableBenchmarks = []; // from /api/common_benchmarks (each has .configs)
+        const savedComparisonId = "{{ saved_comp_id|default('') }}";
 
         // Capture all system options up-front so we can rebuild the dropdown
         // and hide already-selected systems.
@@ -134,6 +147,67 @@
 
         function refreshGenerateButtonState() {
             generateBtn.disabled = !(selectedSystems.length > 0 && selectedBenchmarks.length > 0);
+        }
+
+        function serializeCurrentComparisonPayload() {
+            return {
+                systems: selectedSystems.map(s => ({ id: s.id, shortName: s.shortName || s.primaryName || '', label: s.label || '' })),
+                benchmarks: selectedBenchmarks.map(b => ({ id: b.id, args: b.args || null, label: b.label || '' })),
+                options: {
+                    normalizeComposite,
+                    showCompositeBar,
+                    showWinsLossCharts,
+                },
+                overallSensors: Object.entries(showOverallSensor || {}).filter(([, on]) => on).map(([metric]) => metric),
+            };
+        }
+
+        async function loadSavedComparisonIfNeeded() {
+            if (!savedComparisonId) return;
+            try {
+                const resp = await fetch(`/api/saved_comparison/${savedComparisonId}`);
+                const data = await resp.json();
+                if (data.error) {
+                    console.error('Failed to load saved comparison:', data.error);
+                    return;
+                }
+                // Hydrate systems (keep only those that still exist)
+                const systemsById = {};
+                allSystemOptions.forEach(opt => { systemsById[opt.value] = opt; });
+                selectedSystems = (data.systems || []).map(s => {
+                    const base = systemsById[String(s.id)];
+                    if (!base) return null;
+                    return {
+                        id: String(base.value),
+                        shortName: base.shortName,
+                        primaryName: base.primaryName,
+                        label: base.label,
+                    };
+                }).filter(Boolean);
+                // Hydrate benchmarks
+                selectedBenchmarks = (data.benchmarks || []).map(b => ({
+                    id: b.id,
+                    label: b.label || '',
+                    args: b.args || null,
+                }));
+                const opts = data.options || {};
+                normalizeComposite = !!opts.normalizeComposite;
+                showCompositeBar = !!opts.showCompositeBar;
+                showWinsLossCharts = !!opts.showWinsLossCharts;
+                (data.overallSensors || []).forEach(metric => {
+                    showOverallSensor[metric] = true;
+                });
+                renderSelectedSystems();
+                renderSelectedBenchmarks();
+                refreshSystemSelectOptions();
+                refreshGenerateButtonState();
+                // Auto-generate the comparison
+                if (selectedSystems.length && selectedBenchmarks.length) {
+                    generateBtn.click();
+                }
+            } catch (e) {
+                console.error('Error loading saved comparison', e);
+            }
         }
 
         function refreshSystemSelectOptions(allowedSystemIds) {
@@ -756,6 +830,459 @@
                 return { metric, scale, proportion, valuesBySystem };
             }).filter(s => s.valuesBySystem.some(v => v != null && !isNaN(v)));
         }
+
+        // Export slide: compact, normalized summary PNG rendered with Chart.js
+        function exportSummarySlide(opts) {
+            if (!currentComparisonGroups.length) return;
+            const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            if (!benchmarkGroups.length) return;
+
+            const systems = (() => {
+                const firstGroup = benchmarkGroups[0];
+                const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
+                    firstGroup.configs[0].group.charts.find(c => c.is_primary);
+                return firstPrimary && firstPrimary.traces
+                    ? firstPrimary.traces.map(t => t.name)
+                    : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+            })();
+            if (!systems.length) return;
+
+            // --- Data prep (normalized, higher = better) ---
+            const benchSummaries = [];
+            if (opts.showBenchmarks) {
+                benchmarkGroups.forEach(bGroup => {
+                    const { aggValues } = computeCompositeScores(bGroup, systems, { forGlobalAggregation: true });
+                    const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
+                    if (!valid.length) return;
+                    const minR = Math.min(...valid);
+                    const ratios = aggValues.map(v => (v != null && v > 0) ? v / minR : 0);
+                    benchSummaries.push({
+                        name: bGroup.benchmarkName,
+                        ratios,
+                    });
+                });
+            }
+
+            const { globalComposite, globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
+
+            const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+            const sensorSummaries = (opts.showOverallSensors ? overallSensors : []).filter(s =>
+                !opts.sensorMetrics || !opts.sensorMetrics.length || opts.sensorMetrics.includes(s.metric)
+            ).map(({ metric, scale, proportion, valuesBySystem }) => {
+                const HIB = isHigherIsBetter(proportion);
+                const valid = valuesBySystem.filter(v => v != null && !isNaN(v) && v > 0);
+                const worstVal = valid.length ? (HIB ? Math.min(...valid) : Math.max(...valid)) : 1;
+                const ratios = valuesBySystem.map(v => {
+                    if (v == null || isNaN(v) || v <= 0) return 0;
+                    return HIB ? v / worstVal : worstVal / v;
+                });
+                return { metric, scale, ratios };
+            });
+
+            // Helper: build a Chart.js chart on an offscreen canvas and return a promise
+            function buildExportChart(config, size) {
+                return new Promise(resolve => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = size.width;
+                    canvas.height = size.height;
+                    const ctx = canvas.getContext('2d');
+
+                    const chartConfig = Object.assign({}, config, {
+                        options: Object.assign({}, config.options || {}, {
+                            responsive: false,
+                            maintainAspectRatio: false,
+                            animation: {
+                                duration: 0
+                            },
+                            plugins: Object.assign({}, (config.options && config.options.plugins) || {}, {
+                                legend: Object.assign(
+                                    { position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR } },
+                                    (config.options && config.options.plugins && config.options.plugins.legend) || {}
+                                ),
+                                datalabels: Object.assign(
+                                    { color: '#fff', font: { size: 10, weight: '600' } },
+                                    (config.options && config.options.plugins && config.options.plugins.datalabels) || {}
+                                )
+                            })
+                        })
+                    });
+
+                    // eslint-disable-next-line no-undef
+                    const chart = new Chart(ctx, chartConfig);
+                    // Give Chart.js one tick to render synchronously, then resolve.
+                    requestAnimationFrame(() => resolve({ canvas, chart }));
+                });
+            }
+
+            const panelPromises = [];
+
+            // Per-benchmark grouped vertical bar chart
+            if (opts.showBenchmarks && benchSummaries.length) {
+                const labels = benchSummaries.map(b => b.name);
+                const datasets = systems.map((s, idx) => ({
+                    label: s,
+                    data: benchSummaries.map(b => b.ratios[idx] || 0),
+                    backgroundColor: defaultColors[idx % defaultColors.length]
+                }));
+                panelPromises.push(buildExportChart({
+                    type: 'bar',
+                    data: { labels, datasets },
+                    options: {
+                        indexAxis: 'x',
+                        scales: {
+                            x: {
+                                ticks: { color: BAR_CHART_TICK_COLOR },
+                                title: {
+                                    display: true,
+                                    text: 'Benchmarks',
+                                    color: BAR_CHART_TICK_COLOR
+                                }
+                            },
+                            y: {
+                                ticks: { color: BAR_CHART_TICK_COLOR },
+                                title: {
+                                    display: true,
+                                    text: 'Normalized score (worst = 1.0, higher = better)',
+                                    color: BAR_CHART_TICK_COLOR
+                                }
+                            }
+                        },
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Per-benchmark normalized composite',
+                                color: '#ffffff',
+                                font: { size: 16, weight: '600' }
+                            }
+                        }
+                    }
+                }, { width: 900, height: 400 }));
+            }
+
+            // Overall composite horizontal bar
+            if (opts.showOverallComposite && globalComposite && globalComposite.length) {
+                const labels = systems.slice();
+                const dataVals = systems.map((_, idx) => globalComposite[idx] || 0);
+                panelPromises.push(buildExportChart({
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Overall composite (normalized, higher = better)',
+                            data: dataVals,
+                            backgroundColor: systems.map((_, idx) => defaultColors[idx % defaultColors.length])
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        scales: {
+                            x: {
+                                ticks: { color: BAR_CHART_TICK_COLOR },
+                                title: {
+                                    display: true,
+                                    text: 'Normalized score (worst = 1.0)',
+                                    color: BAR_CHART_TICK_COLOR
+                                }
+                            },
+                            y: {
+                                ticks: { color: BAR_CHART_TICK_COLOR }
+                            }
+                        },
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Overall composite',
+                                color: '#ffffff',
+                                font: { size: 16, weight: '600' }
+                            }
+                        }
+                    }
+                }, { width: 520, height: 240 }));
+            }
+
+            // Wins / losses pies
+            if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
+                const labels = systems.slice();
+                const bgColors = systems.map((_, i) => defaultColors[i % defaultColors.length]);
+                panelPromises.push(buildExportChart({
+                    type: 'pie',
+                    data: {
+                        labels,
+                        datasets: [{ data: globalWins, backgroundColor: bgColors }]
+                    },
+                    options: {
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Overall wins (best score per option)',
+                                color: '#ffffff',
+                                font: { size: 16, weight: '600' }
+                            }
+                        }
+                    }
+                }, { width: 260, height: 260 }));
+                panelPromises.push(buildExportChart({
+                    type: 'pie',
+                    data: {
+                        labels,
+                        datasets: [{ data: globalLosses, backgroundColor: bgColors }]
+                    },
+                    options: {
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Overall losses (worst score per option)',
+                                color: '#ffffff',
+                                font: { size: 16, weight: '600' }
+                            }
+                        }
+                    }
+                }, { width: 260, height: 260 }));
+            }
+
+            // Sensor summaries: one grouped bar per sensor metric
+            sensorSummaries.forEach(sensor => {
+                const labels = systems.slice();
+                const dataVals = systems.map((_, idx) => sensor.ratios[idx] || 0);
+                panelPromises.push(buildExportChart({
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: sensor.metric,
+                            data: dataVals,
+                            backgroundColor: systems.map((_, idx) => defaultColors[idx % defaultColors.length])
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        scales: {
+                            x: {
+                                ticks: { color: BAR_CHART_TICK_COLOR },
+                                title: {
+                                    display: true,
+                                    text: 'Normalized sensor value (worst = 1.0, higher = better)',
+                                    color: BAR_CHART_TICK_COLOR
+                                }
+                            },
+                            y: {
+                                ticks: { color: BAR_CHART_TICK_COLOR }
+                            }
+                        },
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: `Overall sensor: ${sensor.metric}`,
+                                color: '#ffffff',
+                                font: { size: 14, weight: '600' }
+                            }
+                        }
+                    }
+                }, { width: 520, height: 180 }));
+            });
+
+            if (!panelPromises.length) return;
+
+            Promise.all(panelPromises).then(panels => {
+                // Final slide canvas
+                const slideWidth = 1920;
+                const slideHeight = 1080;
+                const slide = document.createElement('canvas');
+                slide.width = slideWidth;
+                slide.height = slideHeight;
+                const ctx = slide.getContext('2d');
+
+                // Background
+                ctx.fillStyle = '#0d1117';
+                ctx.fillRect(0, 0, slideWidth, slideHeight);
+
+                // Title
+                let y = 40;
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '24px system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.fillText('SYSTEM & COMPUTE BENCHMARK COMPARISON', 40, y);
+                y += 32;
+
+                // Legend row for systems
+                ctx.font = '16px system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+                systems.forEach((s, idx) => {
+                    const x = 40 + idx * 220;
+                    ctx.fillStyle = defaultColors[idx % defaultColors.length];
+                    ctx.fillRect(x, y, 18, 18);
+                    ctx.fillStyle = '#c9d1d9';
+                    ctx.fillText(s, x + 24, y + 15);
+                });
+                y += 46;
+
+                // Layout: main benchmark chart on left, overall + pies on right, sensors stacked below
+                let cursorX = 40;
+                let cursorY = y;
+
+                const benchmarkPanel = panels.shift();
+                if (benchmarkPanel) {
+                    const targetW = 1120;
+                    const targetH = 420;
+                    ctx.drawImage(
+                        benchmarkPanel.canvas,
+                        0, 0, benchmarkPanel.canvas.width, benchmarkPanel.canvas.height,
+                        cursorX, cursorY, targetW, targetH
+                    );
+                }
+
+                let rightX = 1200;
+                let rightY = cursorY;
+
+                // Overall composite (if present)
+                if (opts.showOverallComposite && globalComposite && globalComposite.length) {
+                    const compPanel = panels.shift();
+                    if (compPanel) {
+                        ctx.drawImage(
+                            compPanel.canvas,
+                            0, 0, compPanel.canvas.width, compPanel.canvas.height,
+                            rightX, rightY, 640, 260
+                        );
+                        rightY += 270;
+                    }
+                }
+
+                // Wins/losses pies (two panels)
+                if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
+                    const winsPanel = panels.shift();
+                    const lossesPanel = panels.shift();
+                    const pieY = cursorY + 440;
+                    const pieSize = 260;
+                    if (winsPanel) {
+                        ctx.drawImage(
+                            winsPanel.canvas,
+                            0, 0, winsPanel.canvas.width, winsPanel.canvas.height,
+                            160, pieY, pieSize, pieSize
+                        );
+                    }
+                    if (lossesPanel) {
+                        ctx.drawImage(
+                            lossesPanel.canvas,
+                            0, 0, lossesPanel.canvas.width, lossesPanel.canvas.height,
+                            520, pieY, pieSize, pieSize
+                        );
+                    }
+                    cursorY = pieY + pieSize + 20;
+                } else {
+                    cursorY = cursorY + 440;
+                }
+
+                // Sensor panels stacked on the right beneath composite
+                let sensorY = rightY;
+                panels.forEach(panel => {
+                    const targetW = 640;
+                    const targetH = 180;
+                    if (sensorY + targetH + 20 > slideHeight) return;
+                    ctx.drawImage(
+                        panel.canvas,
+                        0, 0, panel.canvas.width, panel.canvas.height,
+                        rightX, sensorY, targetW, targetH
+                    );
+                    sensorY += targetH + 12;
+                });
+
+                const dataUrl = slide.toDataURL('image/png');
+                console.log('[benchviz-export] Generated PNG data URL, length=', dataUrl.length);
+
+                // Post the PNG to the backend, which saves it under static/exports
+                // and returns URLs for viewing/saving from a normal <img> page.
+                const formData = new FormData();
+                formData.append('image', dataUrl);
+
+                fetch('/export/slide', {
+                    method: 'POST',
+                    body: formData,
+                }).then(resp => {
+                    if (!resp.ok) {
+                        console.error('[benchviz-export] /export/slide failed with status', resp.status);
+                        alert('Export failed (HTTP ' + resp.status + ').');
+                        return null;
+                    }
+                    return resp.json();
+                }).then(data => {
+                    if (!data) return;
+                    if (data.view_url) {
+                        window.open(data.view_url, '_blank');
+                    } else if (data.image_url) {
+                        window.open(data.image_url, '_blank');
+                    }
+                }).catch(err => {
+                    console.error('[benchviz-export] Error during export fetch:', err);
+                    alert('Export failed. See console for details.');
+                });
+            });
+        }
+
+        // Simple modal for export options
+        function openExportModal() {
+            if (!window.__exportOptions) {
+                window.__exportOptions = {
+                    showBenchmarks: true,
+                    showOverallComposite: true,
+                    showOverallWinsLosses: true,
+                    showOverallSensors: false,
+                    sensorMetrics: [],
+                };
+            }
+            const opts = window.__exportOptions;
+
+            const modal = document.getElementById('exportModal');
+            const overlayEl = document.getElementById('exportModalOverlay');
+            const form = document.getElementById('exportOptionsForm');
+            form.showBenchmarks.checked = !!opts.showBenchmarks;
+            form.showOverallComposite.checked = !!opts.showOverallComposite;
+            form.showOverallWins.checked = !!opts.showOverallWinsLosses;
+            form.showSensors.checked = !!opts.showOverallSensors;
+
+            // Build sensor checkboxes from current overall sensors
+            const sensorContainer = document.getElementById('exportSensorChoices');
+            sensorContainer.innerHTML = '';
+            const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            if (benchmarkGroups.length) {
+                const firstGroup = benchmarkGroups[0];
+                const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
+                    firstGroup.configs[0].group.charts.find(c => c.is_primary);
+                const systems = firstPrimary && firstPrimary.traces
+                    ? firstPrimary.traces.map(t => t.name)
+                    : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+                const allMetrics = overallSensors.map(s => s.metric);
+                if (!opts.sensorMetrics.length) opts.sensorMetrics = [...allMetrics];
+                allMetrics.forEach(metric => {
+                    const label = document.createElement('label');
+                    label.className = 'checkbox-item';
+                    label.style.display = 'inline-flex';
+                    label.style.alignItems = 'center';
+                    label.style.gap = '0.4rem';
+                    const input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.value = metric;
+                    input.checked = opts.sensorMetrics.includes(metric);
+                    label.appendChild(input);
+                    const span = document.createElement('span');
+                    span.textContent = metric;
+                    span.style.fontSize = '0.8rem';
+                    label.appendChild(span);
+                    sensorContainer.appendChild(label);
+                });
+            }
+
+            overlayEl.style.display = 'block';
+            modal.style.display = 'block';
+        }
+
+        function closeExportModal() {
+            document.getElementById('exportModalOverlay').style.display = 'none';
+            document.getElementById('exportModal').style.display = 'none';
+        }
+
+        // Expose modal helpers and exporter for inline handlers
+        window.closeExportModal = closeExportModal;
+        window.openExportModal = openExportModal;
+        window.exportSummarySlide = exportSummarySlide;
 
         /**
          * Global summary across ALL benchmark groups.
@@ -1504,6 +2031,8 @@
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Normalize scores across benchmarks (ratios to worst system)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
+
+                        // Overall sensor toggles (for overall charts)
                         const overallSensorLabel = document.createElement('div');
                         overallSensorLabel.textContent = 'Overall sensor data (mean across runs):';
                         overallSensorLabel.style.cssText = 'font-size:0.8rem;color:var(--text-secondary);margin-top:0.5rem;margin-bottom:0.25rem;';
@@ -1512,8 +2041,9 @@
                         overallSensorTogglesRow.className = 'overall-sensor-toggles';
                         overallSensorTogglesRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.75rem;';
                         modeWrap.appendChild(overallSensorTogglesRow);
-                        
-                        chartControls.insertBefore(modeWrap, chartTitle);
+
+                        // Append options block to the controls card
+                        chartControls.appendChild(modeWrap);
                     } else {
                         const inputs = modeWrap.querySelectorAll('input[type=\"checkbox\"][data-mode-key]');
                         inputs.forEach(input => {
@@ -1527,6 +2057,52 @@
                     // Overall sensor toggles are populated lazily by renderCharts when needed.
                     metricToggles.innerHTML = '';
                     renderCharts();
+
+                    // Top-right actions (save/export) – set up once
+                    const actionsHost = document.getElementById('chartActionsRow');
+                    if (actionsHost && !actionsHost.hasChildNodes()) {
+                        const saveBtn = document.createElement('button');
+                        saveBtn.type = 'button';
+                        saveBtn.textContent = 'Save comparison';
+                        saveBtn.style.cssText = 'padding:0.3rem 0.9rem;font-size:0.8rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.35);color:var(--text-secondary);cursor:pointer;';
+                        saveBtn.addEventListener('click', async () => {
+                            try {
+                                const payload = serializeCurrentComparisonPayload();
+                                const resp = await fetch('/api/save_comparison', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(payload),
+                                });
+                                const data = await resp.json();
+                                if (!resp.ok || data.error) {
+                                    console.error('Failed to save comparison:', data.error || resp.statusText);
+                                    alert('Failed to save comparison.');
+                                    return;
+                                }
+                                const url = `${window.location.origin}/compare/s/${data.id}`;
+                                try {
+                                    await navigator.clipboard.writeText(url);
+                                    alert('Comparison saved. Link copied to clipboard:\n' + url);
+                                } catch {
+                                    alert('Comparison saved:\n' + url);
+                                }
+                            } catch (e) {
+                                console.error('Error saving comparison', e);
+                                alert('Failed to save comparison.');
+                            }
+                        });
+
+                        const exportBtn = document.createElement('button');
+                        exportBtn.type = 'button';
+                        exportBtn.textContent = 'Export slide';
+                        exportBtn.style.cssText = 'padding:0.3rem 0.9rem;font-size:0.8rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:var(--text-secondary);cursor:pointer;';
+                        exportBtn.addEventListener('click', () => {
+                            openExportModal();
+                        });
+
+                        actionsHost.appendChild(saveBtn);
+                        actionsHost.appendChild(exportBtn);
+                    }
                 }
             } catch (err) {
                 console.error(err);
@@ -1535,6 +2111,56 @@
                 overlay.classList.remove('active');
             }
         });
+
+        // Kick off saved-comparison hydration if present.
+        loadSavedComparisonIfNeeded();
     });
 </script>
+
+<!-- Export modal -->
+<div id="exportModalOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000;"></div>
+<div id="exportModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%, -50%);background:#161b22;border-radius:12px;padding:1.25rem 1.5rem;min-width:320px;z-index:1001;border:1px solid rgba(240,246,252,0.1);box-shadow:0 18px 40px rgba(0,0,0,0.5);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+        <div style="font-weight:600;color:#c9d1d9;font-size:0.95rem;">Export slide</div>
+        <button type="button" onclick="closeExportModal()" style="border:none;background:transparent;color:#8b949e;cursor:pointer;font-size:1.1rem;line-height:1;">×</button>
+    </div>
+    <form id="exportOptionsForm" style="display:flex;flex-direction:column;gap:0.4rem;font-size:0.85rem;color:#c9d1d9;">
+        <label class="checkbox-item" style="display:inline-flex;align-items:center;gap:0.4rem;">
+            <input type="checkbox" name="showBenchmarks" checked>
+            <span>Per-benchmark normalized bars</span>
+        </label>
+        <label class="checkbox-item" style="display:inline-flex;align-items:center;gap:0.4rem;">
+            <input type="checkbox" name="showOverallComposite" checked>
+            <span>Overall composite bar</span>
+        </label>
+        <label class="checkbox-item" style="display:inline-flex;align-items:center;gap:0.4rem;">
+            <input type="checkbox" name="showOverallWins" checked>
+            <span>Overall wins/losses pies</span>
+        </label>
+        <label class="checkbox-item" style="display:inline-flex;align-items:center;gap:0.4rem;margin-top:0.25rem;">
+            <input type="checkbox" name="showSensors">
+            <span>Include sensor summary charts</span>
+        </label>
+        <div id="exportSensorChoices" style="margin-top:0.35rem;display:flex;flex-wrap:wrap;gap:0.35rem;"></div>
+        <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.9rem;">
+            <button type="button" onclick="closeExportModal()" style="padding:0.3rem 0.8rem;font-size:0.8rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:transparent;color:#c9d1d9;cursor:pointer;">Cancel</button>
+            <button type="button" onclick="
+                (function(){
+                    if(!window.__exportOptions){window.__exportOptions={showBenchmarks:true,showOverallComposite:true,showOverallWinsLosses:true,showOverallSensors:false,sensorMetrics:[]};}
+                    const f = document.getElementById('exportOptionsForm');
+                    const opts = window.__exportOptions;
+                    opts.showBenchmarks = f.showBenchmarks.checked;
+                    opts.showOverallComposite = f.showOverallComposite.checked;
+                    opts.showOverallWinsLosses = f.showOverallWins.checked;
+                    opts.showOverallSensors = f.showSensors.checked;
+                    const chosen = [];
+                    document.querySelectorAll('#exportSensorChoices input[type=checkbox]').forEach(el => { if (el.checked) chosen.push(el.value); });
+                    opts.sensorMetrics = chosen;
+                    closeExportModal();
+                    exportSummarySlide(opts);
+                })();
+            " style="padding:0.3rem 0.9rem;font-size:0.8rem;border-radius:999px;border:1px solid rgba(56,139,253,0.8);background:#238636;color:#ffffff;cursor:pointer;">Export PNG</button>
+        </div>
+    </form>
+</div>
 {% endblock %}

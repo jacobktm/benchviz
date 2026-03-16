@@ -1,10 +1,11 @@
 from app import create_app, db
-from app.models import System, Benchmark, BenchmarkResult, SystemNvmeConfig, BenchmarkAnalysis
+from app.models import System, Benchmark, BenchmarkResult, SystemNvmeConfig, BenchmarkAnalysis, SavedComparison
 from app.parser import parse_benchmark_files, parse_file
 from app.analyzer import analyze_benchmarks
-from flask import render_template, request, redirect, url_for, flash
+from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
 from urllib.parse import unquote
 import os
+import datetime
 import threading
 import zipfile
 import tempfile
@@ -444,6 +445,207 @@ def compare():
     systems.sort(key=lambda s: s.identifier)
     
     return render_template('compare.html', systems=systems)
+
+
+@app.route('/compare/s/<string:comp_id>')
+def compare_saved(comp_id):
+    """Render compare page; frontend will fetch the saved comparison payload."""
+    systems_raw = System.query.all()
+    systems = []
+    for sys in systems_raw:
+        sys.primary_group_name = get_primary_group_name(sys)
+        sys.profile_label = format_system_profile_label(sys)
+        systems.append(sys)
+    systems.sort(key=lambda s: s.identifier)
+    # Template will read comp_id from data attribute and call /api/saved_comparison
+    return render_template('compare.html', systems=systems, saved_comp_id=comp_id)
+
+
+@app.route('/compare/saved')
+def list_saved_comparisons():
+    """List recent saved comparisons with basic summary info."""
+    rows = (
+        SavedComparison.query
+        .order_by(SavedComparison.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    summaries = []
+    for row in rows:
+        payload = row.payload_json or {}
+        systems = payload.get('systems') or []
+        benchmarks = payload.get('benchmarks') or []
+        system_labels = [s.get('shortName') or s.get('label') or str(s.get('id')) for s in systems]
+        bench_labels = [b.get('label') or str(b.get('id')) for b in benchmarks]
+        summaries.append({
+            'id': row.id,
+            'created_at': row.created_at,
+            'systems': system_labels,
+            'benchmarks': bench_labels,
+        })
+    return render_template('saved_comparisons.html', comparisons=summaries)
+
+
+@app.route('/compare/saved/<string:comp_id>/delete', methods=['POST'])
+def delete_saved_comparison(comp_id):
+    saved = SavedComparison.query.get(comp_id)
+    if not saved:
+        flash('Saved comparison not found.', 'error')
+        return redirect(url_for('list_saved_comparisons'))
+    db.session.delete(saved)
+    db.session.commit()
+    flash('Saved comparison deleted.', 'success')
+    return redirect(url_for('list_saved_comparisons'))
+
+
+def generate_comparison_id():
+    # Short, URL-safe slug (16 hex chars is plenty)
+    import secrets
+    return secrets.token_hex(8)
+
+
+@app.route('/export/slide', methods=['POST'])
+def export_slide():
+    """
+    Receive a PNG data URL from the frontend, save it as a static file, and
+    return JSON with URLs so the image can be viewed (and saved) from a normal
+    <img> page.
+    """
+    data_url = request.form.get('image')
+    if not data_url:
+        return jsonify({"error": "Missing image payload"}), 400
+
+    # Expect "data:image/png;base64,AAAA..."
+    if ',' in data_url:
+        _, b64data = data_url.split(',', 1)
+    else:
+        b64data = data_url
+
+    import base64
+    import secrets
+
+    try:
+        binary = base64.b64decode(b64data)
+    except Exception:
+        return jsonify({"error": "Invalid image payload"}), 400
+
+    # Persist under static/exports so it can be served directly.
+    exports_dir = os.path.join(app.static_folder, 'exports')
+    os.makedirs(exports_dir, exist_ok=True)
+
+    export_id = secrets.token_hex(8)
+    filename = f'{export_id}.png'
+    filepath = os.path.join(exports_dir, filename)
+    with open(filepath, 'wb') as f:
+        f.write(binary)
+
+    image_url = url_for('static', filename=f'exports/{filename}')
+    view_url = url_for('view_export_slide', export_id=export_id)
+
+    return jsonify({"id": export_id, "image_url": image_url, "view_url": view_url})
+
+
+@app.route('/export/slide/<string:export_id>')
+def view_export_slide(export_id):
+    """Simple view that shows a saved export PNG inside an <img>."""
+    filename = f'{export_id}.png'
+    filepath = os.path.join(app.static_folder, 'exports', filename)
+    if not os.path.exists(filepath):
+        flash('Export not found.', 'error')
+        return redirect(url_for('compare'))
+    image_url = url_for('static', filename=f'exports/{filename}')
+    download_url = url_for('download_export_slide', export_id=export_id)
+    return render_template('export_slide.html', image_url=image_url, export_id=export_id, download_url=download_url)
+
+
+@app.route('/export/slide/<string:export_id>/delete', methods=['POST'])
+def delete_export_slide(export_id):
+    """Delete a previously saved export PNG."""
+    filename = f'{export_id}.png'
+    filepath = os.path.join(app.static_folder, 'exports', filename)
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            flash('Export deleted.', 'success')
+        except OSError:
+            flash('Failed to delete export.', 'error')
+    else:
+        flash('Export not found.', 'error')
+    return redirect(url_for('list_export_slides'))
+
+
+@app.route('/export/slide/<string:export_id>/download')
+def download_export_slide(export_id):
+    """Download an export PNG with a friendly filename."""
+    filename = f'{export_id}.png'
+    filepath = os.path.join(app.static_folder, 'exports', filename)
+    if not os.path.exists(filepath):
+        flash('Export not found.', 'error')
+        return redirect(url_for('list_export_slides'))
+    return send_file(
+        filepath,
+        mimetype='image/png',
+        as_attachment=True,
+        download_name='benchviz-comparison.png',
+    )
+
+
+@app.route('/export/slides')
+def list_export_slides():
+    """List saved export PNGs under static/exports."""
+    exports_dir = os.path.join(app.static_folder, 'exports')
+    exports = []
+    if os.path.isdir(exports_dir):
+        for name in sorted(os.listdir(exports_dir), reverse=True):
+            if not name.lower().endswith('.png'):
+                continue;
+            export_id = os.path.splitext(name)[0]
+            filepath = os.path.join(exports_dir, name)
+            try:
+                mtime = os.path.getmtime(filepath)
+                created_at = datetime.datetime.fromtimestamp(mtime)
+            except Exception:
+                created_at = None
+            exports.append({
+                'id': export_id,
+                'image_url': url_for('static', filename=f'exports/{name}'),
+                'view_url': url_for('view_export_slide', export_id=export_id),
+                'created_at': created_at,
+            })
+    exports.sort(key=lambda x: x['created_at'] or datetime.datetime.min, reverse=True)
+    return render_template('export_slides.html', exports=exports)
+
+
+@app.route('/api/save_comparison', methods=['POST'])
+def api_save_comparison():
+    """Persist a comparison definition and return a short id."""
+    try:
+        payload = request.get_json(force=True)
+    except Exception:
+        return {"error": "Invalid JSON payload"}, 400
+
+    if not isinstance(payload, dict):
+        return {"error": "Payload must be an object"}, 400
+
+    # Basic validation: require systems and benchmarks lists
+    systems = payload.get('systems') or []
+    benchmarks = payload.get('benchmarks') or []
+    if not systems or not benchmarks:
+        return {"error": "Payload must include non-empty 'systems' and 'benchmarks' arrays"}, 400
+
+    comp_id = generate_comparison_id()
+    saved = SavedComparison(id=comp_id, payload_json=payload)
+    db.session.add(saved)
+    db.session.commit()
+    return {"id": comp_id}, 200
+
+
+@app.route('/api/saved_comparison/<string:comp_id>')
+def api_saved_comparison(comp_id):
+    saved = SavedComparison.query.get(comp_id)
+    if not saved:
+        return {"error": "Comparison not found"}, 404
+    return saved.payload_json, 200
 
 @app.route('/api/compare')
 def api_compare():

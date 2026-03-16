@@ -8,3 +8,6 @@ benchmarks/*.xml
 
 # Local SQLite instance database
 instance/benchmarks.db
+
+# Exported slide images
+app/static/exports/

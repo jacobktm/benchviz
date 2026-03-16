@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Exported Slides{% endblock %}
+
+{% block content %}
+<div class="page-section" style="max-width:1000px;margin:0 auto;">
+    <h2 style="margin-bottom:1rem;color:var(--text-primary);">Exported comparison slides</h2>
+    <div style="margin-bottom:1rem;">
+        <a href="{{ url_for('compare') }}" class="btn btn-secondary">← Back to compare</a>
+    </div>
+
+    {% if exports %}
+        <table class="table" style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr>
+                    <th style="text-align:left;padding:0.5rem 0.75rem;">Created</th>
+                    <th style="text-align:left;padding:0.5rem 0.75rem;">Preview</th>
+                    <th style="text-align:left;padding:0.5rem 0.75rem;">Link</th>
+                    <th style="text-align:left;padding:0.5rem 0.75rem;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in exports %}
+                    <tr style="border-top:1px solid rgba(255,255,255,0.08);">
+                        <td style="padding:0.5rem 0.75rem;font-size:0.85rem;color:var(--text-secondary);">
+                            {{ item.created_at }}
+                        </td>
+                        <td style="padding:0.5rem 0.75rem;">
+                            <a href="{{ item.view_url }}" target="_blank">
+                                <img src="{{ item.image_url }}" alt="Export {{ item.id }}" style="max-width:160px;height:auto;border-radius:4px;border:1px solid rgba(255,255,255,0.1);">
+                            </a>
+                        </td>
+                        <td style="padding:0.5rem 0.75rem;font-size:0.8rem;">
+                            <a href="{{ item.view_url }}" target="_blank" style="color:var(--accent);text-decoration:underline;">Open slide</a>
+                        </td>
+                        <td style="padding:0.5rem 0.75rem;">
+                            <form action="{{ url_for('delete_export_slide', export_id=item.id) }}" method="post" style="display:inline;">
+                                <button type="submit" class="btn btn-danger" style="font-size:0.75rem;padding:0.25rem 0.7rem;">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div style="color:var(--text-secondary);font-size:0.9rem;">
+            No exported slides found yet. Use "Export slide" from the compare page to create one.
+        </div>
+    {% endif %}
+</div>
+{% endblock %}
+

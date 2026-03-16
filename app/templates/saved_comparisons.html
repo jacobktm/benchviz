@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Saved Comparisons</h1>
+    <p class="text-muted">Click a comparison to reopen it in the compare view.</p>
+</div>
+
+{% if not comparisons %}
+    <div class="glass" style="padding: 1.25rem; border-radius: 12px;">
+        <div style="color: var(--text-secondary);">No saved comparisons found yet.</div>
+    </div>
+{% else %}
+    <div class="glass" style="padding: 1.25rem; border-radius: 12px;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.9rem;">
+            <thead>
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.08);text-align:left;">
+                    <th style="padding:0.4rem 0.6rem;">Created</th>
+                    <th style="padding:0.4rem 0.6rem;">Systems</th>
+                    <th style="padding:0.4rem 0.6rem;">Benchmarks</th>
+                    <th style="padding:0.4rem 0.6rem;">Link</th>
+                    <th style="padding:0.4rem 0.6rem;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for comp in comparisons %}
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+                    <td style="padding:0.4rem 0.6rem;color:var(--text-secondary);white-space:nowrap;">
+                        {{ comp.created_at.strftime('%Y-%m-%d %H:%M') if comp.created_at else '' }}
+                    </td>
+                    <td style="padding:0.4rem 0.6rem;color:var(--text-primary);">
+                        {{ comp.systems|join(' vs ') }}
+                    </td>
+                    <td style="padding:0.4rem 0.6rem;color:var(--text-secondary);">
+                        {{ comp.benchmarks|join(', ') }}
+                    </td>
+                    <td style="padding:0.4rem 0.6rem;">
+                        <a href="{{ url_for('compare_saved', comp_id=comp.id) }}" class="btn-primary-sm">Open</a>
+                    </td>
+                    <td style="padding:0.4rem 0.6rem;">
+                        <form method="post"
+                              action="{{ url_for('delete_saved_comparison', comp_id=comp.id) }}"
+                              class="delete-comparison-form"
+                              data-comp-id="{{ comp.id }}"
+                              style="display:inline;">
+                            <button type="submit"
+                                    style="background:none;border:none;color:#f85149;cursor:pointer;font-size:0.8rem;text-decoration:underline;padding:0;">
+                                Delete
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.delete-comparison-form').forEach(form => {
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const id = form.dataset.compId || 'unknown';
+            console.log('[saved-comparisons] Sending delete request for id', id, 'to', form.action);
+            try {
+                const resp = await fetch(form.action, { method: 'POST' });
+                console.log('[saved-comparisons] Delete response status', resp.status);
+                if (resp.redirected) {
+                    console.log('[saved-comparisons] Redirecting to', resp.url);
+                    window.location.href = resp.url;
+                } else if (resp.ok) {
+                    console.log('[saved-comparisons] Reloading list after delete');
+                    window.location.reload();
+                } else {
+                    console.error('[saved-comparisons] Delete failed with non-OK response', resp.status);
+                    alert('Failed to delete saved comparison (status ' + resp.status + '). See console for details.');
+                }
+            } catch (err) {
+                console.error('[saved-comparisons] Error deleting saved comparison', err);
+                alert('Error deleting saved comparison. See console for details.');
+            }
+        });
+    });
+});
+</script>
+{% endblock %}
+

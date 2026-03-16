@@ -88,3 +88,11 @@ class BenchmarkAnalysis(db.Model):
     __table_args__ = (
         db.UniqueConstraint('benchmark_identifier', 'benchmark_title', 'benchmark_app_version', name='_benchmark_analysis_uc'),
     )
+
+
+class SavedComparison(db.Model):
+    __tablename__ = 'saved_comparisons'
+
+    id = db.Column(db.String(32), primary_key=True)  # short slug, not UUID v4 text
+    payload_json = db.Column(db.JSON, nullable=False)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
