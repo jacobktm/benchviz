@@ -921,7 +921,11 @@
                 const labels = benchSummaries.map(b => b.name);
                 const datasets = systems.map((s, idx) => ({
                     label: s,
-                    data: benchSummaries.map(b => b.ratios[idx] || 0),
+                    // Round to 3 decimal places to avoid ugly long numbers
+                    data: benchSummaries.map(b => {
+                        const v = b.ratios[idx] || 0;
+                        return Number.isFinite(v) ? Number(v.toFixed(3)) : 0;
+                    }),
                     backgroundColor: defaultColors[idx % defaultColors.length]
                 }));
                 panelPromises.push(buildExportChart({
@@ -939,7 +943,10 @@
                                 }
                             },
                             y: {
-                                ticks: { color: BAR_CHART_TICK_COLOR },
+                                ticks: {
+                                    color: BAR_CHART_TICK_COLOR,
+                                    callback: (value) => Number(value).toFixed(2)
+                                },
                                 title: {
                                     display: true,
                                     text: 'Normalized score (worst = 1.0, higher = better)',
@@ -953,6 +960,9 @@
                                 text: 'Per-benchmark normalized composite',
                                 color: '#ffffff',
                                 font: { size: 16, weight: '600' }
+                            },
+                            datalabels: {
+                                formatter: (v) => (v == null || isNaN(v) ? '' : v.toFixed(2))
                             }
                         }
                     }
