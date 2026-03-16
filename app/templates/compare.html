@@ -962,7 +962,15 @@
                                 font: { size: 16, weight: '600' }
                             },
                             datalabels: {
-                                formatter: (v) => (v == null || isNaN(v) ? '' : v.toFixed(2))
+                                // Data here are already normalized so that the weakest
+                                // system is 1.0 and better systems > 1.0. Show percent
+                                // improvement over that weakest baseline.
+                                formatter: (v) => {
+                                    if (v == null || isNaN(v) || v <= 1) return '';
+                                    const pct = (Number(v) - 1) * 100;
+                                    if (!isFinite(pct)) return '';
+                                    return '+' + pct.toFixed(1) + '%';
+                                }
                             }
                         }
                     }
@@ -1004,6 +1012,17 @@
                                 text: 'Overall composite',
                                 color: '#ffffff',
                                 font: { size: 16, weight: '600' }
+                            },
+                            datalabels: {
+                                anchor: 'end',
+                                align: 'left',
+                                // globalComposite is normalized so weakest system = 1.0.
+                                formatter: (v) => {
+                                    if (v == null || isNaN(v) || v <= 1) return '';
+                                    const pct = (Number(v) - 1) * 100;
+                                    if (!isFinite(pct)) return '';
+                                    return '+' + pct.toFixed(1) + '%';
+                                }
                             }
                         }
                     }
@@ -1085,6 +1104,18 @@
                                 text: `Overall sensor: ${sensor.metric}`,
                                 color: '#ffffff',
                                 font: { size: 14, weight: '600' }
+                            },
+                            datalabels: {
+                                anchor: 'end',
+                                align: 'left',
+                                // Sensor ratios are normalized (worst = 1.0). Show
+                                // improvement vs that baseline.
+                                formatter: (v) => {
+                                    if (v == null || isNaN(v) || v <= 1) return '';
+                                    const pct = (Number(v) - 1) * 100;
+                                    if (!isFinite(pct)) return '';
+                                    return '+' + pct.toFixed(1) + '%';
+                                }
                             }
                         }
                     }
