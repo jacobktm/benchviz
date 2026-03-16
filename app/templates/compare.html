@@ -1096,7 +1096,11 @@
             Promise.all(panelPromises).then(panels => {
                 // Final slide canvas
                 const slideWidth = 1920;
-                const slideHeight = 1080;
+                // Dynamically grow height when many sensor panels exist so nothing is clipped.
+                const sensorPanelCount = sensorSummaries.length;
+                const baseHeight = 1080;
+                const extraPerSensor = 140; // additional vertical space per sensor beyond 2
+                const slideHeight = baseHeight + Math.max(0, sensorPanelCount - 2) * extraPerSensor;
                 const slide = document.createElement('canvas');
                 slide.width = slideWidth;
                 slide.height = slideHeight;
