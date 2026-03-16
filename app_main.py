@@ -553,6 +553,11 @@ def view_export_slide(export_id):
     if not os.path.exists(filepath):
         flash('Export not found.', 'error')
         return redirect(url_for('compare'))
+
+    # Hint to Chrome users that Firefox handles slide downloads more reliably.
+    ua = (request.user_agent.string or '').lower()
+    if 'chrome' in ua and 'firefox' not in ua:
+        flash('Note: exported slide downloads tend to work more reliably in Firefox than in Chrome.', 'info')
     image_url = url_for('static', filename=f'exports/{filename}')
     download_url = url_for('download_export_slide', export_id=export_id)
     return render_template('export_slide.html', image_url=image_url, export_id=export_id, download_url=download_url)
@@ -613,6 +618,12 @@ def list_export_slides():
                 'created_at': created_at,
             })
     exports.sort(key=lambda x: x['created_at'] or datetime.datetime.min, reverse=True)
+
+    # Hint to Chrome users that Firefox handles slide downloads more reliably.
+    ua = (request.user_agent.string or '').lower()
+    if 'chrome' in ua and 'firefox' not in ua:
+        flash('Note: exported slide downloads tend to work more reliably in Firefox than in Chrome.', 'info')
+
     return render_template('export_slides.html', exports=exports)
 
 
