@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.analyzer import extract_hardware_component
-
 
 def clean_text(value: Any) -> str:
     return (value or "").strip()
@@ -12,6 +10,17 @@ def clean_text(value: Any) -> str:
 def get_primary_group_name(system) -> str:
     # Keep identical behavior to app_main.py
     return system.primary_system_name or system.identifier
+
+
+def extract_hardware_component(hardware_string: str, component_prefix: str) -> str | None:
+    """Extract a specific component like 'Processor: ' from the Phoronix hardware string."""
+    if not hardware_string:
+        return None
+    for part in hardware_string.split(","):
+        part = part.strip()
+        if part.startswith(f"{component_prefix}:"):
+            return part.split(":", 1)[1].strip()
+    return None
 
 
 def extract_software_component(software_text: str, label: str) -> str:
