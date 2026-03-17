@@ -2,8 +2,8 @@
 
 {% block content %}
 <div class="animate-in delay-1" style="margin-bottom: 2rem;">
-    <h1 style="margin-top: 1rem;">Hardware Insights</h1>
-    <p class="card-meta">Statistical correlation analysis of benchmark performance across varying hardware configurations. Only displaying cohorts with a minimum sample size (n >= 3).</p>
+    <h1 style="margin-top: 1rem;">Performance Insights</h1>
+    <p class="card-meta">Statistical insights into how hardware and software configurations (CPU, GPU, cooling, kernel, drivers, etc.) impact benchmark performance. Only displaying cohorts with a minimum sample size (n >= 3 systems).</p>
 </div>
 
 <style>
@@ -73,7 +73,9 @@
                                 <div style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 1rem;">
                                     {{ val_stat.name }} 
                                 </div>
-                                <div style="font-size: 0.8rem; color: var(--text-secondary);">n = {{ val_stat.n }} sample(s)</div>
+                                <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                                    n = {{ val_stat.n }} system(s){% if val_stat.n_runs is defined %}, {{ val_stat.n_runs }} run(s){% endif %}
+                                </div>
                             </div>
                             <div class="score-badge">
                                 {{ "%.2f"|format(val_stat.mean) }}

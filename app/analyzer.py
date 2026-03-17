@@ -1,21 +1,37 @@
-import json
 import statistics
 from collections import defaultdict
 from app import db, create_app
 from app.models import Benchmark, BenchmarkResult, BenchmarkAnalysis, System
+from app.components import get_system_components
 
-# Hardware components that we extract from the raw hardware string
-EXTRACTED_HARDWARE = ['Processor', 'Motherboard', 'Chipset', 'Memory', 'Graphics']
+MIN_SYSTEMS_PER_COHORT = 3
 
-def extract_hardware_component(hardware_string, component_prefix):
-    """Extracts a specific component like 'Processor: ' from the Phoronix hardware string."""
-    if not hardware_string:
-        return None
-    for part in hardware_string.split(','):
-        part = part.strip()
-        if part.startswith(f"{component_prefix}:"):
-            return part.split(':', 1)[1].strip()
-    return None
+# Component keys from get_system_components() that we treat as "insight features"
+# (Exclude system_name/identifier because they are identifiers, not explanatory variables.)
+INSIGHT_COMPONENT_KEYS = [
+    "processor",
+    "graphics",
+    "memory",
+    "motherboard",
+    "chipset",
+    "os",
+    "kernel_version",
+    "nvidia_driver",
+    "mesa_version",
+    "llvm_version",
+    "vulkan_driver",
+    "chassis_version",
+    "cooler_model",
+    "psu",
+    "custom_hardware",
+    "external_off",
+    "gpu_fans",
+    "memory_fans",
+    "nvme_fans",
+    "thermal_pad_above_nvme",
+    "thermal_pad_below_nvme",
+    "thermal_pad_sandwich_nvme",
+]
 
 def analyze_benchmarks():
     """Runs the background statistical analysis."""
@@ -57,46 +73,48 @@ def analyze_benchmarks():
         # Analyze each argument configuration independently
         argument_analyses = {}
         for arg, results in args_groups.items():
-            features = defaultdict(lambda: defaultdict(list))
+            # feature -> value -> system_id -> [scores]
+            features = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
             
             for res in results:
                 sys = res.system
-                # Extracted components
-                for comp in EXTRACTED_HARDWARE:
-                    val = extract_hardware_component(sys.hardware, comp)
-                    if val:
-                        features[f"Detected {comp}"][val].append(res.value)
-                        
-                # Manual components
-                if sys.chassis_version: features['Chassis Version'][sys.chassis_version].append(res.value)
-                if sys.cooler_model: features['Cooler Model'][sys.cooler_model].append(res.value)
-                if sys.psu_model: features['PSU Model'][sys.psu_model].append(res.value)
-                if sys.psu_wattage: features['PSU Wattage'][sys.psu_wattage].append(res.value)
-                if sys.custom_hardware: features['Custom Hardware Tag'][sys.custom_hardware].append(res.value)
-                features['External Off'][str(sys.external_off)].append(res.value)
-                features['GPU Fans'][str(sys.gpu_fans)].append(res.value)
-                features['Memory Fans'][str(sys.memory_fans)].append(res.value)
-                features['NVMe Fans'][str(sys.nvme_fans)].append(res.value)
+                comps = get_system_components(sys)
+                for key in INSIGHT_COMPONENT_KEYS:
+                    val = (comps.get(key) or "").strip()
+                    if not val:
+                        continue
+                    features[key][val][sys.id].append(res.value)
 
             # Compute stats per feature
             feature_stats = {}
             for feature_name, value_groups in features.items():
                 stats_per_value = []
-                for val_name, scores in value_groups.items():
-                    n = len(scores)
+                for val_name, by_system in value_groups.items():
+                    # Aggregate repeated runs per system down to a mean, then compute cohort stats across systems.
+                    per_system_means = []
+                    n_runs = 0
+                    for sys_id, scores in by_system.items():
+                        valid = [s for s in scores if s is not None]
+                        if not valid:
+                            continue
+                        n_runs += len(valid)
+                        per_system_means.append(statistics.mean(valid))
+                    n_systems = len(per_system_means)
+                    if n_systems == 0:
+                        continue
                     stats_per_value.append({
                         "name": val_name,
-                        "n": n,
-                        "mean": statistics.mean(scores),
-                        "median": statistics.median(scores),
-                        "min": min(scores),
-                        "max": max(scores)
+                        "n": n_systems,          # backwards-compatible field name: number of distinct systems
+                        "n_runs": n_runs,        # additional info: number of raw results contributing
+                        "mean": statistics.mean(per_system_means),
+                        "median": statistics.median(per_system_means),
+                        "min": min(per_system_means),
+                        "max": max(per_system_means),
                         # variance could be added here if needed
                     })
                 
                 # Filter out values with insufficient data to reduce noise
-                # MINIMUM SAMPLE SIZE THRESHOLD: 3
-                valid_stats = [s for s in stats_per_value if s["n"] >= 3]
+                valid_stats = [s for s in stats_per_value if s["n"] >= MIN_SYSTEMS_PER_COHORT]
                 
                 # We need at least 2 valid categories to make a comparison (e.g. comparing Cooler A vs Cooler B)
                 if len(valid_stats) >= 2:
@@ -104,7 +122,7 @@ def analyze_benchmarks():
                     valid_stats.sort(key=lambda x: x["mean"], reverse=not is_lower_better)
                     feature_stats[feature_name] = valid_stats
                 elif len(stats_per_value) > 0:
-                    feature_stats[feature_name] = [{"error": "Insufficient data to draw correlations (requires multiple distinct components with n >= 3)"}]
+                    feature_stats[feature_name] = [{"error": f"Insufficient data to draw correlations (requires >= {MIN_SYSTEMS_PER_COHORT} distinct systems per cohort)"}]
                     
             if feature_stats:
                 argument_analyses[arg] = feature_stats

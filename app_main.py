@@ -1,7 +1,8 @@
 from app import create_app, db
 from app.models import System, Benchmark, BenchmarkResult, SystemNvmeConfig, BenchmarkAnalysis, SavedComparison
 from app.parser import parse_benchmark_files, parse_file
-from app.analyzer import analyze_benchmarks, extract_hardware_component
+from app.analyzer import analyze_benchmarks
+from app.components import get_system_components
 from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
 from urllib.parse import unquote
 import os
@@ -125,93 +126,6 @@ def format_system_profile_label(system):
     if not badges:
         return base_name
     return f"{base_name} | {' | '.join(badges)}"
-
-def extract_software_component(software_text, label):
-    """Extract value for a label from Phoronix-style software string (e.g. 'Kernel: 6.8.0' or 'NVIDIA Driver: 560')."""
-    if not software_text or not label:
-        return ''
-    # Split on comma and newline so we handle both "A: 1, B: 2" and "A: 1\nB: 2"
-    for part in (software_text.replace('\n', ',').split(',')):
-        part = part.strip()
-        if part.lower().startswith(label.lower() + ':'):
-            return part.split(':', 1)[1].strip()
-    return ''
-
-
-def get_system_components(system):
-    """Build a dict of component keys -> display values for comparison labels (CPU, GPU, OS, etc.)."""
-    hardware = system.hardware or ''
-
-    def extract_hw_any(prefixes):
-        for p in prefixes:
-            v = extract_hardware_component(hardware, p)
-            if v:
-                return v
-        return ''
-
-    # Parsed from hardware string (Phoronix labels vary a bit between sources)
-    processor = extract_hw_any(['Processor', 'CPU', 'CPU Model'])
-    graphics = extract_hw_any(['Graphics', 'GPU', 'Graphics Processor'])
-    memory = extract_hw_any(['Memory', 'RAM', 'System Memory'])
-    motherboard = extract_hw_any(['Motherboard', 'Mainboard', 'Motherboard / Mainboard'])
-    chipset = extract_hw_any(['Chipset'])
-    software = (system.software or '').strip()
-    # OS: first non-empty line, or first "OS:" value, or "Unknown"
-    os_val = extract_software_component(software, 'OS')
-    if not os_val:
-        os_val = (software.split('\n')[0] or '').strip() if software else ''
-    if not os_val:
-        os_val = 'Unknown' if software else ''
-    # Software version fields (common in Phoronix / hardware insights)
-    kernel_version = extract_software_component(software, 'Kernel')
-    nvidia_driver = extract_software_component(software, 'NVIDIA Driver')
-    if not nvidia_driver and graphics and 'nvidia' in (graphics or '').lower():
-        nvidia_driver = extract_software_component(software, 'Driver')
-    mesa_version = extract_software_component(software, 'Mesa') or extract_software_component(software, 'Mesa 3D')
-    llvm_version = extract_software_component(software, 'LLVM')
-    vulkan_driver = extract_software_component(software, 'Vulkan')
-    # Profile fields
-    chassis_version = clean_text(system.chassis_version) or ''
-    cooler_model = clean_text(system.cooler_model) or ''
-    psu = ' '.join(part for part in [clean_text(system.psu_wattage), clean_text(system.psu_model)] if part).strip()
-    custom_hardware = clean_text(system.custom_hardware) or ''
-    external_off = 'Yes' if system.external_off else 'No'
-    gpu_fans = 'Yes' if system.gpu_fans else 'No'
-    memory_fans = 'Yes' if system.memory_fans else 'No'
-    nvme_fans = 'Yes' if system.nvme_fans else 'No'
-    # NVMe thermal pads (any drive)
-    top_pad = any(c.top_thermal_pad for c in (system.nvme_configs or []))
-    bottom_pad = any(c.bottom_thermal_pad for c in (system.nvme_configs or []))
-    thermal_pad_above_nvme = 'Yes' if top_pad else 'No'
-    thermal_pad_below_nvme = 'Yes' if bottom_pad else 'No'
-    thermal_pad_sandwich_nvme = 'Yes' if top_pad and bottom_pad else 'No'
-    return {
-        'system_name': get_primary_group_name(system),
-        'identifier': clean_text(system.identifier) or '',
-        'processor': processor or '',
-        'graphics': graphics or '',
-        'memory': memory or '',
-        'motherboard': motherboard or '',
-        'chipset': chipset or '',
-        'os': os_val,
-        'kernel_version': kernel_version or '',
-        'nvidia_driver': nvidia_driver or '',
-        'mesa_version': mesa_version or '',
-        'llvm_version': llvm_version or '',
-        'vulkan_driver': vulkan_driver or '',
-        'chassis_version': chassis_version,
-        'cooler_model': cooler_model,
-        'psu': psu,
-        'custom_hardware': custom_hardware,
-        'external_off': external_off,
-        'gpu_fans': gpu_fans,
-        'memory_fans': memory_fans,
-        'nvme_fans': nvme_fans,
-        'thermal_pad_above_nvme': thermal_pad_above_nvme,
-        'thermal_pad_below_nvme': thermal_pad_below_nvme,
-        'thermal_pad_sandwich_nvme': thermal_pad_sandwich_nvme,
-    }
-
 
 def get_system_search_tags(system):
     tags = {
