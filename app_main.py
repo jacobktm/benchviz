@@ -184,6 +184,7 @@ def get_system_components(system):
     bottom_pad = any(c.bottom_thermal_pad for c in (system.nvme_configs or []))
     thermal_pad_above_nvme = 'Yes' if top_pad else 'No'
     thermal_pad_below_nvme = 'Yes' if bottom_pad else 'No'
+    thermal_pad_sandwich_nvme = 'Yes' if top_pad and bottom_pad else 'No'
     return {
         'system_name': get_primary_group_name(system),
         'identifier': clean_text(system.identifier) or '',
@@ -208,6 +209,7 @@ def get_system_components(system):
         'nvme_fans': nvme_fans,
         'thermal_pad_above_nvme': thermal_pad_above_nvme,
         'thermal_pad_below_nvme': thermal_pad_below_nvme,
+        'thermal_pad_sandwich_nvme': thermal_pad_sandwich_nvme,
     }
 
 
@@ -541,6 +543,7 @@ COMPARE_BY_OPTIONS = [
     ('nvme_fans', 'NVMe fans'),
     ('thermal_pad_above_nvme', 'Thermal pad above NVMe'),
     ('thermal_pad_below_nvme', 'Thermal pad below NVMe'),
+    ('thermal_pad_sandwich_nvme', 'Thermal pad sandwich NVMe'),
 ]
 
 
