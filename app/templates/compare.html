@@ -31,6 +31,7 @@
                         data-short-name="{{ sys.identifier }}"
                         data-primary-name="{{ sys.primary_group_name }}"
                         data-label="{{ sys.profile_label }}"
+                        data-components='{{ (sys.components or {}) | tojson }}'
                     >
                         {{ sys.primary_group_name }} — {{ sys.profile_label }}
                     </option>
@@ -41,6 +42,11 @@
 
             <div id="selectedSystems" class="glass" style="min-height: 48px; padding: 0.75rem 1rem; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 0.5rem;">
                 <span id="noSystemsSelected" style="color: var(--text-secondary); font-size: 0.85rem;">No systems selected yet.</span>
+            </div>
+            <div id="compareByRow" style="display: none; margin-top: 0.75rem; align-items: center; gap: 0.5rem;">
+                <label for="globalCompareBySelect" style="font-size: 0.85rem; color: var(--text-secondary);">Label in graphs:</label>
+                <select id="globalCompareBySelect" style="font-size: 0.85rem; padding: 0.35rem 0.5rem; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; color: inherit;" title="Component to use as system label in charts (only options present in all selected systems are shown).">
+                </select>
             </div>
         </div>
 
@@ -97,6 +103,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
 <script>
+    window.COMPARE_BY_OPTIONS = {{ compare_by_options | default([]) | tojson | safe }};
     document.addEventListener('DOMContentLoaded', () => {
         const systemSelect = document.getElementById('systemSelect');
         const addSystemBtn = document.getElementById('addSystemBtn');
@@ -128,8 +135,9 @@
 
         let currentComparisonGroups = [];
         let globalToggleState = {};   // Sensor visibility across all charts
-        let selectedSystems = [];     // { id, shortName, primaryName, label }
+        let selectedSystems = [];     // { id, shortName, primaryName, label, components }
         let selectedBenchmarks = [];  // { id, label, args } — args null = whole benchmark
+        let globalCompareBy = 'system_name';  // single "compare by" for all systems; only options present in all systems are shown
         let availableBenchmarks = []; // from /api/common_benchmarks (each has .configs)
         const savedComparisonId = "{{ saved_comp_id|default('') }}";
 
@@ -137,20 +145,94 @@
         // and hide already-selected systems.
         const allSystemOptions = Array.from(systemSelect.options)
             .filter(opt => opt.value)
-            .map(opt => ({
-                value: opt.value,
-                text: opt.textContent,
-                shortName: opt.dataset.shortName || '',
-                primaryName: opt.dataset.primaryName || '',
-                label: opt.dataset.label || ''
-            }));
+            .map(opt => {
+                let components = {};
+                try {
+                    if (opt.dataset.components) components = JSON.parse(opt.dataset.components);
+                } catch (e) { console.warn('[compareBy] parse components for', opt.value, e); }
+                return {
+                    value: opt.value,
+                    text: opt.textContent,
+                    shortName: opt.dataset.shortName || '',
+                    primaryName: opt.dataset.primaryName || '',
+                    label: opt.dataset.label || '',
+                    components,
+                };
+            });
+        console.log('[compareBy] allSystemOptions at load:', allSystemOptions.length, 'first components keys=', allSystemOptions[0] ? Object.keys(allSystemOptions[0].components || {}) : 'none');
 
         function refreshGenerateButtonState() {
             generateBtn.disabled = !(selectedSystems.length > 0 && selectedBenchmarks.length > 0);
         }
 
+        /** Options for "Compare by" that are present in every selected system (so we compare the same component). */
+        function getAvailableCompareByOptions() {
+            console.log('[compareBy] getAvailableCompareByOptions: selectedSystems.length=', selectedSystems.length);
+            if (!selectedSystems.length) return [];
+            const options = window.COMPARE_BY_OPTIONS || [];
+            console.log('[compareBy] COMPARE_BY_OPTIONS length=', options.length, 'keys=', options.map(([k]) => k));
+            selectedSystems.forEach((s, i) => {
+                const comp = s.components || {};
+                console.log('[compareBy] system', i, 'id=', s.id, 'components keys=', Object.keys(comp), 'sample=', comp.system_name, comp.processor);
+            });
+            const available = options.filter(([key]) => {
+                const every = selectedSystems.every(s => {
+                    const v = (s.components && s.components[key]) ? String(s.components[key]).trim() : '';
+                    return v.length > 0;
+                });
+                return every;
+            });
+            console.log('[compareBy] available options=', available.length, available.map(([k, l]) => k));
+            return available;
+        }
+
+        function updateGlobalCompareBySelect() {
+            const row = document.getElementById('compareByRow');
+            const select = document.getElementById('globalCompareBySelect');
+            console.log('[compareBy] updateGlobalCompareBySelect: row=', !!row, 'select=', !!select, 'selectedSystems.length=', selectedSystems.length);
+            if (!row || !select) {
+                console.warn('[compareBy] missing row or select, skipping');
+                return;
+            }
+            if (selectedSystems.length === 0) {
+                row.style.display = 'none';
+                console.log('[compareBy] no systems, hiding row');
+                return;
+            }
+            const available = getAvailableCompareByOptions();
+            const currentAvailable = available.some(([key]) => key === globalCompareBy);
+            if (!currentAvailable && available.length) globalCompareBy = available[0][0];
+            console.log('[compareBy] available.length=', available.length, 'globalCompareBy=', globalCompareBy, 'currentAvailable=', currentAvailable);
+            select.innerHTML = '';
+            available.forEach(([key, label]) => {
+                const opt = document.createElement('option');
+                opt.value = key;
+                opt.textContent = label;
+                if (globalCompareBy === key) opt.selected = true;
+                select.appendChild(opt);
+            });
+            row.style.display = 'flex';
+            select.onchange = () => {
+                globalCompareBy = select.value;
+                renderCharts();
+            };
+            console.log('[compareBy] populated select with', select.options.length, 'options');
+        }
+
+        /** Map trace names (system identifiers from API) to display labels for charts. */
+        function getSystemDisplayNames(traceNames) {
+            const map = {};
+            const key = globalCompareBy || 'system_name';
+            selectedSystems.forEach(s => {
+                const comp = (s.components && s.components[key]) ? String(s.components[key]).trim() : '';
+                map[s.shortName] = comp || (s.primaryName || s.shortName || String(s.id));
+            });
+            return (traceNames || []).map(n => map[n] ?? n);
+        }
+
         function serializeCurrentComparisonPayload() {
             return {
+                compareBy: globalCompareBy || 'system_name',
                 systems: selectedSystems.map(s => ({ id: s.id, shortName: s.shortName || s.primaryName || '', label: s.label || '' })),
                 benchmarks: selectedBenchmarks.map(b => ({ id: b.id, args: b.args || null, label: b.label || '' })),
                 options: {
@@ -174,6 +256,7 @@
                 // Hydrate systems (keep only those that still exist)
                 const systemsById = {};
                 allSystemOptions.forEach(opt => { systemsById[opt.value] = opt; });
+                if (data.compareBy != null && data.compareBy !== '') globalCompareBy = String(data.compareBy);
                 selectedSystems = (data.systems || []).map(s => {
                     const base = systemsById[String(s.id)];
                     if (!base) return null;
@@ -182,6 +265,7 @@
                         shortName: base.shortName,
                         primaryName: base.primaryName,
                         label: base.label,
+                        components: base.components || {},
                     };
                 }).filter(Boolean);
                 // Hydrate benchmarks
@@ -198,6 +282,7 @@
                     showOverallSensor[metric] = true;
                 });
                 renderSelectedSystems();
+                updateGlobalCompareBySelect();
                 renderSelectedBenchmarks();
                 refreshSystemSelectOptions();
                 refreshGenerateButtonState();
@@ -247,7 +332,11 @@
                 chip.style.display = 'inline-flex';
                 chip.style.alignItems = 'center';
                 chip.style.gap = '0.4rem';
-                chip.textContent = `${sys.primaryName} — ${sys.label}`;
+                chip.style.flexWrap = 'wrap';
+
+                const mainLabel = document.createElement('span');
+                mainLabel.textContent = `${sys.primaryName} — ${sys.label}`;
+                chip.appendChild(mainLabel);
 
                 const btn = document.createElement('button');
                 btn.type = 'button';
@@ -269,6 +358,7 @@
                 chip.appendChild(btn);
                 selectedSystemsEl.appendChild(chip);
             });
+            updateGlobalCompareBySelect();
         }
 
         function renderSelectedBenchmarks() {
@@ -537,12 +627,15 @@
             if (selectedSystems.some(s => s.id === val)) return;
 
             const opt = systemSelect.options[systemSelect.selectedIndex];
+            const optData = allSystemOptions.find(o => o.value === val) || {};
             const sys = {
                 id: val,
                 shortName: opt.dataset.shortName || '',
                 primaryName: opt.dataset.primaryName || '',
-                label: opt.dataset.label || ''
+                label: opt.dataset.label || '',
+                components: optData.components || {},
             };
+            console.log('[compareBy] add system id=', val, 'optData.components keys=', Object.keys(optData.components || {}), 'sys.components keys=', Object.keys(sys.components));
             selectedSystems.push(sys);
             renderSelectedSystems();
             refreshSystemSelectOptions();
@@ -837,7 +930,7 @@
             const benchmarkGroups = groupComparisonGroupsByBenchmark();
             if (!benchmarkGroups.length) return;
 
-            const systems = (() => {
+            const traceNames = (() => {
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
                     firstGroup.configs[0].group.charts.find(c => c.is_primary);
@@ -845,7 +938,8 @@
                     ? firstPrimary.traces.map(t => t.name)
                     : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
             })();
-            if (!systems.length) return;
+            if (!traceNames.length) return;
+            const systems = getSystemDisplayNames(traceNames);  // labels only; computations use traceNames
 
             // --- Data prep (normalized, higher = better) ---
             const benchSummaries = [];
@@ -1351,9 +1445,10 @@
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
                     firstGroup.configs[0].group.charts.find(c => c.is_primary);
-                const systems = firstPrimary && firstPrimary.traces
+                const traceNames = firstPrimary && firstPrimary.traces
                     ? firstPrimary.traces.map(t => t.name)
                     : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                const systems = getSystemDisplayNames(traceNames);
                 const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
                 const allMetrics = overallSensors.map(s => s.metric);
                 if (!opts.sensorMetrics.length) opts.sensorMetrics = [...allMetrics];
