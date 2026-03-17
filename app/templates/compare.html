@@ -1677,6 +1677,7 @@
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
                 const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                const systemLabels = getSystemDisplayNames(systems);
 
                 const globalSection = document.createElement('div');
                 globalSection.style.cssText = 'width:100%;margin-bottom:2.5rem;padding:1.5rem;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);';
@@ -1709,7 +1710,7 @@
                         formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1));
                     }
 
-                    const sortedOverall = sortLabelsValuesBestFirst(systems, values, true);
+                    const sortedOverall = sortLabelsValuesBestFirst(systemLabels, values, true);
                     createBarChart(
                         barWrap,
                         sortedOverall.labels,
@@ -1717,7 +1718,7 @@
                         label,
                         formatter,
                         'overall-composite',
-                        systems
+                        systemLabels
                     );
                 }
                 if (showWinsLossCharts && systems.length >= 2) {
@@ -1730,8 +1731,8 @@
                     pieRow.style.alignItems = 'flex-start';
                     pieRow.style.justifyContent = 'center';
                     globalSection.appendChild(pieRow);
-                    addPieChart(pieRow, systems, globalWins, 'Overall wins (best score per option)');
-                    addPieChart(pieRow, systems, globalLosses, 'Overall losses (worst score per option)');
+                    addPieChart(pieRow, systemLabels, globalWins, 'Overall wins (best score per option)');
+                    addPieChart(pieRow, systemLabels, globalLosses, 'Overall losses (worst score per option)');
                 }
 
                 const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
@@ -1766,7 +1767,7 @@
                             xLabel = scale ? `${metric} (${scale}) — ${directionText}` : `${metric} — ${directionText}`;
                         }
                         const sensorHigher = normalizeComposite || HIB;
-                        const sortedSensor = sortLabelsValuesBestFirst(systems, values, sensorHigher);
+                        const sortedSensor = sortLabelsValuesBestFirst(systemLabels, values, sensorHigher);
                         createBarChart(
                             wrap,
                             sortedSensor.labels,
@@ -1774,7 +1775,7 @@
                             xLabel,
                             formatter,
                             'overall-sensor',
-                            systems
+                            systemLabels
                         );
                     });
                 }
@@ -1842,7 +1843,8 @@
                     let chartInstance = null;
                     if (chartData.display_format === 'BAR_GRAPH') {
                         if (!chartData.traces || !chartData.traces.length) return;
-                        const labels = chartData.traces.map(t => t.name != null ? t.name : '');
+                        const traceNames = chartData.traces.map(t => t.name != null ? t.name : '');
+                        const labels = getSystemDisplayNames(traceNames);
                         let values = chartData.traces.map(t => {
                             const raw = Array.isArray(t.y) ? t.y[0] : t.y;
                             return (raw != null && !isNaN(raw)) ? Number(raw) : 0;
@@ -1965,6 +1967,7 @@
                     const firstPrimary = bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts.find(c => c.is_primary);
                     return firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
                 })();
+                const systemLabels = getSystemDisplayNames(systems);
                 const { aggValues, wins, losses, combinedScales } = computeCompositeScores(bGroup, systems);
 
                 const aggSection = document.createElement('div');
@@ -1976,7 +1979,7 @@
                     : 'Composite score (geometric mean)';
                 const aggVals = aggValues.map(v => v != null ? v : 0);
                 const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
-                const sortedAgg = sortLabelsValuesBestFirst(systems, aggVals, aggHigher);
+                const sortedAgg = sortLabelsValuesBestFirst(systemLabels, aggVals, aggHigher);
                 createBarChart(
                     aggSection,
                     sortedAgg.labels,
@@ -1984,7 +1987,7 @@
                     compositeLabel,
                     (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
                     'aggregate',
-                    systems
+                    systemLabels
                 );
                 if (systems.length >= 2) {
                     const winsToggle = document.createElement('button');
@@ -2001,8 +2004,8 @@
                     pieRow.style.alignItems = 'flex-start';
                     pieRow.style.justifyContent = 'center';
                     aggSection.appendChild(pieRow);
-                    addPieChart(pieRow, systems, wins, 'Wins (best score per option)');
-                    addPieChart(pieRow, systems, losses, 'Losses (worst score per option)');
+                    addPieChart(pieRow, systemLabels, wins, 'Wins (best score per option)');
+                    addPieChart(pieRow, systemLabels, losses, 'Losses (worst score per option)');
                     winsToggle.addEventListener('click', () => {
                         const open = pieRow.style.display !== 'none';
                         pieRow.style.display = open ? 'none' : 'flex';
