@@ -186,6 +186,7 @@ def get_system_components(system):
     thermal_pad_below_nvme = 'Yes' if bottom_pad else 'No'
     return {
         'system_name': get_primary_group_name(system),
+        'identifier': clean_text(system.identifier) or '',
         'processor': processor or '',
         'graphics': graphics or '',
         'memory': memory or '',
@@ -518,6 +519,7 @@ def delete_system(id):
 # Ordered list of (key, label) for "Compare by" dropdown; key must match get_system_components() keys.
 COMPARE_BY_OPTIONS = [
     ('system_name', 'System name'),
+    ('identifier', 'System identifier'),
     ('processor', 'CPU (Processor)'),
     ('graphics', 'GPU (Graphics)'),
     ('memory', 'Memory'),
