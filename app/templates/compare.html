@@ -165,7 +165,7 @@
             generateBtn.disabled = !(selectedSystems.length > 0 && selectedBenchmarks.length > 0);
         }
 
-        /** Options for "Compare by" that are present in every selected system (so we compare the same component). */
+        /** Options for "Compare by" that are present in every selected system and differ across systems. */
         function getAvailableCompareByOptions() {
             console.log('[compareBy] getAvailableCompareByOptions: selectedSystems.length=', selectedSystems.length);
             if (!selectedSystems.length) return [];
@@ -176,11 +176,14 @@
                 console.log('[compareBy] system', i, 'id=', s.id, 'components keys=', Object.keys(comp), 'sample=', comp.system_name, comp.processor);
             });
             const available = options.filter(([key]) => {
-                const every = selectedSystems.every(s => {
-                    const v = (s.components && s.components[key]) ? String(s.components[key]).trim() : '';
-                    return v.length > 0;
-                });
-                return every;
+                // "Common" means the field exists (non-empty) for every selected system.
+                const values = selectedSystems.map(s => (s.components && s.components[key]) ? String(s.components[key]).trim() : '');
+                if (values.some(v => !v)) return false;
+                // If only one system is selected, show all present fields.
+                if (selectedSystems.length <= 1) return true;
+                // Otherwise only show fields that actually differ across systems.
+                const uniq = new Set(values);
+                return uniq.size > 1;
             });
             console.log('[compareBy] available options=', available.length, available.map(([k, l]) => k));
             return available;
@@ -1602,7 +1605,7 @@
                             <tbody>
                                 ${currentComparisonGroups[0].system_details.map(s => `
                                     <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                        <td style="padding: 0.5rem; color: var(--accent); font-weight: 600;">${s.short_name}</td>
+                                        <td style="padding: 0.5rem; color: var(--accent); font-weight: 600;">${getSystemDisplayNames([s.short_name])[0] || s.short_name}</td>
                                         <td style="padding: 0.5rem; color: var(--text-secondary);">${s.full_label}</td>
                                     </tr>
                                 `).join('')}
@@ -1900,7 +1903,8 @@
                         chartData.traces.forEach(trace => {
                             const s = trace.stats || {};
                             const fmt = v => (v === undefined || v === null || isNaN(v)) ? '' : Number(v).toFixed(2);
-                            statsHtml += `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);"><td style="padding:0.25rem 0.4rem;">${trace.name}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.min)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.q1)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;color:var(--accent);font-weight:600;">${fmt(s.median)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.q3)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.max)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.mean)}</td></tr>`;
+                            const displayName = getSystemDisplayNames([trace.name])[0] || trace.name;
+                            statsHtml += `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);"><td style="padding:0.25rem 0.4rem;">${displayName}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.min)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.q1)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;color:var(--accent);font-weight:600;">${fmt(s.median)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.q3)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.max)}</td><td style="padding:0.25rem 0.4rem;font-family:monospace;">${fmt(s.mean)}</td></tr>`;
                         });
                         statsHtml += '</tbody></table>';
                         const statsWrap = document.createElement('div');
