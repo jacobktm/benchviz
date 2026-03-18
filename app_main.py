@@ -1489,6 +1489,468 @@ def api_scatter_candidates():
     }, 200
 
 
+@app.route('/api/variance_feature_map')
+def api_variance_feature_map():
+    """
+    Returns a "within-system variability vs between-cohort dominance" map across feature keys.
+
+    For each feature_key (and optional pairs), each point summarizes:
+      X = average within-system run variability
+          (computed as stdev across BAR_GRAPH per-run values, per system, then averaged)
+      Y = dominance magnitude (best cohort mean - worst cohort mean), in raw units
+
+    This directly separates:
+      - variability within a system (run-to-run noise)
+      - variability between systems/cohorts (component-driven performance shifts)
+    """
+    from app.analyzer import INSIGHT_COMPONENT_KEYS, MIN_SYSTEMS_TOTAL, MIN_SYSTEMS_PER_COHORT
+
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+
+    top_k = int(request.args.get('top_k') or 10)
+    min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    include_pairs = (request.args.get('include_pairs') or '1').lower() not in {'0', 'false', 'no'}
+    min_feature_delta = float(request.args.get('min_feature_delta') or 0.0)
+
+    if not title:
+        return {"error": "Missing benchmark_title query parameter"}, 400
+
+    bms_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    )
+    if app_version:
+        bms_q = bms_q.filter(Benchmark.app_version == app_version)
+    primary_bms = bms_q.all()
+    if not primary_bms:
+        return {"error": "No primary BAR_GRAPH benchmark found for the given title/app_version"}, 404
+
+    label_map = dict(COMPARE_BY_OPTIONS)
+    y_label_base = primary_bms[0].scale or "Score"
+
+    def proportion_is_lower_better(p):
+        p = (p or '').strip().upper()
+        if p == 'LIB':
+            return True
+        if p == 'HIB':
+            return False
+        pl = (p or '').lower()
+        return 'lower' in pl and 'better' in pl
+
+    is_lower_better = any(proportion_is_lower_better(b.proportion) for b in primary_bms)
+    y_flip = -1.0 if is_lower_better else 1.0
+
+    # Analyzer buckets empty args as 'default'
+    args_analysis_key = 'default' if (not args_str or args_str.lower() == 'default') else args_str
+    args_db = '' if args_analysis_key == 'default' else args_str
+
+    all_results = BenchmarkResult.query.filter(
+        BenchmarkResult.benchmark_id.in_([b.id for b in primary_bms]),
+        BenchmarkResult.arguments == args_db,
+        BenchmarkResult.value.isnot(None),
+    ).all()
+
+    if not all_results:
+        return {"points": [], "meta": {"y_label": y_label_base, "x_label": "within-system run variability (stdev)"}}, 200
+
+    # Build per-system run arrays (BAR_GRAPH per-run values), then derive:
+    #   - system mean raw
+    #   - system mean normalized (higher=better)
+    #   - within-system run variability (stddev of runs)
+    by_system_run_vals = defaultdict(list)
+    for r in all_results:
+        run_vals = []
+        if isinstance(r.data_json, list):
+            for v in r.data_json:
+                if v is None:
+                    continue
+                try:
+                    run_vals.append(float(v))
+                except (ValueError, TypeError):
+                    pass
+        if not run_vals and r.value is not None:
+            run_vals = [float(r.value)]
+        if run_vals:
+            by_system_run_vals[r.system_id].extend(run_vals)
+
+    if not by_system_run_vals:
+        return {"points": [], "meta": {"y_label": y_label_base, "x_label": "within-system run variability (stdev)"}}, 200
+
+    y_raw_mean_by_system = {}
+    y_norm_mean_by_system = {}
+    within_system_std_by_system = {}
+    for sid, run_vals in by_system_run_vals.items():
+        y_raw_mean = statistics.mean(run_vals)
+        y_raw_mean_by_system[sid] = y_raw_mean
+        y_norm_mean_by_system[sid] = y_raw_mean * y_flip
+        within_system_std_by_system[sid] = statistics.stdev(run_vals) if len(run_vals) >= 2 else 0.0
+
+    sys_ids = sorted(y_raw_mean_by_system.keys())
+    systems = System.query.filter(System.id.in_(sys_ids)).all()
+    comps_by_sid = {s.id: get_system_components(s) for s in systems}
+
+    points = []
+
+    def add_feature_point(feature_type, feature_key, system_groups):
+        """
+        system_groups: dict of cohort_value -> list of system summaries
+                        summaries are (system_mean_raw, system_mean_norm, system_run_stddev)
+        """
+        if not system_groups:
+            return
+
+        total_systems_with_feature = sum(len(v) for v in system_groups.values())
+        if total_systems_with_feature < MIN_SYSTEMS_TOTAL:
+            return
+
+        # Filter cohort values by evidence (minimum number of systems sharing the SAME value)
+        valid_groups = []
+        for cohort_val, sys_summaries in system_groups.items():
+            if len(sys_summaries) < min_cohort_n:
+                continue
+            valid_groups.append((cohort_val, sys_summaries))
+
+        if len(valid_groups) < 2:
+            return
+
+        # Cohort means (computed across systems in that cohort)
+        group_rows = []
+        for cohort_val, sys_summaries in valid_groups:
+            mean_raw = statistics.mean([t[0] for t in sys_summaries])
+            mean_norm = statistics.mean([t[1] for t in sys_summaries])
+            avg_within_std = statistics.mean([t[2] for t in sys_summaries]) if sys_summaries else 0.0
+            group_rows.append((cohort_val, mean_raw, mean_norm, avg_within_std))
+
+        # Higher=better after normalization, so best cohort is max mean_norm.
+        best_row = max(group_rows, key=lambda r: r[2])
+        worst_row = min(group_rows, key=lambda r: r[2])
+
+        _, best_mean_raw, _, _ = best_row
+        _, worst_mean_raw, _, _ = worst_row
+
+        dominance_delta_raw = abs(best_mean_raw - worst_mean_raw)
+        if dominance_delta_raw < min_feature_delta:
+            return
+
+        within_system_var_avg = statistics.mean([r[3] for r in group_rows]) if group_rows else 0.0
+
+        # Higher dominance is good; higher within-system noise penalizes usefulness.
+        dominance_score = dominance_delta_raw / (within_system_var_avg + 1e-9)
+
+        points.append({
+            "feature_type": feature_type,  # 'single' or 'pair'
+            "feature_key": feature_key,
+            "feature_label": label_map.get(feature_key, feature_key),
+            # x is the "within-system variability" axis
+            "x_within_spread": within_system_var_avg,
+            # y is the "between-cohort dominance" axis
+            "y_dominance_delta_raw": dominance_delta_raw,
+            "dominance_score": dominance_score,
+            "distinct_cohort_values": len(group_rows),
+            "systems_with_feature": total_systems_with_feature,
+            "best_mean_raw": best_mean_raw,
+            "worst_mean_raw": worst_mean_raw,
+        })
+
+    # Single features
+    for feature_key in INSIGHT_COMPONENT_KEYS:
+        system_groups = defaultdict(list)  # cohort_value -> [(mean_raw, mean_norm, run_stddev), ...]
+        systems_with_feature = set()
+        for sid, mean_raw in y_raw_mean_by_system.items():
+            v = (comps_by_sid.get(sid, {}).get(feature_key) or '').strip()
+            if not v:
+                continue
+            systems_with_feature.add(sid)
+            system_groups[v].append((
+                mean_raw,
+                y_norm_mean_by_system.get(sid, mean_raw * y_flip),
+                within_system_std_by_system.get(sid, 0.0),
+            ))
+
+        if len(systems_with_feature) < MIN_SYSTEMS_TOTAL:
+            continue
+
+        add_feature_point("single", feature_key, system_groups)
+
+    # Pair features (optional)
+    if include_pairs:
+        pair_defs = [
+            ("processor", "memory"),
+            ("processor", "cooler_model"),
+            ("processor", "graphics"),
+            ("graphics", "memory"),
+        ]
+        for k1, k2 in pair_defs:
+            pair_groups = defaultdict(list)  # (v1,v2) -> [(mean_raw, mean_norm, run_stddev)]
+            systems_with_pair = set()
+            for sid, mean_raw in y_raw_mean_by_system.items():
+                c1 = (comps_by_sid.get(sid, {}).get(k1) or '').strip()
+                c2 = (comps_by_sid.get(sid, {}).get(k2) or '').strip()
+                if not c1 or not c2:
+                    continue
+                systems_with_pair.add(sid)
+                pair_groups[(c1, c2)].append((
+                    mean_raw,
+                    y_norm_mean_by_system.get(sid, mean_raw * y_flip),
+                    within_system_std_by_system.get(sid, 0.0),
+                ))
+
+            if len(systems_with_pair) < MIN_SYSTEMS_TOTAL:
+                continue
+
+            feature_key = f"{k1}+{k2}"
+            feature_label = f"{label_map.get(k1,k1)} + {label_map.get(k2,k2)}"
+            # Reuse add_feature_point but with a temporary label map entry.
+            # We won't store the intermediate cohort values, only aggregate stats.
+            add_feature_point("pair", feature_key, pair_groups)
+            if points:
+                points[-1]["feature_label"] = feature_label
+
+    # Sort and trim
+    points.sort(key=lambda p: p["dominance_score"], reverse=True)
+    points = points[:top_k]
+
+    return {
+        "points": points,
+        "meta": {
+            "benchmark_title": title,
+            "app_version": app_version,
+            "args": args_analysis_key,
+            "y_label": y_label_base,
+            "x_label": "within-system run variability (stddev of runs)",
+            "direction": "y_dominance_delta_raw is best-worst mean diff across cohorts (always positive); x is within-system run noise",
+            "y_flip": y_flip,
+            "min_cohort_n": min_cohort_n,
+            "min_feature_delta": min_feature_delta,
+        }
+    }, 200
+
+
+@app.route('/api/variance_leaderboard')
+def api_variance_leaderboard():
+    """
+    Compute a leaderboard of component features that explain benchmark differences best.
+
+    For a feature_key (e.g. 'processor'), we:
+      1) Group systems by their component value.
+      2) Compute within-bucket spread of the benchmark (how much performance varies
+         even when the component is held constant).
+      3) Compare the bucket spread to the overall spread across all systems.
+
+    A higher reduction_ratio => holding that component constant reduces variability
+    more => the component is more explanatory for this benchmark/config.
+    """
+    from app.analyzer import INSIGHT_COMPONENT_KEYS, MIN_SYSTEMS_TOTAL
+
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+
+    top_k = int(request.args.get('top_k') or 10)
+    min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    include_pairs = (request.args.get('include_pairs') or '1').lower() not in {'0', 'false', 'no'}
+
+    if not title:
+        return {"error": "Missing benchmark_title query parameter"}, 400
+
+    bms_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    )
+    if app_version:
+        bms_q = bms_q.filter(Benchmark.app_version == app_version)
+    primary_bms = bms_q.all()
+    if not primary_bms:
+        return {"error": "No primary BAR_GRAPH benchmark found for the given title/app_version"}, 404
+
+    label_map = dict(COMPARE_BY_OPTIONS)
+    y_label_base = primary_bms[0].scale or "Score"
+
+    def proportion_is_lower_better(p):
+        p = (p or '').strip().upper()
+        if p == 'LIB':
+            return True
+        if p == 'HIB':
+            return False
+        pl = (p or '').lower()
+        return 'lower' in pl and 'better' in pl
+
+    is_lower_better = any(proportion_is_lower_better(b.proportion) for b in primary_bms)
+    y_flip = -1.0 if is_lower_better else 1.0
+
+    # Analyzer buckets empty args as 'default'; DB stores empty args as ''.
+    args_analysis_key = 'default' if (not args_str or args_str.lower() == 'default') else args_str
+    args_db = '' if args_analysis_key == 'default' else args_str
+
+    primary_bm_ids = [b.id for b in primary_bms]
+    all_results = BenchmarkResult.query.filter(
+        BenchmarkResult.benchmark_id.in_(primary_bm_ids),
+        BenchmarkResult.arguments == args_db,
+        BenchmarkResult.value.isnot(None),
+    ).all()
+
+    if not all_results:
+        return {
+            "rows": [],
+            "meta": {
+                "benchmark_title": title,
+                "app_version": app_version,
+                "args": args_analysis_key,
+                "y_label": y_label_base,
+                "x_label": "within-bucket spread",
+                "min_cohort_n": min_cohort_n,
+                "include_pairs": include_pairs,
+            }
+        }, 200
+
+    # Per system mean of runs/entries for BAR_GRAPH.
+    by_system_vals = defaultdict(list)
+    for r in all_results:
+        by_system_vals[r.system_id].append(r.value)
+
+    y_norm_by_system = {}
+    y_raw_by_system = {}
+    for sid, vals in by_system_vals.items():
+        y_raw = statistics.mean([v for v in vals if v is not None])
+        y_raw_by_system[sid] = y_raw
+        y_norm_by_system[sid] = y_raw * y_flip
+
+    sys_ids = sorted(y_raw_by_system.keys())
+    systems = System.query.filter(System.id.in_(sys_ids)).all()
+    comps_by_sid = {s.id: get_system_components(s) for s in systems}
+
+    all_y_norm = [y_norm_by_system[sid] for sid in sys_ids]
+
+    def robust_spread(vals):
+        # Median absolute deviation-like; non-negative; stable on small samples.
+        if not vals:
+            return 0.0
+        m = statistics.median(vals)
+        abs_dev = [abs(v - m) for v in vals]
+        return statistics.median(abs_dev) or 0.0
+
+    overall_spread = robust_spread(all_y_norm)
+    overall_spread_eps = overall_spread + 1e-9
+
+    rows = []
+
+    def eval_single(feature_key):
+        # Group by component value => bucket -> list of y_norm per system.
+        buckets = defaultdict(list)
+        systems_with_nonempty = 0
+        for sid in sys_ids:
+            v = (comps_by_sid.get(sid, {}).get(feature_key) or '').strip()
+            if not v:
+                continue
+            systems_with_nonempty += 1
+            buckets[v].append(y_norm_by_system[sid])
+
+        if systems_with_nonempty < MIN_SYSTEMS_TOTAL:
+            return
+
+        qualifying_buckets = [(v, ys) for v, ys in buckets.items() if len(ys) >= min_cohort_n]
+        if len(qualifying_buckets) < 2:
+            return
+
+        bucket_spreads = []
+        for v, ys in qualifying_buckets:
+            s = robust_spread(ys)
+            bucket_spreads.append((v, s, len(ys)))
+
+        # Weighted by bucket size so big buckets matter more.
+        total_n = sum(n for _, _, n in bucket_spreads) or 1
+        conditional_spread = sum(s * n for _, s, n in bucket_spreads) / total_n
+
+        reduction_ratio = 1.0 - (conditional_spread / overall_spread_eps)
+
+        rows.append({
+            "feature_type": "single",
+            "feature_key": feature_key,
+            "feature_label": label_map.get(feature_key, feature_key),
+            "reduction_ratio": reduction_ratio,
+            "overall_spread": overall_spread,
+            "conditional_spread": conditional_spread,
+            "distinct_cohort_values": len(bucket_spreads),
+            "systems_with_feature": systems_with_nonempty,
+            "min_cohort_n": min_cohort_n,
+        })
+
+    def eval_pair(k1, k2):
+        buckets = defaultdict(list)  # (v1,v2) -> [y_norm]
+        systems_with_pair = 0
+        for sid in sys_ids:
+            c1 = (comps_by_sid.get(sid, {}).get(k1) or '').strip()
+            c2 = (comps_by_sid.get(sid, {}).get(k2) or '').strip()
+            if not c1 or not c2:
+                continue
+            systems_with_pair += 1
+            buckets[(c1, c2)].append(y_norm_by_system[sid])
+
+        if systems_with_pair < MIN_SYSTEMS_TOTAL:
+            return
+
+        qualifying = [(pair, ys) for pair, ys in buckets.items() if len(ys) >= min_cohort_n]
+        if len(qualifying) < 2:
+            return
+
+        bucket_spreads = []
+        for pair, ys in qualifying:
+            s = robust_spread(ys)
+            bucket_spreads.append((pair, s, len(ys)))
+
+        total_n = sum(n for _, _, n in bucket_spreads) or 1
+        conditional_spread = sum(s * n for _, s, n in bucket_spreads) / total_n
+        reduction_ratio = 1.0 - (conditional_spread / overall_spread_eps)
+
+        rows.append({
+            "feature_type": "pair",
+            "feature_key": f"{k1}+{k2}",
+            "feature_label": f"{label_map.get(k1,k1)} + {label_map.get(k2,k2)}",
+            "reduction_ratio": reduction_ratio,
+            "overall_spread": overall_spread,
+            "conditional_spread": conditional_spread,
+            "distinct_cohort_values": len(bucket_spreads),
+            "systems_with_feature": systems_with_pair,
+            "min_cohort_n": min_cohort_n,
+        })
+
+    # Singles
+    for feature_key in INSIGHT_COMPONENT_KEYS:
+        eval_single(feature_key)
+
+    # Pairs
+    if include_pairs:
+        for k1, k2 in [
+            ("processor", "memory"),
+            ("processor", "cooler_model"),
+            ("processor", "graphics"),
+            ("graphics", "memory"),
+        ]:
+            eval_pair(k1, k2)
+
+    rows.sort(key=lambda r: r["reduction_ratio"], reverse=True)
+    rows = rows[:top_k]
+
+    return {
+        "rows": rows,
+        "meta": {
+            "benchmark_title": title,
+            "app_version": app_version,
+            "args": args_analysis_key,
+            "y_label": y_label_base,
+            "x_label": "conditional within-bucket spread (lower is better)",
+            "overall_spread": overall_spread,
+            "overall_spread_eps": overall_spread_eps,
+            "min_cohort_n": min_cohort_n,
+            "include_pairs": include_pairs,
+        }
+    }, 200
+
+
 @app.route('/api/explain_underperformance')
 def api_explain_underperformance():
     """

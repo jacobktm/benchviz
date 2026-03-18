@@ -1,5 +1,7 @@
 import os
 import glob
+import re
+import json
 from lxml import etree
 from . import db
 from .models import System, Benchmark, BenchmarkResult
@@ -218,6 +220,47 @@ def parse_file(file_path, system_profile=None):
                             b_result.value = float(value_str)
                         except (ValueError, TypeError):
                             b_result.value = None
+                        # Also capture per-run values (variability within system).
+                        # Phoronix often stores colon-separated run values in either:
+                        #  - <RawString>...</RawString>
+                        #  - or <JSON>{"test-run-times":"a:b:c"}</JSON>
+                        raw_run_str = entry_node.findtext('RawString', default='') or ''
+                        run_values = []
+                        if raw_run_str.strip():
+                            # Extract all numeric tokens (supports ints/floats/exponents).
+                            toks = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', raw_run_str)
+                            for t in toks:
+                                try:
+                                    run_values.append(float(t))
+                                except (ValueError, TypeError):
+                                    pass
+                        if not run_values:
+                            json_text = entry_node.findtext('JSON', default='') or ''
+                            if json_text.strip():
+                                try:
+                                    parsed = json.loads(json_text)
+                                    if isinstance(parsed, dict):
+                                        # Prefer the canonical key when present.
+                                        candidate_keys = [
+                                            k for k in parsed.keys()
+                                            if isinstance(k, str) and ('test-run-times' in k or 'run-times' in k or 'run_times' in k)
+                                        ]
+                                        for ck in candidate_keys:
+                                            v = parsed.get(ck)
+                                            if isinstance(v, str) and v.strip():
+                                                toks = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', v)
+                                                for t in toks:
+                                                    try:
+                                                        run_values.append(float(t))
+                                                    except (ValueError, TypeError):
+                                                        pass
+                                                if run_values:
+                                                    break
+                                except Exception:
+                                    pass
+                        # Persist run values only if we extracted something useful.
+                        if run_values:
+                            b_result.data_json = run_values
                     elif benchmark.display_format == 'LINE_GRAPH':
                         # Line graphs are comma separated values
                         try:
