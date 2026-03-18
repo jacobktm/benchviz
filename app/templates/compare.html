@@ -136,6 +136,8 @@
         let currentComparisonGroups = [];
         let globalToggleState = {};   // Sensor visibility across all charts
         let selectedSystems = [];     // { id, shortName, primaryName, label, components }
+        // Stable mapping of system identity -> color index (keeps colors consistent across chart types).
+        let colorOrderIds = [];
         let selectedBenchmarks = [];  // { id, label, args } — args null = whole benchmark
         let globalCompareBy = 'system_name';  // single "compare by" for all systems; only options present in all systems are shown
         let availableBenchmarks = []; // from /api/common_benchmarks (each has .configs)
@@ -361,6 +363,7 @@
                 chip.appendChild(btn);
                 selectedSystemsEl.appendChild(chip);
             });
+            colorOrderIds = selectedSystems.map(s => String(s.shortName || s.primaryName || s.id));
             updateGlobalCompareBySelect();
         }
 
@@ -673,7 +676,21 @@
             });
             return { labels: sorted.map(p => p.label), values: sorted.map(p => p.value) };
         }
-        function createBarChart(parent, labels, values, xAxisLabel, formatter, debugSource, systemOrder) {
+        function sortLabelsValuesSystemIdsBestFirst(labels, values, systemIds, higherIsBetter) {
+            const pairs = (Array.isArray(labels) ? labels : []).map((label, i) => ({
+                label,
+                value: (values && values[i] != null && !isNaN(values[i])) ? Number(values[i]) : null,
+                systemId: (Array.isArray(systemIds) ? systemIds[i] : undefined)
+            }));
+            const sorted = pairs.sort((a, b) => {
+                const va = a.value != null ? a.value : (higherIsBetter ? -Infinity : Infinity);
+                const vb = b.value != null ? b.value : (higherIsBetter ? -Infinity : Infinity);
+                return higherIsBetter ? vb - va : va - vb;
+            });
+            return { labels: sorted.map(p => p.label), values: sorted.map(p => p.value), systemIds: sorted.map(p => p.systemId) };
+        }
+
+        function createBarChart(parent, labels, values, xAxisLabel, formatter, debugSource, systemIdsForLabels) {
             const BAR_THICKNESS = 30;
             const BAR_GAP = 30;
             const BAR_CHART_HEIGHT_PADDING = 24;
@@ -690,10 +707,11 @@
             const canvas = document.createElement('canvas');
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
-            // Colors by system identity (systemOrder) so each system keeps the same color across charts and sort order.
-            const order = Array.isArray(systemOrder) && systemOrder.length ? systemOrder : labelList;
-            const bgColors = labelList.map((l, i) => {
-                const idx = order.indexOf(l);
+            // Colors by stable system identity mapping.
+            const ids = Array.isArray(systemIdsForLabels) ? systemIdsForLabels : [];
+            const bgColors = labelList.map((_, i) => {
+                const sysId = ids[i];
+                const idx = (sysId != null) ? colorOrderIds.indexOf(String(sysId)) : -1;
                 const colorIndex = idx >= 0 ? idx : i;
                 return defaultColors[colorIndex % defaultColors.length];
             });
@@ -1713,7 +1731,7 @@
                         formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(1));
                     }
 
-                    const sortedOverall = sortLabelsValuesBestFirst(systemLabels, values, true);
+                    const sortedOverall = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, true);
                     createBarChart(
                         barWrap,
                         sortedOverall.labels,
@@ -1721,7 +1739,7 @@
                         label,
                         formatter,
                         'overall-composite',
-                        systemLabels
+                        sortedOverall.systemIds
                     );
                 }
                 if (showWinsLossCharts && systems.length >= 2) {
@@ -1734,8 +1752,8 @@
                     pieRow.style.alignItems = 'flex-start';
                     pieRow.style.justifyContent = 'center';
                     globalSection.appendChild(pieRow);
-                    addPieChart(pieRow, systemLabels, globalWins, 'Overall wins (best score per option)');
-                    addPieChart(pieRow, systemLabels, globalLosses, 'Overall losses (worst score per option)');
+                    addPieChart(pieRow, systemLabels, globalWins, 'Overall wins (best score per option)', systems);
+                    addPieChart(pieRow, systemLabels, globalLosses, 'Overall losses (worst score per option)', systems);
                 }
 
                 const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
@@ -1770,7 +1788,7 @@
                             xLabel = scale ? `${metric} (${scale}) — ${directionText}` : `${metric} — ${directionText}`;
                         }
                         const sensorHigher = normalizeComposite || HIB;
-                        const sortedSensor = sortLabelsValuesBestFirst(systemLabels, values, sensorHigher);
+                        const sortedSensor = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, sensorHigher);
                         createBarChart(
                             wrap,
                             sortedSensor.labels,
@@ -1778,7 +1796,7 @@
                             xLabel,
                             formatter,
                             'overall-sensor',
-                            systemLabels
+                            sortedSensor.systemIds
                         );
                     });
                 }
@@ -1786,7 +1804,7 @@
                 chartsContainer.appendChild(globalSection);
             }
 
-            function addPieChart(parent, systemLabels, values, title) {
+            function addPieChart(parent, systemLabels, values, title, systemIds) {
                 const PIE_SIZE = 200;
                 const wrap = document.createElement('div');
                 wrap.style.marginBottom = '1rem';
@@ -1807,7 +1825,13 @@
                 wrap.appendChild(canvas);
                 parent.appendChild(wrap);
                 const data = systemLabels.map((_, i) => values[i] != null && !isNaN(values[i]) ? values[i] : 0);
-                const bgColors = systemLabels.map((_, i) => defaultColors[i % defaultColors.length]);
+                const ids = Array.isArray(systemIds) ? systemIds : [];
+                const bgColors = systemLabels.map((_, i) => {
+                    const sysId = ids[i];
+                    const idx = (sysId != null) ? colorOrderIds.indexOf(String(sysId)) : -1;
+                    const colorIndex = idx >= 0 ? idx : i;
+                    return defaultColors[colorIndex % defaultColors.length];
+                });
                 const ch = new Chart(canvas.getContext('2d'), {
                     type: 'pie',
                     data: { labels: systemLabels, datasets: [{ data, backgroundColor: bgColors, borderColor: 'rgba(0,0,0,0.2)', borderWidth: 1 }] },
@@ -1886,8 +1910,8 @@
                             ? (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)')
                             : (chartData.scale ? `${chartData.scale} — ${directionText}` : directionText);
                         const individualHigher = normalizeComposite || HIB;
-                        const sortedIndividual = sortLabelsValuesBestFirst(labels, values, individualHigher);
-                        createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual', labels);
+                        const sortedIndividual = sortLabelsValuesSystemIdsBestFirst(labels, values, traceNames, individualHigher);
+                        createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual', sortedIndividual.systemIds);
                     } else if (chartData.display_format === 'LINE_GRAPH') {
                         const canvas = document.createElement('canvas');
                         canvas.style.width = '100%';
@@ -1927,7 +1951,13 @@
                             if (lineContainer.style.display === 'none') {
                                 const firstTrace = chartData.traces[0] || {};
                                 const labels = (firstTrace.x && firstTrace.x.length) ? firstTrace.x.map((_, i) => i) : (firstTrace.y || []).map((_, i) => i);
-                                const datasets = chartData.traces.map((t, i) => ({ label: t.name, data: t.y || [], borderColor: defaultColors[i % defaultColors.length], backgroundColor: 'rgba(0,0,0,0)', tension: 0.1, pointRadius: 0, borderWidth: 2 }));
+                                const datasets = chartData.traces.map((t, i) => {
+                                    const sysId = t.name;
+                                    const idx = (sysId != null) ? colorOrderIds.indexOf(String(sysId)) : -1;
+                                    const colorIndex = idx >= 0 ? idx : i;
+                                    const color = defaultColors[colorIndex % defaultColors.length];
+                                    return { label: t.name, data: t.y || [], borderColor: color, backgroundColor: 'rgba(0,0,0,0)', tension: 0.1, pointRadius: 0, borderWidth: 2 };
+                                });
                                 lineChartInstance = new Chart(lineCanvas.getContext('2d'), { type: 'line', data: { labels, datasets }, options: { maintainAspectRatio: false, scales: { x: { title: { display: true, text: 'Samples' } }, y: { title: { display: true, text: chartData.scale || '' } } }, plugins: { legend: { display: true, position: 'bottom' }, datalabels: { display: false } } } });
                                 activeCharts.push(lineChartInstance);
                                 lineContainer.style.display = 'block';
@@ -1983,7 +2013,7 @@
                     : 'Composite score (geometric mean)';
                 const aggVals = aggValues.map(v => v != null ? v : 0);
                 const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
-                const sortedAgg = sortLabelsValuesBestFirst(systemLabels, aggVals, aggHigher);
+                const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
                 createBarChart(
                     aggSection,
                     sortedAgg.labels,
@@ -1991,7 +2021,7 @@
                     compositeLabel,
                     (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2)),
                     'aggregate',
-                    systemLabels
+                    sortedAgg.systemIds
                 );
                 if (systems.length >= 2) {
                     const winsToggle = document.createElement('button');
@@ -2008,8 +2038,8 @@
                     pieRow.style.alignItems = 'flex-start';
                     pieRow.style.justifyContent = 'center';
                     aggSection.appendChild(pieRow);
-                    addPieChart(pieRow, systemLabels, wins, 'Wins (best score per option)');
-                    addPieChart(pieRow, systemLabels, losses, 'Losses (worst score per option)');
+                    addPieChart(pieRow, systemLabels, wins, 'Wins (best score per option)', systems);
+                    addPieChart(pieRow, systemLabels, losses, 'Losses (worst score per option)', systems);
                     winsToggle.addEventListener('click', () => {
                         const open = pieRow.style.display !== 'none';
                         pieRow.style.display = open ? 'none' : 'flex';
