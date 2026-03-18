@@ -1488,6 +1488,238 @@ def api_scatter_candidates():
         }
     }, 200
 
+
+@app.route('/api/explain_underperformance')
+def api_explain_underperformance():
+    """
+    Explain why a specific system underperforms on a benchmark/config by ranking
+    the system's component values that fall into the worst-performing cohorts.
+
+    This is association-based (not causal): it uses cohort mean performance for each
+    component value and compares to the best cohort mean for that feature.
+    """
+    from app.analyzer import INSIGHT_COMPONENT_KEYS, MIN_SYSTEMS_TOTAL, MIN_SYSTEMS_PER_COHORT
+
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+    system_id_raw = request.args.get('system_id')
+
+    if not title:
+        return {"error": "Missing benchmark_title query parameter"}, 400
+    if not system_id_raw:
+        return {"error": "Missing system_id query parameter"}, 400
+    try:
+        system_id = int(system_id_raw)
+    except (ValueError, TypeError):
+        return {"error": "Invalid system_id"}, 400
+
+    top_n_components = int(request.args.get('top_n_components') or 6)
+    top_n_pairs = int(request.args.get('top_n_pairs') or 3)
+    include_pairs = (request.args.get('include_pairs') or '1').lower() not in {'0', 'false', 'no'}
+
+    label_map = dict(COMPARE_BY_OPTIONS)
+
+    # Resolve primary benchmark ids for this title/app_version.
+    bms_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    )
+    if app_version:
+        bms_q = bms_q.filter(Benchmark.app_version == app_version)
+    primary_bms = bms_q.all()
+    if not primary_bms:
+        return {"error": "No primary BAR_GRAPH benchmark found for this title/app_version"}, 404
+    primary_bm_ids = [b.id for b in primary_bms]
+
+    # Determine direction: normalize to "higher is better".
+    def proportion_is_lower_better(p):
+        p = (p or '').strip().upper()
+        if p == 'LIB':
+            return True
+        if p == 'HIB':
+            return False
+        pl = (p or '').lower()
+        return 'lower' in pl and 'better' in pl
+
+    is_lower_better = any(proportion_is_lower_better(b.proportion) for b in primary_bms)
+    y_flip = -1.0 if is_lower_better else 1.0
+
+    # Analyzer uses 'default' as the bucket label for empty BenchmarkResult.arguments.
+    # The DB stores empty args as ''.
+    args_analysis_key = 'default' if (not args_str or args_str.lower() == 'default') else args_str
+    args_db = '' if args_analysis_key == 'default' else args_str
+
+    # Gather all primary results for this benchmark/config and compute per-system mean.
+    all_results = BenchmarkResult.query.filter(
+        BenchmarkResult.benchmark_id.in_(primary_bm_ids),
+        BenchmarkResult.arguments == args_db,
+        BenchmarkResult.value.isnot(None),
+    ).all()
+
+    if not all_results:
+        return {"error": "No BAR_GRAPH results found for this benchmark/config"}, 404
+
+    by_system_vals = defaultdict(list)
+    for r in all_results:
+        by_system_vals[r.system_id].append(r.value)
+
+    if system_id not in by_system_vals:
+        return {"error": "Requested system_id has no results for this benchmark/config"}, 404
+
+    y_raw_by_system = {sid: statistics.mean(vals) for sid, vals in by_system_vals.items()}
+    y_norm_by_system = {sid: y_raw * y_flip for sid, y_raw in y_raw_by_system.items()}
+
+    systems = System.query.filter(System.id.in_(list(y_raw_by_system.keys()))).all()
+    comps_by_sid = {s.id: get_system_components(s) for s in systems}
+    system_comps = comps_by_sid.get(system_id, {})
+
+    # Observed system vs best system.
+    system_y_raw = y_raw_by_system[system_id]
+    system_y_norm = y_norm_by_system[system_id]
+    best_system_norm = max(y_norm_by_system.values())
+    worst_system_norm = min(y_norm_by_system.values())
+    gap_to_best_system = best_system_norm - system_y_norm
+
+    # Rank single-feature cohort mismatches.
+    feature_explanations = []
+    for feature_key in INSIGHT_COMPONENT_KEYS:
+        value_to_norm_scores = defaultdict(list)  # component value -> [normalized y per system]
+        systems_with_feature = set()
+
+        for sid, y_norm in y_norm_by_system.items():
+            v = (comps_by_sid.get(sid, {}).get(feature_key) or '').strip()
+            if not v:
+                continue
+            systems_with_feature.add(sid)
+            value_to_norm_scores[v].append(y_norm)
+
+        total_systems_with_feature = len(systems_with_feature)
+        if total_systems_with_feature < MIN_SYSTEMS_TOTAL:
+            continue
+
+        valid_values = []
+        for v, norm_scores in value_to_norm_scores.items():
+            n_systems_for_value = len(norm_scores)  # 1 score per system
+            if n_systems_for_value < MIN_SYSTEMS_PER_COHORT:
+                continue
+            valid_values.append((v, statistics.mean(norm_scores), n_systems_for_value))
+
+        if len(valid_values) < 2:
+            continue
+
+        system_value = (system_comps.get(feature_key) or '').strip()
+        if not system_value:
+            continue
+
+        best_mean_norm = max(m for _, m, _ in valid_values)
+        system_entry = next((e for e in valid_values if e[0] == system_value), None)
+        if not system_entry:
+            continue
+
+        _, system_mean_norm, n_systems_for_value = system_entry
+        delta_to_best_cohort = best_mean_norm - system_mean_norm
+        if delta_to_best_cohort <= 0:
+            continue
+
+        feature_explanations.append({
+            "feature_key": feature_key,
+            "feature_label": label_map.get(feature_key, feature_key),
+            "feature_value": system_value,
+            "cohort_mean_normalized": system_mean_norm,
+            "best_cohort_mean_normalized": best_mean_norm,
+            "delta_to_best_cohort_normalized": delta_to_best_cohort,
+            "n_systems_for_cohort_value": n_systems_for_value,
+            "n_systems_with_feature": total_systems_with_feature,
+        })
+
+    feature_explanations.sort(key=lambda x: x["delta_to_best_cohort_normalized"], reverse=True)
+    feature_explanations = feature_explanations[:top_n_components]
+
+    pair_explanations = []
+    if include_pairs:
+        # Start with the pair concepts that map well to "CPU dominates vs GPU dominates".
+        pair_defs = [
+            ("processor", "memory"),
+            ("processor", "cooler_model"),
+            ("processor", "graphics"),
+            ("graphics", "memory"),
+        ]
+
+        for k1, k2 in pair_defs:
+            pair_to_norm_scores = defaultdict(list)  # (v1,v2) -> [normalized y per system]
+            systems_with_pair = set()
+
+            for sid, y_norm in y_norm_by_system.items():
+                c1 = (comps_by_sid.get(sid, {}).get(k1) or '').strip()
+                c2 = (comps_by_sid.get(sid, {}).get(k2) or '').strip()
+                if not c1 or not c2:
+                    continue
+                systems_with_pair.add(sid)
+                pair_to_norm_scores[(c1, c2)].append(y_norm)
+
+            total_systems_with_pair = len(systems_with_pair)
+            if total_systems_with_pair < MIN_SYSTEMS_TOTAL or len(pair_to_norm_scores) < 2:
+                continue
+
+            valid_pairs = []
+            for pair_tuple, norm_scores in pair_to_norm_scores.items():
+                n_systems_for_pair = len(norm_scores)
+                if n_systems_for_pair < MIN_SYSTEMS_PER_COHORT:
+                    continue
+                valid_pairs.append((pair_tuple, statistics.mean(norm_scores), n_systems_for_pair))
+
+            if len(valid_pairs) < 2:
+                continue
+
+            s1 = (system_comps.get(k1) or '').strip()
+            s2 = (system_comps.get(k2) or '').strip()
+            if not s1 or not s2:
+                continue
+
+            best_pair_mean_norm = max(m for _, m, _ in valid_pairs)
+            system_pair_entry = next((e for e in valid_pairs if e[0] == (s1, s2)), None)
+            if not system_pair_entry:
+                continue
+
+            _, system_pair_mean_norm, n_systems_for_pair = system_pair_entry
+            delta_to_best_pair_normalized = best_pair_mean_norm - system_pair_mean_norm
+            if delta_to_best_pair_normalized <= 0:
+                continue
+
+            pair_explanations.append({
+                "pair_keys": [k1, k2],
+                "pair_label": f"{label_map.get(k1,k1)} + {label_map.get(k2,k2)}",
+                "pair_values": [s1, s2],
+                "pair_mean_normalized": system_pair_mean_norm,
+                "best_pair_mean_normalized": best_pair_mean_norm,
+                "delta_to_best_pair_normalized": delta_to_best_pair_normalized,
+                "n_systems_for_pair": n_systems_for_pair,
+                "n_systems_with_pair": total_systems_with_pair,
+            })
+
+        pair_explanations.sort(key=lambda x: x["delta_to_best_pair_normalized"], reverse=True)
+        pair_explanations = pair_explanations[:top_n_pairs]
+
+    return {
+        "benchmark_title": title,
+        "app_version": app_version,
+        "args": args_analysis_key,
+        "system_id": system_id,
+        "direction": "higher_is_better_after_normalization",
+        "y_flip": y_flip,
+        "observed": {
+            "y_raw_mean": system_y_raw,
+            "y_normalized_mean": system_y_norm,
+            "best_system_y_normalized_mean": best_system_norm,
+            "worst_system_y_normalized_mean": worst_system_norm,
+            "gap_to_best_system_normalized": gap_to_best_system,
+        },
+        "single_feature_contributors": feature_explanations,
+        "pair_contributors": pair_explanations,
+    }, 200
+
 @app.route('/insights')
 def insights():
     analyses = BenchmarkAnalysis.query.order_by(BenchmarkAnalysis.benchmark_title, BenchmarkAnalysis.benchmark_app_version).all()
@@ -1525,6 +1757,65 @@ def api_systems_for_benchmark():
             } for s in systems
         ]
     }
+
+
+@app.route('/api/systems_for_benchmark_title')
+def api_systems_for_benchmark_title():
+    """
+    Return systems that have BAR_GRAPH primary results for a benchmark title/app_version/args.
+    Used by the Performance Insights UI to populate a system dropdown.
+    """
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+
+    if not title:
+        return {"error": "Missing benchmark_title query parameter"}, 400
+
+    # Analyzer buckets empty args as the string 'default'
+    args_db = ''
+    if args_str and args_str.lower() != 'default':
+        args_db = args_str
+
+    bms_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    )
+    if app_version:
+        bms_q = bms_q.filter(Benchmark.app_version == app_version)
+
+    primary_bms = bms_q.all()
+    if not primary_bms:
+        return {"systems": []}
+
+    primary_bm_ids = [b.id for b in primary_bms]
+
+    results_q = (
+        BenchmarkResult.query
+        .filter(
+            BenchmarkResult.benchmark_id.in_(primary_bm_ids),
+            BenchmarkResult.arguments == args_db,
+            BenchmarkResult.value.isnot(None),
+        )
+    )
+    results = results_q.all()
+    sys_ids = list({r.system_id for r in results})
+    if not sys_ids:
+        return {"systems": []}
+
+    systems = System.query.filter(System.id.in_(sys_ids)).all()
+    return {
+        "systems": [
+            {
+                "id": s.id,
+                "identifier": s.identifier,
+                "chassis_version": s.chassis_version,
+                "primary_system_name": get_primary_group_name(s),
+                "label": format_system_profile_label(s)
+            } for s in systems
+        ]
+    }, 200
 
 @app.cli.command("init-db")
 def init_db():
