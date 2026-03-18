@@ -348,6 +348,8 @@
         url.searchParams.set('top_n_components', '6');
         url.searchParams.set('top_n_pairs', '3');
         url.searchParams.set('include_pairs', '1');
+        url.searchParams.set('min_cohort_n', '2');
+        url.searchParams.set('min_pair_n', '2');
 
         const resp = await fetch(url.toString());
         const data = await resp.json();
@@ -380,6 +382,8 @@
             single.forEach(c => {
                 html += `<div style="color: var(--text-secondary); font-size:0.88rem; margin-bottom:0.35rem;">${c.feature_label}: <span style="color: var(--text-primary);">${c.feature_value}</span> (delta_to_best_cohort_normalized=${fmt(c.delta_to_best_cohort_normalized)}, n=${c.n_systems_for_cohort_value})</div>`;
             });
+        } else {
+            html += `<div style="margin-top:0.75rem; color: var(--text-secondary); font-size:0.88rem;">Not enough repeated cohort evidence for single components (try lowering min_cohort_n).</div>`;
         }
 
         if (pairs.length) {
@@ -387,6 +391,8 @@
             pairs.forEach(p => {
                 html += `<div style="color: var(--text-secondary); font-size:0.88rem; margin-bottom:0.35rem;">${p.pair_label}: <span style="color: var(--text-primary);">${p.pair_values.join(' + ')}</span> (delta_to_best_pair_normalized=${fmt(p.delta_to_best_pair_normalized)}, n=${p.n_systems_for_pair})</div>`;
             });
+        } else if (data.pair_contributors) {
+            html += `<div style="margin-top:0.75rem; color: var(--text-secondary); font-size:0.88rem;">Not enough repeated cohort evidence for component pairs (try lowering min_pair_n).</div>`;
         }
 
         wrap.innerHTML = html;

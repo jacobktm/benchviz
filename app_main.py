@@ -1517,6 +1517,11 @@ def api_explain_underperformance():
     top_n_components = int(request.args.get('top_n_components') or 6)
     top_n_pairs = int(request.args.get('top_n_pairs') or 3)
     include_pairs = (request.args.get('include_pairs') or '1').lower() not in {'0', 'false', 'no'}
+    # Evidence thresholds to avoid "everything differs" when cohorts are singletons.
+    # - min_cohort_n: minimum number of systems that share the SAME component value
+    # - min_pair_n: minimum number of systems that share the SAME component pair
+    min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    min_pair_n = int(request.args.get('min_pair_n') or 2)
 
     label_map = dict(COMPARE_BY_OPTIONS)
 
@@ -1602,7 +1607,7 @@ def api_explain_underperformance():
         valid_values = []
         for v, norm_scores in value_to_norm_scores.items():
             n_systems_for_value = len(norm_scores)  # 1 score per system
-            if n_systems_for_value < MIN_SYSTEMS_PER_COHORT:
+            if n_systems_for_value < min_cohort_n:
                 continue
             valid_values.append((v, statistics.mean(norm_scores), n_systems_for_value))
 
@@ -1666,7 +1671,7 @@ def api_explain_underperformance():
             valid_pairs = []
             for pair_tuple, norm_scores in pair_to_norm_scores.items():
                 n_systems_for_pair = len(norm_scores)
-                if n_systems_for_pair < MIN_SYSTEMS_PER_COHORT:
+                if n_systems_for_pair < min_pair_n:
                     continue
                 valid_pairs.append((pair_tuple, statistics.mean(norm_scores), n_systems_for_pair))
 
@@ -1709,6 +1714,11 @@ def api_explain_underperformance():
         "system_id": system_id,
         "direction": "higher_is_better_after_normalization",
         "y_flip": y_flip,
+        "evidence_thresholds": {
+            "min_cohort_n": min_cohort_n,
+            "min_pair_n": min_pair_n,
+            "min_systems_total_with_feature": MIN_SYSTEMS_TOTAL,
+        },
         "observed": {
             "y_raw_mean": system_y_raw,
             "y_normalized_mean": system_y_norm,
