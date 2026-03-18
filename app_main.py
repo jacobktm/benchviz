@@ -1258,10 +1258,13 @@ def api_scatter_candidates():
     comps = {s.id: get_system_components(s) for s in systems}
 
     # Points for each system
+    y_raw_by_system = {}
     y_by_system = {}
     for sid, vals in by_system.items():
         # mean across benchmark variants for this system/args
-        y_by_system[sid] = statistics.mean(vals) * y_flip
+        y_raw = statistics.mean(vals)
+        y_raw_by_system[sid] = y_raw
+        y_by_system[sid] = y_raw * y_flip
 
     def robust_spread(vals):
         # Median absolute deviation-like spread
@@ -1423,6 +1426,7 @@ def api_scatter_candidates():
                     "x": x_raw,
                     "x_numeric": parse_version_numeric(x_raw),
                     "y": y,
+                    "y_raw": y_raw_by_system.get(sid),
                 })
 
             candidates.append({
@@ -1449,6 +1453,7 @@ def api_scatter_candidates():
                     "system_id": sid,
                     "x": x_raw,
                     "y": y,
+                    "y_raw": y_raw_by_system.get(sid),
                 })
 
             candidates.append({
@@ -1462,6 +1467,7 @@ def api_scatter_candidates():
             })
 
     candidates.sort(key=lambda c: (c["effect_score"], c.get("spearman_rho") or 0), reverse=True)
+    y_label = primary_bms[0].scale or "Score"
     return {
         "candidates": candidates[:top_k],
         "meta": {
@@ -1473,6 +1479,8 @@ def api_scatter_candidates():
             "min_points": min_points,
             "min_distinct_x": min_distinct_x,
             "min_effect": min_effect,
+            "y_axis_label": y_label,
+            "y_flip": y_flip,
         }
     }, 200
 
