@@ -734,6 +734,18 @@ def api_compare():
         primary_benchmark = db.session.get(Benchmark, b_id)
         if not primary_benchmark:
             continue
+        # If the selected benchmark id points at a non-primary BAR_GRAPH (e.g. a perf counter),
+        # pivot to a primary benchmark with the same title+version so comparisons use the real
+        # performance result.
+        if not getattr(primary_benchmark, "is_primary", False):
+            candidate = Benchmark.query.filter(
+                Benchmark.title == primary_benchmark.title,
+                Benchmark.app_version == primary_benchmark.app_version,
+                Benchmark.display_format == 'BAR_GRAPH',
+                Benchmark.is_primary == True,
+            ).first()
+            if candidate:
+                primary_benchmark = candidate
 
         # Resolve benchmark IDs that actually have results for the selected systems and match
         # this test (title + app_version). Use results as source of truth so we never miss
@@ -749,6 +761,7 @@ def api_compare():
                 Benchmark.title == primary_benchmark.title,
                 Benchmark.app_version == primary_benchmark.app_version,
                 Benchmark.display_format == 'BAR_GRAPH',
+                Benchmark.is_primary == True,
             ).all()
         ]
         if not matching_primary_bm_ids:
