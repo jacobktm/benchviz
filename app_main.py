@@ -1345,5 +1345,69 @@ def debug_insights_coverage(title, app_version):
             arg_label = r[2] if r[2] is not None else ""
             print(f"- {r[0]} (app={r[1]}), args='{arg_label}': n_systems={r[3]}")
 
+
+@app.cli.command("debug-insights-feature-values")
+@click.option("--title", required=True, help="Benchmark title substring (case-insensitive). Example: 'Timed Linux Kernel Compilation'")
+@click.option("--app-version", default="", help="Exact benchmark app_version. Optional.")
+@click.option("--args", "args_value", default="defconfig", help="Exact BenchmarkResult.arguments to analyze (config).")
+def debug_insights_feature_values(title, app_version, args_value):
+    """
+    For a given benchmark (title substring + optional app-version) and exact args string,
+    prints how many distinct systems have data and how many distinct values exist for each
+    insight feature key.
+    """
+    from sqlalchemy import func as _func
+    from app.analyzer import INSIGHT_COMPONENT_KEYS
+    from app.components import get_system_components
+
+    title_sub = (title or "").strip().lower()
+    app_ver = (app_version or "").strip()
+    args_str = (args_value or "").strip()
+
+    with app.app_context():
+        # Find candidate BAR_GRAPH benchmarks matching title (+ optional app-version).
+        bm_q = Benchmark.query.filter(Benchmark.display_format == "BAR_GRAPH")
+        if title_sub:
+            bm_q = bm_q.filter(_func.lower(Benchmark.title).like(f"%{title_sub}%"))
+        if app_ver:
+            bm_q = bm_q.filter(Benchmark.app_version == app_ver)
+        bms = bm_q.all()
+        if not bms:
+            print("No matching BAR_GRAPH benchmarks found.")
+            return
+
+        bm_ids = [b.id for b in bms]
+        # Gather systems that have non-null numeric results for the requested args.
+        res_q = (
+            BenchmarkResult.query
+            .filter(BenchmarkResult.benchmark_id.in_(bm_ids))
+            .filter(BenchmarkResult.arguments == args_str)
+            .filter(BenchmarkResult.value.isnot(None))
+        )
+        sys_ids = sorted({r.system_id for r in res_q.all()})
+        print(f"Matched benchmarks: {len(bms)}; args='{args_str}'; distinct systems with values: {len(sys_ids)}")
+        if not sys_ids:
+            return
+
+        systems = System.query.filter(System.id.in_(sys_ids)).all()
+        comps = {s.id: get_system_components(s) for s in systems}
+
+        for fk in INSIGHT_COMPONENT_KEYS:
+            values_by_sys = {}
+            for sid in sys_ids:
+                v = (comps.get(sid, {}).get(fk) or "").strip()
+                if v:
+                    values_by_sys[sid] = v
+            if not values_by_sys:
+                print(f"- {fk}: no non-empty values extracted")
+                continue
+            # Distinct values distribution
+            dist = {}
+            for sid, v in values_by_sys.items():
+                dist.setdefault(v, set()).add(sid)
+            items = sorted([(v, len(sids)) for v, sids in dist.items()], key=lambda x: -x[1])
+            distinct_vals = len(items)
+            print(f"- {fk}: distinct values={distinct_vals}, top={items[:3]}")
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)
