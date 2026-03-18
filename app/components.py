@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 
 def clean_text(value: Any) -> str:
@@ -39,6 +40,36 @@ def get_system_components(system) -> dict[str, str]:
     """Build a dict of component keys -> display values for comparison labels (CPU, GPU, OS, etc.)."""
     hardware = system.hardware or ""
 
+    def normalize_processor_name(processor: str) -> str:
+        """
+        Shorten CPU model strings for UI labels.
+
+        Example inputs:
+          - "AMD Ryzen 9 9950X 16-Core @ 5.76GHz (16 Cores / 32 Threads)"
+          - "Intel Core Ultra 9 275HX @ 3.90GHz (24 Cores)"
+          - "AMD Ryzen 7 7840U @ 5.13GHz (8 Cores / 16 Threads)"
+
+        Example outputs:
+          - "AMD Ryzen 9 9950X"
+          - "Intel Core Ultra 9 275HX"
+          - "AMD Ryzen 7 7840U"
+        """
+        s = clean_text(processor)
+        if not s:
+            return ""
+
+        # Drop the frequency portion (" @ 5.76GHz ...")
+        s = re.split(r'\s*@\s*', s, maxsplit=1)[0].strip()
+
+        # Drop trailing core-count descriptors like "16-Core"
+        s = re.sub(r'\s*\d+\s*-\s*Core[s]?\s*$', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'\s*\d+\s*-\s*Core\s*$', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'\s*\d+\s*Core[s]?\s*$', '', s, flags=re.IGNORECASE)
+
+        # Collapse whitespace for safety.
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
     def extract_hw_any(prefixes: list[str]) -> str:
         for p in prefixes:
             v = extract_hardware_component(hardware, p)
@@ -48,6 +79,7 @@ def get_system_components(system) -> dict[str, str]:
 
     # Parsed from hardware string (Phoronix labels vary a bit between sources)
     processor = extract_hw_any(["Processor", "CPU", "CPU Model"])
+    processor = normalize_processor_name(processor) if processor else ""
     graphics = extract_hw_any(["Graphics", "GPU", "Graphics Processor"])
     memory = extract_hw_any(["Memory", "RAM", "System Memory"])
     motherboard = extract_hw_any(["Motherboard", "Mainboard", "Motherboard / Mainboard"])
