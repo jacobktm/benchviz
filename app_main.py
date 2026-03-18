@@ -1528,8 +1528,9 @@ def api_variance_feature_map():
     if not primary_bms:
         return {"error": "No primary BAR_GRAPH benchmark found for the given title/app_version"}, 404
 
+    rep_bm = primary_bms[0]
     label_map = dict(COMPARE_BY_OPTIONS)
-    y_label_base = primary_bms[0].scale or "Score"
+    y_label_base = rep_bm.scale or "Score"
 
     def proportion_is_lower_better(p):
         p = (p or '').strip().upper()
@@ -1751,6 +1752,7 @@ def api_variance_leaderboard():
 
     top_k = int(request.args.get('top_k') or 10)
     min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    min_distinct_cohorts = int(request.args.get('min_distinct_cohorts') or 2)
     include_pairs = (request.args.get('include_pairs') or '1').lower() not in {'0', 'false', 'no'}
 
     if not title:
@@ -1767,8 +1769,9 @@ def api_variance_leaderboard():
     if not primary_bms:
         return {"error": "No primary BAR_GRAPH benchmark found for the given title/app_version"}, 404
 
+    rep_bm = primary_bms[0]
     label_map = dict(COMPARE_BY_OPTIONS)
-    y_label_base = primary_bms[0].scale or "Score"
+    y_label_base = rep_bm.scale or "Score"
 
     def proportion_is_lower_better(p):
         p = (p or '').strip().upper()
@@ -1836,6 +1839,83 @@ def api_variance_leaderboard():
     overall_spread = robust_spread(all_y_norm)
     overall_spread_eps = overall_spread + 1e-9
 
+    # Feature scope inference: restrict candidate keys to reduce confounding.
+    # We infer whether the benchmark is CPU/GPU/storage heavy based on the benchmark text,
+    # and then only rank keys that are plausibly relevant to that scope.
+    text_blob = " ".join([
+        (rep_bm.title or ""),
+        (rep_bm.description or ""),
+        args_str or "",
+    ]).lower()
+
+    cpu_scoped_keys = {
+        "processor",
+        "memory",
+        "motherboard",
+        "chipset",
+        "os",
+        "kernel_version",
+        "llvm_version",
+        "cooler_model",
+        "chassis_version",
+        "psu",
+        "custom_hardware",
+        "external_off",
+        "memory_fans",
+    }
+    gpu_scoped_keys = {
+        "graphics",
+        "nvidia_driver",
+        "mesa_version",
+        "llvm_version",
+        "vulkan_driver",
+        "processor",
+        "memory",
+        "os",
+        "chassis_version",
+        "gpu_fans",
+    }
+    storage_scoped_keys = {
+        "nvme_fans",
+        "thermal_pad_above_nvme",
+        "thermal_pad_below_nvme",
+        "thermal_pad_sandwich_nvme",
+        "custom_hardware",
+        "chassis_version",
+        "external_off",
+        "psu",
+        "memory",
+        "processor",
+    }
+
+    scope = "general"
+    if ("kernel" in text_blob and ("build" in text_blob or "compil" in text_blob or "make" in text_blob or "gcc" in text_blob)) or \
+       ("compil" in text_blob and ("linux" in text_blob)):
+        scope = "cpu"
+    elif any(k in text_blob for k in ["vulkan", "cuda", "opengl", "render", "graphics", "gpu "]):
+        scope = "gpu"
+    elif any(k in text_blob for k in ["nvme", "disk", "io", "i/o", "storage", "ssd", "hdd", "throughput"]):
+        scope = "storage"
+
+    # Optional override for debugging / experimentation.
+    scope_override = (request.args.get('scope') or '').strip().lower()
+    if scope_override in {"all", "general"}:
+        scope = "general"
+    elif scope_override in {"cpu", "gpu", "storage"}:
+        scope = scope_override
+
+    if scope == "cpu":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in cpu_scoped_keys]
+    elif scope == "gpu":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in gpu_scoped_keys]
+    elif scope == "storage":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in storage_scoped_keys]
+    else:
+        allowed_singles = list(INSIGHT_COMPONENT_KEYS)
+
+    if not allowed_singles:
+        allowed_singles = list(INSIGHT_COMPONENT_KEYS)
+
     rows = []
 
     def eval_single(feature_key):
@@ -1853,13 +1933,16 @@ def api_variance_leaderboard():
             return
 
         qualifying_buckets = [(v, ys) for v, ys in buckets.items() if len(ys) >= min_cohort_n]
-        if len(qualifying_buckets) < 2:
+        if len(qualifying_buckets) < min_distinct_cohorts:
             return
 
         bucket_spreads = []
         for v, ys in qualifying_buckets:
             s = robust_spread(ys)
             bucket_spreads.append((v, s, len(ys)))
+
+        if len(bucket_spreads) < min_distinct_cohorts:
+            return
 
         # Weighted by bucket size so big buckets matter more.
         total_n = sum(n for _, _, n in bucket_spreads) or 1
@@ -1894,13 +1977,16 @@ def api_variance_leaderboard():
             return
 
         qualifying = [(pair, ys) for pair, ys in buckets.items() if len(ys) >= min_cohort_n]
-        if len(qualifying) < 2:
+        if len(qualifying) < min_distinct_cohorts:
             return
 
         bucket_spreads = []
         for pair, ys in qualifying:
             s = robust_spread(ys)
             bucket_spreads.append((pair, s, len(ys)))
+
+        if len(bucket_spreads) < min_distinct_cohorts:
+            return
 
         total_n = sum(n for _, _, n in bucket_spreads) or 1
         conditional_spread = sum(s * n for _, s, n in bucket_spreads) / total_n
@@ -1919,17 +2005,22 @@ def api_variance_leaderboard():
         })
 
     # Singles
-    for feature_key in INSIGHT_COMPONENT_KEYS:
+    for feature_key in allowed_singles:
         eval_single(feature_key)
 
     # Pairs
     if include_pairs:
-        for k1, k2 in [
-            ("processor", "memory"),
-            ("processor", "cooler_model"),
-            ("processor", "graphics"),
-            ("graphics", "memory"),
-        ]:
+        # Only evaluate pairs that match the inferred scope.
+        if scope == "cpu":
+            pair_defs = [("processor", "memory"), ("processor", "cooler_model")]
+        elif scope == "gpu":
+            pair_defs = [("processor", "graphics"), ("graphics", "memory")]
+        elif scope == "storage":
+            pair_defs = [("processor", "memory")]
+        else:
+            pair_defs = [("processor", "memory"), ("processor", "cooler_model"), ("processor", "graphics"), ("graphics", "memory")]
+
+        for k1, k2 in pair_defs:
             eval_pair(k1, k2)
 
     rows.sort(key=lambda r: r["reduction_ratio"], reverse=True)
@@ -1946,7 +2037,9 @@ def api_variance_leaderboard():
             "overall_spread": overall_spread,
             "overall_spread_eps": overall_spread_eps,
             "min_cohort_n": min_cohort_n,
+            "min_distinct_cohorts": min_distinct_cohorts,
             "include_pairs": include_pairs,
+            "feature_scope": scope,
         }
     }, 200
 

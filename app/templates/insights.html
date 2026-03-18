@@ -103,6 +103,11 @@
             <input id="scatterMinPoints" type="number" min="1" max="50" step="1" value="2" />
         </div>
 
+        <div class="scatter-control">
+            <label for="scatterMinDistinct">Min distinct cohort values</label>
+            <input id="scatterMinDistinct" type="number" min="2" max="20" step="1" value="2" />
+        </div>
+
         <button id="scatterRunBtn" class="btn-primary" type="button" style="min-width: 210px;">
             Show variance leaderboard
         </button>
@@ -229,6 +234,7 @@
     const argsSelect = document.getElementById('scatterArgsSelect');
     const topKInput = document.getElementById('scatterTopK');
     const minPointsInput = document.getElementById('scatterMinPoints');
+    const minDistinctInput = document.getElementById('scatterMinDistinct');
     const runBtn = document.getElementById('scatterRunBtn');
     const explainBtn = document.getElementById('scatterExplainBtn');
     const statusEl = document.getElementById('scatterStatus');
@@ -410,6 +416,7 @@
 
         const top_k = Number(topKInput.value || 10);
         const min_cohort_n = Number(minPointsInput.value || 2);
+        const min_distinct_cohorts = Number(minDistinctInput.value || 2);
 
         statusEl.textContent = 'Computing variance leaderboard...';
 
@@ -419,6 +426,7 @@
         url.searchParams.set('args', args);
         url.searchParams.set('top_k', String(top_k));
         url.searchParams.set('min_cohort_n', String(min_cohort_n));
+        url.searchParams.set('min_distinct_cohorts', String(min_distinct_cohorts));
         url.searchParams.set('include_pairs', '1');
 
         const resp = await fetch(url.toString());
@@ -431,7 +439,7 @@
 
         const rows = data.rows || [];
         if (!rows.length) {
-            statusEl.textContent = 'Not enough repeated cohort evidence to rank features (try lowering min cohort size).';
+            statusEl.textContent = 'Not enough repeated cohort evidence to rank features (try lowering min cohort size or min distinct cohorts).';
             return;
         }
 
