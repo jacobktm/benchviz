@@ -1287,5 +1287,13 @@ def backfill_perf_counters():
         db.session.commit()
         print(f"Updated {n} benchmark(s): marked perf counters as non-primary.")
 
+
+@app.cli.command("rebuild-performance-insights")
+def rebuild_performance_insights():
+    """Recompute Performance Insights (BenchmarkAnalysis) for all BAR_GRAPH benchmarks."""
+    with app.app_context():
+        analyze_benchmarks()
+        print("Performance Insights rebuilt.")
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)

@@ -43,17 +43,18 @@ def analyze_benchmarks():
     
     analysis_results = []
     
-    # Group benchmarks that are functionally identical (same identifier, title, app_version)
-    groups = {}
+    # Group benchmarks that are functionally identical for insights.
+    # Compare merges benchmark variants by (title, app_version) even when bm.identifier differs,
+    # so we do the same here to avoid fragmenting cohorts across identifiers.
+    groups = defaultdict(list)  # (title, app_version) -> [Benchmark]
     for bm in benchmarks:
-        key = (bm.identifier, bm.title, bm.app_version)
-        if key not in groups:
-            groups[key] = []
+        key = (bm.title, bm.app_version)
         groups[key].append(bm)
         
-    for (identifier, title, app_version), bm_list in groups.items():
+    for (title, app_version), bm_list in groups.items():
         # Representative benchmark for metadata
         rep_bm = bm_list[0]
+        identifier = rep_bm.identifier or ''
         is_lower_better = "Lower is Better" in (rep_bm.proportion or "")
         
         # Collect all results across all these matching benchmark definitions
@@ -128,23 +129,26 @@ def analyze_benchmarks():
                 argument_analyses[arg] = feature_stats
                 
         if argument_analyses:
-            # Save or Update the Analysis Result
-            analysis_record = BenchmarkAnalysis.query.filter_by(
-                benchmark_identifier=identifier or '',
+            # Save or Update the Analysis Result.
+            # Multiple existing rows may exist for the same title/app_version if identifier varied historically.
+            # Update them all so the UI has consistent data.
+            existing_records = BenchmarkAnalysis.query.filter_by(
                 benchmark_title=title,
                 benchmark_app_version=app_version
-            ).first()
-            
-            if not analysis_record:
+            ).all()
+
+            if not existing_records:
                 analysis_record = BenchmarkAnalysis(
-                    benchmark_identifier=identifier or '',
+                    benchmark_identifier=identifier,
                     benchmark_title=title,
                     benchmark_app_version=app_version
                 )
                 db.session.add(analysis_record)
-                
-            analysis_record.analysis_json = argument_analyses
-            analysis_record.last_updated = db.func.now()
+                existing_records = [analysis_record]
+
+            for analysis_record in existing_records:
+                analysis_record.analysis_json = argument_analyses
+                analysis_record.last_updated = db.func.now()
             
     db.session.commit()
     print("Background benchmark analysis complete.")
