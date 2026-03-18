@@ -122,6 +122,9 @@ def parse_file(file_path, system_profile=None):
             scale = result_node.findtext('Scale', default='')
             proportion = result_node.findtext('Proportion', default='')
             display_format = result_node.findtext('DisplayFormat', default='')
+            title_l = (title or '').strip().lower()
+            scale_l = (scale or '').strip().lower()
+            is_perf_counter = title_l.startswith('perf ') or title_l.startswith('perf-') or scale_l.startswith('perf')
             
             # Upsert Benchmark definition using the shared identifier string + distinct scale metrics
             benchmark = Benchmark.query.filter_by(
@@ -143,13 +146,15 @@ def parse_file(file_path, system_profile=None):
                     scale=scale,
                     proportion=proportion,
                     display_format=display_format,
-                    is_primary=(display_format == 'BAR_GRAPH')
+                    # BAR_GRAPH is usually the primary benchmark result, but Linux perf counters are
+                    # "sensor-like" metrics and shouldn't be treated as primary results.
+                    is_primary=(display_format == 'BAR_GRAPH' and not is_perf_counter)
                 )
                 db.session.add(benchmark)
                 db.session.flush()
             else:
                 # Keep is_primary in sync if display_format ever changes.
-                benchmark.is_primary = (benchmark.display_format == 'BAR_GRAPH')
+                benchmark.is_primary = (benchmark.display_format == 'BAR_GRAPH' and not is_perf_counter)
                 
             arguments = result_node.findtext('Arguments', default='')
             

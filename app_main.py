@@ -1217,5 +1217,32 @@ def ingest():
         else:
             print(f"Benchmarks directory not found at {bm_dir}")
 
+
+@app.cli.command("backfill-perf-counters")
+def backfill_perf_counters():
+    """Mark Linux perf counters as non-primary BAR_GRAPH metrics."""
+    from sqlalchemy import func, or_
+
+    with app.app_context():
+        title_l = func.lower(Benchmark.title)
+        scale_l = func.lower(Benchmark.scale)
+        q = Benchmark.query.filter(
+            Benchmark.display_format == 'BAR_GRAPH',
+            or_(
+                title_l.like('perf %'),
+                title_l.like('perf-%'),
+                scale_l.like('perf%'),
+            )
+        )
+        rows = q.all()
+        n = len(rows)
+        if not n:
+            print("No perf counters found to update.")
+            return
+        for b in rows:
+            b.is_primary = False
+        db.session.commit()
+        print(f"Updated {n} benchmark(s): marked perf counters as non-primary.")
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)
