@@ -1224,9 +1224,22 @@ def backfill_perf_counters():
     from sqlalchemy import func, or_
 
     with app.app_context():
-        # Be intentionally broad here: existing datasets can encode perf counters
-        # in title/identifier/description in slightly different ways.
-        # Only change rows that are currently marked primary.
+        # Primary fix: perf counters often appear only in BenchmarkResult.arguments
+        # (e.g. "perf page-faults defconfig"), while Benchmark.title/scale may look normal.
+        # Join through results so we can find and fix existing data reliably.
+        args_t = func.ltrim(func.lower(BenchmarkResult.arguments))
+
+        perf_benchmark_ids = [
+            r[0] for r in db.session.query(BenchmarkResult.benchmark_id)
+            .filter(or_(args_t.like('perf %'), args_t.like('perf-%')))
+            .distinct()
+            .all()
+        ]
+
+        q = Benchmark.query.filter(
+            Benchmark.id.in_(perf_benchmark_ids),
+            Benchmark.is_primary.is_(True),
+        )
         title_t = func.ltrim(func.lower(Benchmark.title))
         ident_t = func.ltrim(func.lower(Benchmark.identifier))
         desc_t = func.ltrim(func.lower(Benchmark.description))
@@ -1244,9 +1257,12 @@ def backfill_perf_counters():
             func.lower(Benchmark.description).like('%perf-%'),
         )
 
-        q = Benchmark.query.filter(
-            Benchmark.is_primary.is_(True),
-            perf_match
+        # Also include any perf-like metadata even if arguments don't include it.
+        q = q.union(
+            Benchmark.query.filter(
+                Benchmark.is_primary.is_(True),
+                perf_match
+            )
         )
         rows = q.all()
         n = len(rows)

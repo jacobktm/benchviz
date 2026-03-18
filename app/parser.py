@@ -122,6 +122,8 @@ def parse_file(file_path, system_profile=None):
             scale = result_node.findtext('Scale', default='')
             proportion = result_node.findtext('Proportion', default='')
             display_format = result_node.findtext('DisplayFormat', default='')
+            arguments = result_node.findtext('Arguments', default='')
+            args_l = (arguments or '').strip().lower()
             title_l = (title or '').strip().lower()
             scale_l = (scale or '').strip().lower()
             ident_l = (current_identifier or '').strip().lower()
@@ -130,6 +132,7 @@ def parse_file(file_path, system_profile=None):
                 ident_l.startswith('perf') or
                 title_l.startswith('perf ') or title_l.startswith('perf-') or
                 desc_l.startswith('perf ') or desc_l.startswith('perf-') or
+                args_l.startswith('perf ') or args_l.startswith('perf-') or
                 scale_l.startswith('perf')
             )
             
@@ -163,8 +166,6 @@ def parse_file(file_path, system_profile=None):
                 # Keep is_primary in sync if display_format ever changes.
                 benchmark.is_primary = (benchmark.display_format == 'BAR_GRAPH' and not is_perf_counter)
                 
-            arguments = result_node.findtext('Arguments', default='')
-            
             # Extract data. Data could be multiple Entries (e.g., if multiple systems were present in the XML)
             # But usually it's one Entry for the current system.
             data_node = result_node.find('Data')
