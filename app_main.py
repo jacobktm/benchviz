@@ -14,6 +14,7 @@ import shutil
 import statistics
 import json
 from collections import defaultdict
+import click
 from werkzeug.utils import secure_filename
 
 app = create_app()
@@ -1294,6 +1295,55 @@ def rebuild_performance_insights():
     with app.app_context():
         analyze_benchmarks()
         print("Performance Insights rebuilt.")
+
+
+@app.cli.command("debug-insights-coverage")
+@click.option("--title", default="", help="Benchmark title substring (case-insensitive). Example: 'ONNX Runtime'")
+@click.option("--app-version", default="", help="Exact benchmark app_version. Example: '1.24.1'")
+def debug_insights_coverage(title, app_version):
+    """
+    Print distinct system coverage per (benchmark title, app_version, arguments)
+    for BAR_GRAPH benchmarks. Useful for verifying why Performance Insights
+    may be empty.
+    """
+    title_sub = (title or "").strip().lower()
+    app_ver = (app_version or "").strip()
+
+    with app.app_context():
+        from sqlalchemy import func as _func
+
+        rows_q = (
+            db.session.query(
+                Benchmark.title,
+                Benchmark.app_version,
+                BenchmarkResult.arguments,
+                _func.count(_func.distinct(BenchmarkResult.system_id)).label("n_systems"),
+            )
+            .join(Benchmark, Benchmark.id == BenchmarkResult.benchmark_id)
+            .filter(Benchmark.display_format == "BAR_GRAPH")
+            .filter(BenchmarkResult.value.isnot(None))
+        )
+
+        if title_sub:
+            rows_q = rows_q.filter(_func.lower(Benchmark.title).like(f"%{title_sub}%"))
+        if app_ver:
+            rows_q = rows_q.filter(Benchmark.app_version == app_ver)
+
+        rows = (
+            rows_q.group_by(Benchmark.title, Benchmark.app_version, BenchmarkResult.arguments)
+            .order_by(_func.count(_func.distinct(BenchmarkResult.system_id)).desc())
+            .limit(25)
+            .all()
+        )
+
+        if not rows:
+            print("No BAR_GRAPH benchmark results found.")
+            return
+
+        print("Top BAR_GRAPH coverage rows (distinct systems per arguments):")
+        for r in rows:
+            arg_label = r[2] if r[2] is not None else ""
+            print(f"- {r[0]} (app={r[1]}), args='{arg_label}': n_systems={r[3]}")
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)

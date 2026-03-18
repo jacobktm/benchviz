@@ -4,7 +4,14 @@ from app import db, create_app
 from app.models import Benchmark, BenchmarkResult, BenchmarkAnalysis, System
 from app.components import get_system_components
 
-MIN_SYSTEMS_PER_COHORT = 3
+# Minimum distinct systems required across all cohort values for a given feature.
+# This allows you to get insights when you have (say) 3 distinct systems with 3 different
+# CPU models; previously we required 3 systems per identical cohort value, which is too strict.
+MIN_SYSTEMS_TOTAL = 3
+
+# Keep a low per-cohort minimum to avoid hiding common real-world situations
+# (where each distinct value may appear only once among a small cohort).
+MIN_SYSTEMS_PER_COHORT = 1
 
 # Component keys from get_system_components() that we treat as "insight features"
 # (Exclude system_name/identifier because they are identifiers, not explanatory variables.)
@@ -89,6 +96,7 @@ def analyze_benchmarks():
             # Compute stats per feature
             feature_stats = {}
             for feature_name, value_groups in features.items():
+                systems_with_feature = set()
                 stats_per_value = []
                 for val_name, by_system in value_groups.items():
                     # Aggregate repeated runs per system down to a mean, then compute cohort stats across systems.
@@ -103,6 +111,7 @@ def analyze_benchmarks():
                     n_systems = len(per_system_means)
                     if n_systems == 0:
                         continue
+                    systems_with_feature.update(by_system.keys())
                     stats_per_value.append({
                         "name": val_name,
                         "n": n_systems,          # backwards-compatible field name: number of distinct systems
@@ -116,14 +125,19 @@ def analyze_benchmarks():
                 
                 # Filter out values with insufficient data to reduce noise
                 valid_stats = [s for s in stats_per_value if s["n"] >= MIN_SYSTEMS_PER_COHORT]
-                
-                # We need at least 2 valid categories to make a comparison (e.g. comparing Cooler A vs Cooler B)
-                if len(valid_stats) >= 2:
-                    # Sort by best score
+                total_systems_with_feature = len(systems_with_feature)
+
+                # We need enough total coverage across the feature AND at least 2 distinct cohort values.
+                if total_systems_with_feature >= MIN_SYSTEMS_TOTAL and len(valid_stats) >= 2:
                     valid_stats.sort(key=lambda x: x["mean"], reverse=not is_lower_better)
                     feature_stats[feature_name] = valid_stats
                 elif len(stats_per_value) > 0:
-                    feature_stats[feature_name] = [{"error": f"Insufficient data to draw correlations (requires >= {MIN_SYSTEMS_PER_COHORT} distinct systems per cohort)"}]
+                    feature_stats[feature_name] = [{
+                        "error": (
+                            f"Insufficient data to draw performance insights "
+                            f"(requires >= {MIN_SYSTEMS_TOTAL} distinct systems with data and >= 2 distinct cohort values)"
+                        )
+                    }]
                     
             if feature_stats:
                 argument_analyses[arg] = feature_stats
