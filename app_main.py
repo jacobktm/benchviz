@@ -1409,5 +1409,71 @@ def debug_insights_feature_values(title, app_version, args_value):
             distinct_vals = len(items)
             print(f"- {fk}: distinct values={distinct_vals}, top={items[:3]}")
 
+
+@app.cli.command("debug-insights-analysis-features")
+@click.option("--title", required=True, help="Benchmark title substring (case-insensitive), e.g. 'Timed Linux Kernel Compilation'")
+@click.option("--app-version", default="", help="Exact benchmark app_version, e.g. '6.15'")
+@click.option("--args", "args_value", default="defconfig", help="Exact BenchmarkResult.arguments to inspect")
+def debug_insights_analysis_features(title, app_version, args_value):
+    """
+    Prints whether Performance Insights produced non-error features for a given benchmark/config.
+    Useful for debugging why /insights shows nothing.
+    """
+    from sqlalchemy import func as _func
+    from app.models import BenchmarkAnalysis
+
+    title_sub = (title or "").strip().lower()
+    app_ver = (app_version or "").strip()
+    args_str = (args_value or "").strip()
+
+    with app.app_context():
+        q = BenchmarkAnalysis.query
+        if title_sub:
+            q = q.filter(_func.lower(BenchmarkAnalysis.benchmark_title).like(f"%{title_sub}%"))
+        if app_ver:
+            q = q.filter(BenchmarkAnalysis.benchmark_app_version == app_ver)
+
+        rows = q.all()
+        if not rows:
+            print("No BenchmarkAnalysis rows found for this title/app-version.")
+            return
+
+        print("Found analysis rows:", len(rows))
+        for r in rows[:5]:
+            aj = r.analysis_json or {}
+            feat_stats = aj.get(args_str, {}) or {}
+            print(f"\n- args='{args_str}', benchmark_title='{r.benchmark_title}', app={r.benchmark_app_version}")
+
+            ok = 0
+            err = 0
+            total = 0
+            for feat_key, feat_vals in feat_stats.items():
+                if not feat_vals:
+                    continue
+                total += 1
+                first = feat_vals[0] if isinstance(feat_vals, list) else feat_vals
+                if isinstance(first, dict) and first.get("error"):
+                    err += 1
+                else:
+                    ok += 1
+
+            print(f"  feature keys with data: {total}, non-error: {ok}, error: {err}")
+
+            shown = 0
+            for feat_key, feat_vals in feat_stats.items():
+                if shown >= 10:
+                    break
+                if not feat_vals:
+                    continue
+                first = feat_vals[0] if isinstance(feat_vals, list) else feat_vals
+                if isinstance(first, dict) and first.get("error"):
+                    print(f"  [ERR] {feat_key}: {first.get('error')}")
+                else:
+                    name = first.get("name") if isinstance(first, dict) else None
+                    n = first.get("n") if isinstance(first, dict) else None
+                    print(f"  [OK ] {feat_key}: first='{name}' n={n}")
+                shown += 1
+
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)
