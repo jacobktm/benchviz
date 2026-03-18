@@ -36,18 +36,18 @@
     {% set ns = namespace(has_data=false) %}
     
     {% for analysis in analyses %}
-        {% set result_available = false %}
+        {% set a_ns = namespace(result_available=false) %}
         {% for arg, feature_stats in analysis.analysis_json.items() %}
             {# Check if there is actual data inside vs just "Insufficient data" logs #}
             {% for feature_values in feature_stats.values() %}
                 {% if not feature_values[0].get("error") %}
-                    {% set result_available = true %}
+                    {% set a_ns.result_available = true %}
                     {% set ns.has_data = true %}
                 {% endif %}
             {% endfor %}
         {% endfor %}
         
-        {% if result_available %}
+        {% if a_ns.result_available %}
         <div class="glass feature-card">
             <h2 style="margin-bottom: 0.5rem; color: var(--gradient-start);">
                 {{ analysis.benchmark_title }}
