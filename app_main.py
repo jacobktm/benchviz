@@ -1224,20 +1224,29 @@ def backfill_perf_counters():
     from sqlalchemy import func, or_
 
     with app.app_context():
-        title_l = func.lower(Benchmark.title)
-        ident_l = func.lower(Benchmark.identifier)
-        desc_l = func.lower(Benchmark.description)
-        scale_l = func.lower(Benchmark.scale)
+        # Be intentionally broad here: existing datasets can encode perf counters
+        # in title/identifier/description in slightly different ways.
+        # Only change rows that are currently marked primary.
+        title_t = func.ltrim(func.lower(Benchmark.title))
+        ident_t = func.ltrim(func.lower(Benchmark.identifier))
+        desc_t = func.ltrim(func.lower(Benchmark.description))
+        scale_t = func.ltrim(func.lower(Benchmark.scale))
+
+        perf_match = or_(
+            ident_t.like('perf%'),
+            title_t.like('perf%'),
+            desc_t.like('perf%'),
+            scale_t.like('perf%'),
+            # fallback: match perf anywhere (helps if title has prefix text)
+            func.lower(Benchmark.title).like('%perf %'),
+            func.lower(Benchmark.title).like('%perf-%'),
+            func.lower(Benchmark.description).like('%perf %'),
+            func.lower(Benchmark.description).like('%perf-%'),
+        )
+
         q = Benchmark.query.filter(
-            Benchmark.display_format == 'BAR_GRAPH',
-            or_(
-                ident_l.like('perf%'),
-                title_l.like('perf %'),
-                title_l.like('perf-%'),
-                desc_l.like('perf %'),
-                desc_l.like('perf-%'),
-                scale_l.like('perf%'),
-            )
+            Benchmark.is_primary.is_(True),
+            perf_match
         )
         rows = q.all()
         n = len(rows)
