@@ -1,4 +1,5 @@
 from flask import Flask
+import os
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import inspect, text
 
@@ -71,7 +72,13 @@ def ensure_schema_compatibility():
 
 def create_app():
     app = Flask(__name__)
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///benchmarks.db'
+    # Use an absolute path so the DB is consistent regardless of current working directory
+    # (important for systemd service vs CLI commands).
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    instance_dir = os.path.join(project_root, 'instance')
+    os.makedirs(instance_dir, exist_ok=True)
+    db_path = os.path.join(instance_dir, 'benchmarks.db')
+    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
     db.init_app(app)
