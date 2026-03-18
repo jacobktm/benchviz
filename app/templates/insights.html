@@ -30,9 +30,87 @@
         font-weight: 600;
         font-size: 0.9rem;
     }
+
+    .scatter-explorer {
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+    }
+    .scatter-controls {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        margin-top: 1rem;
+        margin-bottom: 1rem;
+    }
+    .scatter-control {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        min-width: 220px;
+    }
+    .scatter-control label {
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+    }
+    .scatter-control select, .scatter-control input {
+        font-size: 0.9rem;
+        padding: 0.45rem 0.65rem;
+        border-radius: 6px;
+        background: rgba(0,0,0,0.25);
+        border: 1px solid rgba(255,255,255,0.15);
+        color: inherit;
+    }
+    .scatter-candidates {
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+    }
 </style>
 
-<div class="animate-in delay-2">
+<div class="glass scatter-explorer animate-in delay-2">
+    <h2 style="margin-bottom: 0.35rem; color: var(--gradient-start); font-size: 1.1rem;">
+        Scatter correlation explorer
+    </h2>
+    <p class="card-meta" style="margin-bottom: 0;">
+        Backend ranks X features by pragmatic effect-size separation vs the primary benchmark score.
+    </p>
+
+    <div class="scatter-controls">
+        <div class="scatter-control">
+            <label for="scatterBenchmarkSelect">Benchmark</label>
+            <select id="scatterBenchmarkSelect"></select>
+        </div>
+
+        <div class="scatter-control">
+            <label for="scatterArgsSelect">Configuration (arguments)</label>
+            <select id="scatterArgsSelect"></select>
+        </div>
+
+        <div class="scatter-control">
+            <label for="scatterTopK">Show top K plots</label>
+            <input id="scatterTopK" type="number" min="1" max="20" step="1" value="5" />
+        </div>
+
+        <div class="scatter-control">
+            <label for="scatterMinPoints">Min points (systems with X+Y)</label>
+            <input id="scatterMinPoints" type="number" min="1" max="50" step="1" value="3" />
+        </div>
+
+        <button id="scatterRunBtn" class="btn-primary" type="button" style="min-width: 210px;">
+            Find correlated plots
+        </button>
+    </div>
+
+    <div id="scatterStatus" style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem;"></div>
+    <div id="scatterCandidates" class="scatter-candidates"></div>
+</div>
+
+<details class="animate-in delay-2" style="margin-top: 1.5rem;">
+    <summary style="cursor: pointer; color: var(--text-primary); font-weight: 700; padding: 0.75rem 0;">
+        Cohort summaries
+    </summary>
     {% set ns = namespace(has_data=false) %}
     
     {% for analysis in analyses %}
@@ -102,5 +180,185 @@
         </p>
     </div>
     {% endif %}
-</div>
+<script>
+    // Scatter Explorer: build a light index of benchmarks and available args.
+    const PERF_INSIGHTS_INDEX = [
+        {% for a in analyses %}
+        {
+            benchmark_title: {{ a.benchmark_title | tojson }},
+            app_version: {{ (a.benchmark_app_version or '') | tojson }},
+            args: [
+                {% for arg in a.analysis_json.keys() %}
+                {{ arg | tojson }}{% if not loop.last %},{% endif %}
+                {% endfor %}
+            ]
+        }{% if not loop.last %},{% endif %}
+        {% endfor %}
+    ];
+
+    const defaultColors = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
+
+    function uniqBy(arr, keyFn) {
+        const seen = new Set();
+        const out = [];
+        arr.forEach(item => {
+            const k = keyFn(item);
+            if (seen.has(k)) return;
+            seen.add(k);
+            out.push(item);
+        });
+        return out;
+    }
+
+    const benchIndex = uniqBy(PERF_INSIGHTS_INDEX, x => `${x.benchmark_title}|||${x.app_version}`);
+
+    const benchSelect = document.getElementById('scatterBenchmarkSelect');
+    const argsSelect = document.getElementById('scatterArgsSelect');
+    const topKInput = document.getElementById('scatterTopK');
+    const minPointsInput = document.getElementById('scatterMinPoints');
+    const runBtn = document.getElementById('scatterRunBtn');
+    const statusEl = document.getElementById('scatterStatus');
+    const candidatesEl = document.getElementById('scatterCandidates');
+
+    function systemColorMap(points) {
+        const systemIds = [...new Set(points.map(p => String(p.system_id)))].sort();
+        const map = {};
+        systemIds.forEach((id, idx) => { map[id] = defaultColors[idx % defaultColors.length]; });
+        return map;
+    }
+
+    function populateBenchmarks() {
+        if (!benchIndex.length) return;
+        benchSelect.innerHTML = '';
+        benchIndex.forEach((b, i) => {
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = `${b.benchmark_title}${b.app_version ? ' (v' + b.app_version + ')' : ''}`;
+            benchSelect.appendChild(opt);
+        });
+        benchSelect.value = '0';
+        populateArgs();
+    }
+
+    function populateArgs() {
+        argsSelect.innerHTML = '';
+        const bench = benchIndex[Number(benchSelect.value)];
+        let args = (bench && bench.args ? bench.args : []).filter(a => a && a !== 'default');
+        // If the analyzer only produced a "default" config key, still allow it.
+        if (!args.length) args = (bench && bench.args ? bench.args : []).filter(a => a);
+        args.forEach(arg => {
+            const opt = document.createElement('option');
+            opt.value = arg;
+            opt.textContent = arg;
+            argsSelect.appendChild(opt);
+        });
+        if (args.length) argsSelect.value = args[0];
+    }
+
+    async function runScatter() {
+        if (!benchIndex.length) return;
+        candidatesEl.innerHTML = '';
+        const bench = benchIndex[Number(benchSelect.value)];
+        const benchmark_title = bench.benchmark_title;
+        const app_version = bench.app_version;
+        const args = argsSelect.value;
+        const top_k = Number(topKInput.value || 5);
+        const min_points = Number(minPointsInput.value || 3);
+
+        statusEl.textContent = 'Searching correlated scatter plots...';
+
+        const url = new URL('/api/scatter_candidates', window.location.origin);
+        url.searchParams.set('benchmark_title', benchmark_title);
+        url.searchParams.set('app_version', app_version);
+        url.searchParams.set('args', args);
+        url.searchParams.set('top_k', String(top_k));
+        url.searchParams.set('min_points', String(min_points));
+        url.searchParams.set('min_distinct_x', '2');
+        url.searchParams.set('min_effect', '0');
+
+        const resp = await fetch(url.toString());
+        const data = await resp.json();
+
+        if (data.error) {
+            statusEl.textContent = `Error: ${data.error}`;
+            return;
+        }
+
+        const candidates = data.candidates || [];
+        if (!candidates.length) {
+            statusEl.textContent = 'No correlated plots found for this config.';
+            return;
+        }
+
+        statusEl.textContent = `Found ${candidates.length} candidate plot(s).`;
+        const yAxisLabel = (data.meta && data.meta.y_axis_label) ? data.meta.y_axis_label : 'Y';
+
+        candidates.forEach((c, i) => {
+            const wrap = document.createElement('div');
+            wrap.style.width = '100%';
+            wrap.style.padding = '1rem';
+            wrap.style.border = '1px solid rgba(255,255,255,0.08)';
+            wrap.style.borderRadius = '10px';
+            wrap.style.background = 'rgba(0,0,0,0.18)';
+
+            const title = document.createElement('div');
+            title.style.fontWeight = '700';
+            title.style.marginBottom = '0.5rem';
+            title.style.color = 'var(--text-primary)';
+            title.textContent = `${c.x_label} vs ${yAxisLabel}`;
+            wrap.appendChild(title);
+
+            const sub = document.createElement('div');
+            sub.style.color = 'var(--text-secondary)';
+            sub.style.fontSize = '0.85rem';
+            sub.style.marginBottom = '0.75rem';
+            sub.textContent = `effect=${Number(c.effect_score).toFixed(2)} | points=${c.point_count}, distinct_x=${c.distinct_x}`;
+            wrap.appendChild(sub);
+
+            const divId = `scatterPlot_${i}_${Date.now()}`;
+            const plotDiv = document.createElement('div');
+            plotDiv.id = divId;
+            plotDiv.style.width = '100%';
+            plotDiv.style.height = '420px';
+            wrap.appendChild(plotDiv);
+
+            candidatesEl.appendChild(wrap);
+
+            const points = c.points || [];
+            const colors = systemColorMap(points);
+            const markerColors = points.map(p => colors[String(p.system_id)] || defaultColors[0]);
+
+            const xVals = points.map(p => (c.type === 'numeric' && p.x_numeric != null) ? p.x_numeric : p.x);
+            const yVals = points.map(p => p.y);
+            const hoverText = points.map(p => `system_id=${p.system_id}<br>${c.x_label}=${p.x}<br>${yAxisLabel}=${p.y}`);
+
+            const trace = {
+                type: 'scatter',
+                mode: 'markers',
+                x: xVals,
+                y: yVals,
+                marker: { color: markerColors, size: 9, opacity: 0.9 },
+                text: hoverText,
+                hovertemplate: '%{text}<extra></extra>'
+            };
+
+            const layout = {
+                margin: { l: 50, r: 20, t: 10, b: 50 },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#c9d1d9' },
+                xaxis: { title: c.x_label, tickangle: -20 },
+                yaxis: { title: yAxisLabel }
+            };
+
+            Plotly.newPlot(plotDiv, [trace], layout, { displayModeBar: false, responsive: true });
+        });
+    }
+
+    benchSelect.addEventListener('change', () => populateArgs());
+    runBtn.addEventListener('click', runScatter);
+
+    populateBenchmarks();
+</script>
+</details>
 {% endblock %}
