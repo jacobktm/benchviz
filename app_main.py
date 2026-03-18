@@ -1475,5 +1475,43 @@ def debug_insights_analysis_features(title, app_version, args_value):
                 shown += 1
 
 
+@app.cli.command("debug-insights-summary")
+def debug_insights_summary():
+    """
+    Print a high-level summary of Performance Insights stored in BenchmarkAnalysis:
+    - which DB path this process is using
+    - number of analysis rows
+    - how many analyses contain at least one non-error feature value (what the /insights
+      template uses to decide whether to render cards vs the fallback message)
+    """
+    from app.models import BenchmarkAnalysis
+
+    with app.app_context():
+        print("SQLALCHEMY_DATABASE_URI:", app.config.get("SQLALCHEMY_DATABASE_URI"))
+        analyses = BenchmarkAnalysis.query.all()
+        print("BenchmarkAnalysis rows:", len(analyses))
+
+        analyses_with_any_non_error = 0
+        total_non_error_feature_entries = 0
+
+        for r in analyses:
+            aj = r.analysis_json or {}
+            found_any = False
+            for arg, feature_stats in aj.items():
+                for feature_name, feature_values in (feature_stats or {}).items():
+                    if not feature_values:
+                        continue
+                    first = feature_values[0] if isinstance(feature_values, list) else feature_values
+                    if isinstance(first, dict) and first.get("error"):
+                        continue
+                    found_any = True
+                    total_non_error_feature_entries += 1
+            if found_any:
+                analyses_with_any_non_error += 1
+
+        print("Analyses with any non-error feature:", analyses_with_any_non_error)
+        print("Total non-error feature entries (approx):", total_non_error_feature_entries)
+
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)
