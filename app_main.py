@@ -1217,8 +1217,21 @@ def api_scatter_candidates():
     primary_bm_ids = [b.id for b in primary_bms]
 
     # Determine direction: normalize to "higher is better" for plotting/scoring.
-    # If any matching benchmark says "Lower is better", treat Y as inverted.
-    is_lower_better = any("Lower is Better" in (b.proportion or "") for b in primary_bms)
+    # Frontend treats:
+    # - proportion == 'HIB' as higher is better
+    # - proportion == 'LIB' as lower is better
+    # - and also supports the strings 'Higher is Better'/'Lower is better'
+    def proportion_is_lower_better(p):
+        p = (p or '').strip().upper()
+        if p == 'LIB':
+            return True
+        if p == 'HIB':
+            return False
+        # fall back to textual matching
+        pl = (p or '').lower()
+        return 'lower' in pl and 'better' in pl
+
+    is_lower_better = any(proportion_is_lower_better(b.proportion) for b in primary_bms)
     y_flip = -1.0 if is_lower_better else 1.0
 
     # 2) Gather BAR_GRAPH results for those benchmarks and the requested args.
@@ -1352,6 +1365,14 @@ def api_scatter_candidates():
         # heuristic: if best and worst are close to overall median, effect will be small
         return {"effect": effect}
 
+    VERSION_NUMERIC_X_KEYS = {
+        "kernel_version",
+        "nvidia_driver",
+        "mesa_version",
+        "llvm_version",
+        "vulkan_driver",
+    }
+
     # 3) Evaluate each single-feature X key
     candidates = []
     label_map = dict(COMPARE_BY_OPTIONS)
@@ -1384,7 +1405,7 @@ def api_scatter_candidates():
                 numeric_points.append((x_num, y))
             categorical_points.append((x_raw, y))
 
-        numeric_mode = (numeric_parsed / max(1, len(raw_points)) >= 0.8) and numeric_parsed >= 3
+        numeric_mode = (x_key in VERSION_NUMERIC_X_KEYS) and (numeric_parsed >= 3) and (numeric_parsed / max(1, len(raw_points)) >= 0.8)
 
         if numeric_mode:
             scored = score_numeric(numeric_points)
