@@ -1425,8 +1425,9 @@ def api_scatter_candidates():
                     "system_id": sid,
                     "x": x_raw,
                     "x_numeric": parse_version_numeric(x_raw),
-                    "y": y,
+                    "y": y_raw_by_system.get(sid),
                     "y_raw": y_raw_by_system.get(sid),
+                    "y_normalized": y,
                 })
 
             candidates.append({
@@ -1452,8 +1453,9 @@ def api_scatter_candidates():
                 points_out.append({
                     "system_id": sid,
                     "x": x_raw,
-                    "y": y,
+                    "y": y_raw_by_system.get(sid),
                     "y_raw": y_raw_by_system.get(sid),
+                    "y_normalized": y,
                 })
 
             candidates.append({
@@ -1467,7 +1469,9 @@ def api_scatter_candidates():
             })
 
     candidates.sort(key=lambda c: (c["effect_score"], c.get("spearman_rho") or 0), reverse=True)
-    y_label = primary_bms[0].scale or "Score"
+    y_label_base = primary_bms[0].scale or "Score"
+    lower_better = is_lower_better
+    y_label = f"{y_label_base} ({'lower is better' if lower_better else 'higher is better'})"
     return {
         "candidates": candidates[:top_k],
         "meta": {
@@ -1479,8 +1483,8 @@ def api_scatter_candidates():
             "min_points": min_points,
             "min_distinct_x": min_distinct_x,
             "min_effect": min_effect,
-            "y_axis_label": y_label,
-            "y_flip": y_flip,
+                "y_axis_label": y_label,
+                "y_flip": y_flip,
         }
     }, 200
 
