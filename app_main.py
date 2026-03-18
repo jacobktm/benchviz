@@ -2044,6 +2044,63 @@ def api_variance_leaderboard():
     }, 200
 
 
+@app.route('/api/variance_leaderboard_coverage')
+def api_variance_leaderboard_coverage():
+    """
+    Returns benchmark+args keys that have enough evidence to produce leaderboard rows.
+
+    Evidence is checked using stored BenchmarkAnalysis.analysis_json:
+    for each args bucket, if ANY feature has at least `min_distinct_cohorts`
+    cohort values with `n >= min_cohort_n`, we consider that (benchmark,args)
+    selectable for the variance leaderboard.
+    """
+    from app.analyzer import INSIGHT_COMPONENT_KEYS
+
+    min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    min_distinct_cohorts = int(request.args.get('min_distinct_cohorts') or 2)
+
+    analyses = BenchmarkAnalysis.query.all()
+
+    # (benchmark_title, app_version) -> set(args)
+    buckets = defaultdict(set)
+    for a in analyses:
+        if not a.analysis_json:
+            continue
+        b_title = a.benchmark_title
+        b_app = a.benchmark_app_version or ''
+
+        for args_key, feature_stats in (a.analysis_json or {}).items():
+            if not isinstance(feature_stats, dict):
+                continue
+
+            has_any_feature = False
+            for feature_key, feature_values in feature_stats.items():
+                # feature_values is expected to be a list of val_stat dicts or [{error:...}]
+                if not isinstance(feature_values, list) or not feature_values:
+                    continue
+                if feature_values[0].get('error'):
+                    continue
+
+                # feature_values are cohort-value entries
+                qualified = [v for v in feature_values if isinstance(v, dict) and (v.get('n') or 0) >= min_cohort_n]
+                if len(qualified) >= min_distinct_cohorts:
+                    has_any_feature = True
+                    break
+
+            if has_any_feature:
+                buckets[(b_title, b_app)].add(args_key)
+
+    out = []
+    for (b_title, b_app), args_set in sorted(buckets.items(), key=lambda t: (t[0][0], t[0][1])):
+        out.append({
+            "benchmark_title": b_title,
+            "app_version": b_app,
+            "args": sorted(list(args_set)),
+        })
+
+    return {"benchmarks": out, "meta": {"min_cohort_n": min_cohort_n, "min_distinct_cohorts": min_distinct_cohorts}}, 200
+
+
 @app.route('/api/explain_underperformance')
 def api_explain_underperformance():
     """

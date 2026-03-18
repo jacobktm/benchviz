@@ -228,7 +228,7 @@
         return out;
     }
 
-    const benchIndex = uniqBy(PERF_INSIGHTS_INDEX, x => `${x.benchmark_title}|||${x.app_version}`);
+    let benchIndex = [];
 
     const benchSelect = document.getElementById('scatterBenchmarkSelect');
     const argsSelect = document.getElementById('scatterArgsSelect');
@@ -261,6 +261,33 @@
         });
         benchSelect.value = '0';
         populateArgs();
+    }
+
+    async function refreshBenchmarks() {
+        const min_cohort_n = Number(minPointsInput.value || 2);
+        const min_distinct_cohorts = Number(minDistinctInput.value || 2);
+
+        statusEl.textContent = 'Loading benchmark list with enough evidence...';
+
+        const url = new URL('/api/variance_leaderboard_coverage', window.location.origin);
+        url.searchParams.set('min_cohort_n', String(min_cohort_n));
+        url.searchParams.set('min_distinct_cohorts', String(min_distinct_cohorts));
+        url.searchParams.set('include_pairs', '1');
+
+        const resp = await fetch(url.toString());
+        const data = await resp.json();
+        benchIndex = data.benchmarks || [];
+
+        if (!benchIndex.length) {
+            benchSelect.innerHTML = '';
+            argsSelect.innerHTML = '';
+            if (systemSelect) systemSelect.innerHTML = '';
+            statusEl.textContent = 'No benchmark configs have enough evidence for the current thresholds.';
+            return;
+        }
+
+        statusEl.textContent = '';
+        populateBenchmarks();
     }
 
     function populateArgs() {
@@ -500,10 +527,12 @@
 
     benchSelect.addEventListener('change', () => populateArgs());
     argsSelect.addEventListener('change', () => populateSystems());
+    minPointsInput.addEventListener('change', () => refreshBenchmarks());
+    minDistinctInput.addEventListener('change', () => refreshBenchmarks());
     runBtn.addEventListener('click', runScatter);
     explainBtn.addEventListener('click', explainUnderperformance);
 
-    populateBenchmarks();
+    refreshBenchmarks();
 </script>
 </details>
 {% endblock %}
