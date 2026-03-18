@@ -1225,12 +1225,17 @@ def backfill_perf_counters():
 
     with app.app_context():
         title_l = func.lower(Benchmark.title)
+        ident_l = func.lower(Benchmark.identifier)
+        desc_l = func.lower(Benchmark.description)
         scale_l = func.lower(Benchmark.scale)
         q = Benchmark.query.filter(
             Benchmark.display_format == 'BAR_GRAPH',
             or_(
+                ident_l.like('perf%'),
                 title_l.like('perf %'),
                 title_l.like('perf-%'),
+                desc_l.like('perf %'),
+                desc_l.like('perf-%'),
                 scale_l.like('perf%'),
             )
         )

@@ -124,7 +124,14 @@ def parse_file(file_path, system_profile=None):
             display_format = result_node.findtext('DisplayFormat', default='')
             title_l = (title or '').strip().lower()
             scale_l = (scale or '').strip().lower()
-            is_perf_counter = title_l.startswith('perf ') or title_l.startswith('perf-') or scale_l.startswith('perf')
+            ident_l = (current_identifier or '').strip().lower()
+            desc_l = (description or '').strip().lower()
+            is_perf_counter = (
+                ident_l.startswith('perf') or
+                title_l.startswith('perf ') or title_l.startswith('perf-') or
+                desc_l.startswith('perf ') or desc_l.startswith('perf-') or
+                scale_l.startswith('perf')
+            )
             
             # Upsert Benchmark definition using the shared identifier string + distinct scale metrics
             benchmark = Benchmark.query.filter_by(
