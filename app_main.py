@@ -1195,9 +1195,10 @@ def api_scatter_candidates():
     app_version = (request.args.get('app_version') or '').strip()
     args_str = (request.args.get('args') or '').strip()
     top_k = int(request.args.get('top_k') or 10)
-    min_points = int(request.args.get('min_points') or 5)
+    # Keep this low: users often start with small cohorts and we still want "useful" candidates.
+    min_points = int(request.args.get('min_points') or 3)
     min_distinct_x = int(request.args.get('min_distinct_x') or 2)
-    min_effect = float(request.args.get('min_effect') or 0.25)
+    min_effect = float(request.args.get('min_effect') or 0.1)
 
     if not title:
         return {"error": "Missing benchmark_title query parameter"}, 400
