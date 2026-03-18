@@ -14,6 +14,7 @@ import shutil
 import statistics
 import json
 from collections import defaultdict
+import re
 import click
 from werkzeug.utils import secure_filename
 
@@ -1175,6 +1176,283 @@ def api_common_benchmarks():
     output_list = sorted(list(unique_common_suites.values()), key=lambda x: x['label'])
 
     return {"benchmarks": output_list}
+
+
+@app.route('/api/scatter_candidates')
+def api_scatter_candidates():
+    """
+    Returns top-ranked scatter plot candidates for Performance Insights.
+
+    Y axis (outcome): primary BAR_GRAPH score (Benchmark.is_primary == True)
+    X axis (feature): any key from INSIGHT_COMPONENT_KEYS (single feature for v1)
+
+    Backend computes a pragmatic effect-size score and returns only candidates that
+    look plausibly correlated, so the frontend can stay uncluttered.
+    """
+    from app.analyzer import INSIGHT_COMPONENT_KEYS
+
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+    top_k = int(request.args.get('top_k') or 10)
+    min_points = int(request.args.get('min_points') or 5)
+    min_distinct_x = int(request.args.get('min_distinct_x') or 2)
+    min_effect = float(request.args.get('min_effect') or 0.25)
+
+    if not title:
+        return {"error": "Missing benchmark_title query parameter"}, 400
+
+    # 1) Resolve primary benchmark ids for this title/app_version
+    bms_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    )
+    if app_version:
+        bms_q = bms_q.filter(Benchmark.app_version == app_version)
+    primary_bms = bms_q.all()
+    if not primary_bms:
+        return {"error": "No primary BAR_GRAPH benchmark found for the given title/app_version"}, 404
+    primary_bm_ids = [b.id for b in primary_bms]
+
+    # Determine direction: normalize to "higher is better" for plotting/scoring.
+    # If any matching benchmark says "Lower is better", treat Y as inverted.
+    is_lower_better = any("Lower is Better" in (b.proportion or "") for b in primary_bms)
+    y_flip = -1.0 if is_lower_better else 1.0
+
+    # 2) Gather BAR_GRAPH results for those benchmarks and the requested args.
+    # Multiple benchmark variants may exist; aggregate per system (mean).
+    results = (
+        BenchmarkResult.query
+        .filter(
+            BenchmarkResult.benchmark_id.in_(primary_bm_ids),
+            BenchmarkResult.arguments == args_str,
+            BenchmarkResult.value.isnot(None),
+        )
+        .all()
+    )
+    if not results:
+        return {"candidates": [], "meta": {"points": 0}}, 200
+
+    by_system = defaultdict(list)
+    for r in results:
+        by_system[r.system_id].append(r.value)
+
+    # Load systems and compute their component values once.
+    sys_ids = sorted(by_system.keys())
+    systems = System.query.filter(System.id.in_(sys_ids)).all()
+    comps = {s.id: get_system_components(s) for s in systems}
+
+    # Points for each system
+    y_by_system = {}
+    for sid, vals in by_system.items():
+        # mean across benchmark variants for this system/args
+        y_by_system[sid] = statistics.mean(vals) * y_flip
+
+    def robust_spread(vals):
+        # Median absolute deviation-like spread
+        if not vals:
+            return 0.0
+        m = statistics.median(vals)
+        abs_dev = [abs(v - m) for v in vals]
+        return statistics.median(abs_dev) or 0.0
+
+    def spearman_rho(x, y):
+        # Spearman rho via Pearson correlation of ranks (with average rank for ties)
+        # x,y are same length and already numeric.
+        n = len(x)
+        if n < 3:
+            return None
+        def rank(arr):
+            pairs = sorted((v, i) for i, v in enumerate(arr))
+            ranks = [0.0] * n
+            k = 0
+            while k < n:
+                v = pairs[k][0]
+                j = k
+                while j < n and pairs[j][0] == v:
+                    j += 1
+                # average rank for ties; ranks are 1..n
+                avg = (k + 1 + j) / 2.0
+                for t in range(k, j):
+                    ranks[pairs[t][1]] = avg
+                k = j
+            return ranks
+        rx = rank(x)
+        ry = rank(y)
+        mx = statistics.mean(rx)
+        my = statistics.mean(ry)
+        num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+        denx = sum((a - mx) ** 2 for a in rx) ** 0.5
+        deny = sum((b - my) ** 2 for b in ry) ** 0.5
+        if denx == 0 or deny == 0:
+            return None
+        return num / (denx * deny)
+
+    def parse_version_numeric(s):
+        # Extract the first dotted numeric sequence and map it into a comparable float.
+        # Examples:
+        #  - "6.18.7-760..." -> 6 + 18/1000 + 7/1e6
+        #  - "560.35.03" -> 560 + 35/1000 + 3/1e6
+        if not s:
+            return None
+        s = str(s)
+        nums = re.findall(r'\d+', s)
+        if not nums:
+            return None
+        n0 = int(nums[0])
+        n1 = int(nums[1]) if len(nums) > 1 else 0
+        n2 = int(nums[2]) if len(nums) > 2 else 0
+        return float(n0) + (n1 / 1000.0) + (n2 / 1_000_000.0)
+
+    def score_numeric(points):
+        # points: list of (x_numeric, y)
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        spread = robust_spread(ys) or 1e-9
+        # Quantile binning
+        uniq_x = sorted(set(xs))
+        k = min(5, max(2, len(uniq_x)))
+        if k < 2:
+            return None
+        xs_sorted = sorted(points, key=lambda t: t[0])
+        # split into k bins by index
+        bin_means = []
+        for b in range(k):
+            lo = int(b * len(points) / k)
+            hi = int((b + 1) * len(points) / k)
+            if hi <= lo:
+                continue
+            bin_vals = xs_sorted[lo:hi]
+            if not bin_vals:
+                continue
+            bin_means.append(statistics.mean([t[1] for t in bin_vals]))
+        if len(bin_means) < 2:
+            return None
+        top = max(bin_means)
+        bottom = min(bin_means)
+        effect = (top - bottom) / spread
+        rho = spearman_rho(xs, ys)
+        return {"effect": effect, "rho": rho}
+
+    def score_categorical(points):
+        # points: list of (x_raw, y)
+        by_x = defaultdict(list)
+        for x_raw, y in points:
+            by_x[x_raw].append(y)
+        if len(by_x) < 2:
+            return None
+        ys_all = [y for _, y in points]
+        spread = robust_spread(ys_all) or 1e-9
+        means = [statistics.mean(vs) for vs in by_x.values()]
+        top = max(means)
+        bottom = min(means)
+        effect = (top - bottom) / spread
+        # heuristic: if best and worst are close to overall median, effect will be small
+        return {"effect": effect}
+
+    # 3) Evaluate each single-feature X key
+    candidates = []
+    label_map = dict(COMPARE_BY_OPTIONS)
+    for x_key in INSIGHT_COMPONENT_KEYS:
+        # gather system points for this feature: (system_id, x_raw, y)
+        raw_points = []
+        for sid in sys_ids:
+            x_raw = (comps.get(sid, {}).get(x_key) or '').strip()
+            if not x_raw:
+                continue
+            y = y_by_system.get(sid)
+            if y is None:
+                continue
+            raw_points.append((sid, x_raw, y))
+
+        if len(raw_points) < min_points:
+            continue
+        distinct_x = len({p[1] for p in raw_points})
+        if distinct_x < min_distinct_x:
+            continue
+
+        # decide numeric vs categorical
+        numeric_points = []
+        numeric_parsed = 0
+        categorical_points = []
+        for sid, x_raw, y in raw_points:
+            x_num = parse_version_numeric(x_raw)
+            if x_num is not None:
+                numeric_parsed += 1
+                numeric_points.append((x_num, y))
+            categorical_points.append((x_raw, y))
+
+        numeric_mode = (numeric_parsed / max(1, len(raw_points)) >= 0.8) and numeric_parsed >= 3
+
+        if numeric_mode:
+            scored = score_numeric(numeric_points)
+            if not scored:
+                continue
+            effect = scored.get("effect")
+            if effect is None or effect < min_effect:
+                continue
+
+            # Return points in a Plotly-friendly format.
+            points_out = []
+            for sid, x_raw, y in raw_points:
+                points_out.append({
+                    "system_id": sid,
+                    "x": x_raw,
+                    "x_numeric": parse_version_numeric(x_raw),
+                    "y": y,
+                })
+
+            candidates.append({
+                "x_key": x_key,
+                "x_label": label_map.get(x_key, x_key),
+                "type": "numeric",
+                "effect_score": effect,
+                "spearman_rho": scored.get("rho"),
+                "point_count": len(raw_points),
+                "distinct_x": distinct_x,
+                "points": points_out,
+            })
+        else:
+            scored = score_categorical(categorical_points)
+            if not scored:
+                continue
+            effect = scored.get("effect")
+            if effect is None or effect < min_effect:
+                continue
+
+            points_out = []
+            for sid, x_raw, y in raw_points:
+                points_out.append({
+                    "system_id": sid,
+                    "x": x_raw,
+                    "y": y,
+                })
+
+            candidates.append({
+                "x_key": x_key,
+                "x_label": label_map.get(x_key, x_key),
+                "type": "categorical",
+                "effect_score": effect,
+                "point_count": len(raw_points),
+                "distinct_x": distinct_x,
+                "points": points_out,
+            })
+
+    candidates.sort(key=lambda c: (c["effect_score"], c.get("spearman_rho") or 0), reverse=True)
+    return {
+        "candidates": candidates[:top_k],
+        "meta": {
+            "benchmark_title": title,
+            "app_version": app_version,
+            "args": args_str,
+            "primary_benchmark_count": len(primary_bm_ids),
+            "systems_with_primary_y": len(y_by_system),
+            "min_points": min_points,
+            "min_distinct_x": min_distinct_x,
+            "min_effect": min_effect,
+        }
+    }, 200
 
 @app.route('/insights')
 def insights():
