@@ -90,6 +90,28 @@ class BenchmarkAnalysis(db.Model):
     )
 
 
+class HardwareTheoreticalRank(db.Model):
+    """
+    Reference CPU/GPU performance ordering (from your external rankings / scores).
+
+    `rank_value`: higher = theoretically faster / more capable for that part class.
+    `match_key`: normalized name; must match `hardware_rank_match_key()` in components.py
+    (same rules as parsed processor/graphics strings in BenchViz).
+    """
+    __tablename__ = "hardware_theoretical_ranks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    part_kind = db.Column(db.String(8), nullable=False)  # "cpu" | "gpu"
+    match_key = db.Column(db.String(256), nullable=False)
+    rank_value = db.Column(db.Float, nullable=False)
+    display_label = db.Column(db.String(512), nullable=True)
+    source_note = db.Column(db.String(255), nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("part_kind", "match_key", name="uix_hw_rank_part_match"),
+    )
+
+
 class SavedComparison(db.Model):
     __tablename__ = 'saved_comparisons'
 

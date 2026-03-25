@@ -75,7 +75,7 @@
     </h2>
     <p class="card-meta" style="margin-bottom: 0;">
         Ranks components by how much benchmark scores separate across their values (η²: between-cohort share of variance).
-        NVMe pad/fan toggles are omitted for non-storage tests so they do not dominate CPU/GPU benchmarks.
+        Only includes features where some component value appears on at least two systems. NVMe pad/fan toggles are omitted for non-storage tests.
     </p>
 
     <div class="scatter-controls">
@@ -124,6 +124,33 @@
     <div style="height: 1.25rem;"></div>
     <div id="explainStatus" style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem;"></div>
     <div id="explainResults" class="scatter-candidates"></div>
+</div>
+
+<div class="glass scatter-explorer animate-in delay-2" style="margin-top: 1.5rem;">
+    <h2 style="margin-bottom: 0.35rem; color: var(--gradient-start); font-size: 1.1rem;">
+        Cohort spread by component
+    </h2>
+    <p class="card-meta" style="margin-bottom: 0;">
+        Only lists components that meet the same replication rules as the leaderboard.
+        Components are <strong>ranked</strong> by a composite alignment score (η² plus signal-to-noise between cohort means vs within-cohort scatter). Tiers (<em>strong / moderate / weak</em>) are heuristic: strong means scores tend to track that split; weak means the benchmark looks comparatively insensitive or noisy for that part.
+        The chart uses <strong>raw</strong> scores; cohort order is best → worst for this benchmark.
+        For <strong>CPU</strong> and <strong>GPU</strong> groupings, sync from your Parts API with <code>flask sync-hardware-ranks-api</code> or load a JSON file via <code>flask import-hardware-ranks</code>; the page then shows Kendall τ vs that reference order.
+    </p>
+    <div class="scatter-controls" style="margin-top: 1rem;">
+        <div class="scatter-control" style="min-width: 280px;">
+            <label for="insightGroupbySelect">Group by (eligible components)</label>
+            <select id="insightGroupbySelect"></select>
+        </div>
+        <button id="insightGroupbyBtn" class="btn-primary" type="button" style="min-width: 200px;">
+            Show spread chart
+        </button>
+    </div>
+    <div id="insightGroupbyStatus" style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem;"></div>
+    <div id="insightGroupbyChart" style="min-height: 420px; width: 100%;"></div>
+    <p id="insightAlignmentNote" class="card-meta" style="margin-top: 0.75rem; margin-bottom: 0.5rem;"></p>
+    <div id="insightAlignmentTable" style="margin-bottom: 1rem;"></div>
+    <div id="insightTheoreticalAlign" style="font-size: 0.88rem; color: var(--text-secondary);"></div>
+    <div id="insightCohortPairwise" style="font-size: 0.88rem; color: var(--text-secondary);"></div>
 </div>
 
 <details class="animate-in delay-2" style="margin-top: 1.5rem;">
@@ -243,6 +270,276 @@
     const systemSelect = document.getElementById('scatterSystemSelect');
     const explainStatusEl = document.getElementById('explainStatus');
     const explainResultsEl = document.getElementById('explainResults');
+    const groupbySelect = document.getElementById('insightGroupbySelect');
+    const groupbyBtn = document.getElementById('insightGroupbyBtn');
+    const groupbyStatusEl = document.getElementById('insightGroupbyStatus');
+    const groupbyChartEl = document.getElementById('insightGroupbyChart');
+    const insightAlignmentTableEl = document.getElementById('insightAlignmentTable');
+    const insightAlignmentNoteEl = document.getElementById('insightAlignmentNote');
+    const insightCohortPairwiseEl = document.getElementById('insightCohortPairwise');
+    const insightTheoreticalAlignEl = document.getElementById('insightTheoreticalAlign');
+
+    let eligibleGroupby = [];
+
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function truncateLabel(s, maxLen) {
+        if (s == null) return '';
+        const t = String(s);
+        if (t.length <= maxLen) return t;
+        return t.slice(0, maxLen - 3) + '…';
+    }
+
+    function renderAlignmentRankTable(features, meta) {
+        if (insightAlignmentNoteEl) {
+            insightAlignmentNoteEl.textContent = (meta && meta.alignment_ranking_note) ? meta.alignment_ranking_note : '';
+        }
+        if (!insightAlignmentTableEl) return;
+        if (!features.length) {
+            insightAlignmentTableEl.innerHTML = '';
+            return;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">';
+        html += '<thead><tr style="text-align:left;border-bottom:1px solid rgba(255,255,255,0.12);">';
+        ['Rank', 'Component', 'Tier', 'Score', 'η²', 'S/N', 'Read'].forEach((h) => {
+            html += `<th style="padding:0.45rem 0.4rem;">${h}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+        features.forEach((f) => {
+            const tier = f.alignment_tier || '—';
+            const sc = f.alignment_rank_score != null ? Number(f.alignment_rank_score).toFixed(3) : '';
+            const eta = f.eta_squared != null ? (Number(f.eta_squared) * 100).toFixed(1) + '%' : '';
+            const sn = f.signal_to_noise != null ? Number(f.signal_to_noise).toFixed(2) : '';
+            const sum = (f.alignment_summary || '—').replace(/</g, '');
+            html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">';
+            html += `<td style="padding:0.5rem 0.4rem;">${f.alignment_rank}</td>`;
+            html += `<td style="padding:0.5rem 0.4rem;font-weight:600;color:var(--text-primary);">${f.feature_label}</td>`;
+            html += `<td style="padding:0.5rem 0.4rem;text-transform:capitalize;">${tier}</td>`;
+            html += `<td style="padding:0.5rem 0.4rem;font-variant-numeric:tabular-nums;">${sc}</td>`;
+            html += `<td style="padding:0.5rem 0.4rem;">${eta}</td>`;
+            html += `<td style="padding:0.5rem 0.4rem;">${sn}</td>`;
+            html += `<td style="padding:0.5rem 0.4rem;max-width:280px;line-height:1.35;">${sum}</td>`;
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        insightAlignmentTableEl.innerHTML = html;
+    }
+
+    function renderTheoreticalAlignment(th) {
+        if (!insightTheoreticalAlignEl) return;
+        if (!th) {
+            insightTheoreticalAlignEl.innerHTML = '';
+            return;
+        }
+        if (th.available === false) {
+            insightTheoreticalAlignEl.innerHTML =
+                `<div style="margin-top:0.35rem;padding:0.65rem 0.75rem;border-radius:8px;background:rgba(148,163,184,0.1);border:1px solid rgba(148,163,184,0.2);">` +
+                `<strong style="color:var(--text-primary);">Reference hardware ranks</strong> — ${escapeHtml(th.reason || 'Unavailable.')}` +
+                `</div>`;
+            return;
+        }
+        let html = '<div style="margin-top:0.35rem;"><div style="font-weight:600;color:var(--text-primary);margin-bottom:0.35rem;">vs reference hardware database</div>';
+        if (th.insufficient_matches) {
+            html +=
+                `<div style="padding:0.65rem 0.75rem;border-radius:8px;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.22);">` +
+                `${escapeHtml(th.summary || '')} ` +
+                `Matched ${th.n_matched_reference ?? 0} of ${th.n_cohorts_total ?? 0} cohorts.` +
+                `</div>`;
+        } else {
+            const tauStr = th.tau != null && !Number.isNaN(Number(th.tau)) ? Number(th.tau).toFixed(3) : '—';
+            html +=
+                `<div style="padding:0.65rem 0.75rem;border-radius:8px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);">` +
+                `Kendall τ vs reference: <strong>${tauStr}</strong>. ${escapeHtml(th.summary || '')}` +
+                ` <span style="opacity:0.85">(${th.n_matched_reference} matched cohorts)</span>` +
+                `</div>`;
+        }
+        const cohorts = th.cohorts || [];
+        if (cohorts.length) {
+            html += '<table style="width:100%;max-width:820px;margin-top:0.45rem;border-collapse:collapse;font-size:0.84rem;">';
+            html += '<thead><tr style="text-align:left;border-bottom:1px solid rgba(255,255,255,0.1);">';
+            ['Cohort', 'Lookup key', 'Ref. score', 'Cohort mean (raw)', 'Matched'].forEach((h) => {
+                html += `<th style="padding:0.35rem 0.3rem;">${h}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+            cohorts.forEach((c) => {
+                const ref = c.theoretical_rank_value != null ? Number(c.theoretical_rank_value).toPrecision(4) : '—';
+                const mean = c.mean_raw != null ? Number(c.mean_raw).toPrecision(4) : '—';
+                const matched = c.matched_reference ? 'yes' : '';
+                html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);${c.matched_reference ? '' : 'opacity:0.72'}">`;
+                html += `<td style="padding:0.4rem 0.3rem;">${escapeHtml(truncateLabel(c.cohort_value, 44))}</td>`;
+                html += `<td style="padding:0.4rem 0.3rem;font-size:0.8rem;">${escapeHtml(truncateLabel(c.match_key, 40))}</td>`;
+                html += `<td style="padding:0.4rem 0.3rem;font-variant-numeric:tabular-nums;">${ref}</td>`;
+                html += `<td style="padding:0.4rem 0.3rem;font-variant-numeric:tabular-nums;">${mean}</td>`;
+                html += `<td style="padding:0.4rem 0.3rem;">${matched}</td>`;
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+        }
+        html += '</div>';
+        insightTheoreticalAlignEl.innerHTML = html;
+    }
+
+    async function refreshEligibleGroupby() {
+        if (!groupbySelect || !benchIndex.length) return;
+        const bench = benchIndex[Number(benchSelect.value)];
+        groupbySelect.innerHTML = '';
+        eligibleGroupby = [];
+        if (groupbyChartEl && window.Plotly) {
+            Plotly.purge(groupbyChartEl);
+        }
+        if (insightAlignmentTableEl) insightAlignmentTableEl.innerHTML = '';
+        if (insightAlignmentNoteEl) insightAlignmentNoteEl.textContent = '';
+        if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
+        if (insightCohortPairwiseEl) insightCohortPairwiseEl.innerHTML = '';
+        groupbyStatusEl.textContent = 'Loading components with cohort data...';
+
+        const min_cohort_n = Number(minPointsInput.value || 2);
+        const min_distinct = Number(minDistinctInput.value || 2);
+        const url = new URL('/api/insights_eligible_groupby', window.location.origin);
+        url.searchParams.set('benchmark_title', bench.benchmark_title);
+        url.searchParams.set('app_version', bench.app_version || '');
+        url.searchParams.set('args', argsSelect.value || 'default');
+        url.searchParams.set('min_cohort_n', String(min_cohort_n));
+        url.searchParams.set('min_distinct_cohorts', String(min_distinct));
+
+        try {
+            const resp = await fetch(url.toString());
+            const data = await resp.json();
+            if (data.error) {
+                groupbyStatusEl.textContent = `Cohort chart unavailable: ${data.error}`;
+                renderAlignmentRankTable([], {});
+                return;
+            }
+            eligibleGroupby = data.features || [];
+            if (!eligibleGroupby.length) {
+                groupbyStatusEl.textContent = 'No components pass the current cohort thresholds. Lower min systems per cohort or distinct values, or add systems that share a component.';
+                renderAlignmentRankTable([], data.meta || {});
+                return;
+            }
+            groupbyStatusEl.textContent = '';
+            renderAlignmentRankTable(eligibleGroupby, data.meta || {});
+            eligibleGroupby.forEach((f, i) => {
+                const opt = document.createElement('option');
+                opt.value = f.feature_key;
+                const sc = f.alignment_rank_score != null ? Number(f.alignment_rank_score).toFixed(2) : '';
+                const tier = f.alignment_tier || '';
+                opt.textContent = i === 0
+                    ? `${f.feature_label} (default #1 · ${tier} · ${sc})`
+                    : `#${f.alignment_rank} ${f.feature_label} · ${tier} · ${sc}`;
+                groupbySelect.appendChild(opt);
+            });
+            groupbySelect.value = eligibleGroupby[0].feature_key;
+            await runGroupbyChart();
+        } catch (e) {
+            groupbyStatusEl.textContent = 'Failed to load group-by options.';
+            console.error(e);
+        }
+    }
+
+    async function runGroupbyChart() {
+        if (!groupbyChartEl || !window.Plotly || !benchIndex.length || !groupbySelect || !groupbySelect.value) return;
+        const bench = benchIndex[Number(benchSelect.value)];
+        const min_cohort_n = Number(minPointsInput.value || 2);
+        const min_distinct = Number(minDistinctInput.value || 2);
+        groupbyStatusEl.textContent = 'Rendering chart...';
+
+        const url = new URL('/api/insights_cohort_spread', window.location.origin);
+        url.searchParams.set('benchmark_title', bench.benchmark_title);
+        url.searchParams.set('app_version', bench.app_version || '');
+        url.searchParams.set('args', argsSelect.value || 'default');
+        url.searchParams.set('feature_key', groupbySelect.value);
+        url.searchParams.set('min_cohort_n', String(min_cohort_n));
+        url.searchParams.set('min_distinct_cohorts', String(min_distinct));
+
+        try {
+            if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
+            if (insightCohortPairwiseEl) insightCohortPairwiseEl.innerHTML = '';
+            const resp = await fetch(url.toString());
+            const data = await resp.json();
+            if (data.error) {
+                groupbyStatusEl.textContent = `Error: ${data.error}`;
+                renderTheoreticalAlignment(null);
+                return;
+            }
+            const cohorts = data.cohorts || [];
+            const meta = data.meta || {};
+            const traces = cohorts.map((c) => ({
+                type: 'box',
+                y: c.systems.map((s) => s.y_raw),
+                name: truncateLabel(c.value, 26),
+                boxpoints: 'all',
+                jitter: 0.28,
+                pointpos: -1.6,
+                text: c.systems.map((s) => `${s.label}<br>${s.y_raw}`),
+                hoverinfo: 'y+text',
+            }));
+
+            const spread = (meta.cohort_mean_spread_raw != null) ? Number(meta.cohort_mean_spread_raw) : null;
+            const subtitle = spread != null && !Number.isNaN(spread)
+                ? `<br><sub style="font-size:0.78rem;opacity:0.85">Spread of cohort means: ${spread.toPrecision(4)} ${meta.y_label || ''}</sub>`
+                : '';
+
+            const layout = {
+                title: { text: `${data.feature_label} · ${meta.benchmark_title || ''}${subtitle}`, font: { size: 16 } },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0.18)',
+                font: { color: '#e8eaed' },
+                yaxis: {
+                    title: meta.y_label || 'Score',
+                    gridcolor: 'rgba(255,255,255,0.08)',
+                    zerolinecolor: 'rgba(255,255,255,0.12)',
+                },
+                xaxis: {
+                    title: 'Component value (cohort)',
+                    tickangle: -28,
+                    automargin: true,
+                },
+                showlegend: false,
+                margin: { t: 72, b: 100, l: 64, r: 28 },
+            };
+
+            await Plotly.react(groupbyChartEl, traces, layout, { displayModeBar: true, responsive: true });
+            const tier = meta.alignment_tier || '';
+            const tnote = meta.alignment_summary || '';
+            let st = meta.is_lower_better
+                ? 'Lower raw scores are better for this benchmark.'
+                : 'Higher raw scores are better for this benchmark.';
+            if (tier) {
+                st += ` Selected component alignment: ${tier}. ${tnote}`;
+            }
+            groupbyStatusEl.textContent = st;
+
+            const pr = data.pairwise_ordered || [];
+            if (insightCohortPairwiseEl && pr.length) {
+                let ph = '<div style="margin-top:1rem;font-weight:600;color:var(--text-primary);">Pairwise cohort gaps (raw units; rank 1 is best)</div>';
+                ph += '<table style="width:100%;max-width:820px;margin-top:0.35rem;border-collapse:collapse;font-size:0.86rem;">';
+                ph += '<thead><tr style="text-align:left;border-bottom:1px solid rgba(255,255,255,0.1);">';
+                ph += '<th style="padding:0.35rem;">Rank / better</th><th style="padding:0.35rem;"></th><th style="padding:0.35rem;">vs lower</th><th style="padding:0.35rem;">|Δ mean|</th></tr></thead><tbody>';
+                pr.forEach((p) => {
+                    ph += '<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">';
+                    ph += `<td style="padding:0.4rem;">#${p.rank_a} ${truncateLabel(p.cohort_a_value, 40)}</td>`;
+                    ph += '<td style="padding:0.4rem;">vs</td>';
+                    ph += `<td style="padding:0.4rem;">#${p.rank_b} ${truncateLabel(p.cohort_b_value, 40)}</td>`;
+                    ph += `<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">${Number(p.mean_gap_raw).toPrecision(4)}</td>`;
+                    ph += '</tr>';
+                });
+                ph += '</tbody></table>';
+                insightCohortPairwiseEl.innerHTML = ph;
+            }
+            renderTheoreticalAlignment(data.theoretical_alignment);
+        } catch (e) {
+            groupbyStatusEl.textContent = 'Failed to render chart.';
+            if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
+            console.error(e);
+        }
+    }
 
     function systemColorMap(points) {
         const systemIds = [...new Set(points.map(p => String(p.system_id)))].sort();
@@ -283,6 +580,14 @@
             benchSelect.innerHTML = '';
             argsSelect.innerHTML = '';
             if (systemSelect) systemSelect.innerHTML = '';
+            if (groupbySelect) groupbySelect.innerHTML = '';
+            if (groupbyChartEl && window.Plotly) Plotly.purge(groupbyChartEl);
+            if (groupbyStatusEl) groupbyStatusEl.textContent = '';
+            if (insightAlignmentTableEl) insightAlignmentTableEl.innerHTML = '';
+            if (insightAlignmentNoteEl) insightAlignmentNoteEl.textContent = '';
+            if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
+            if (insightCohortPairwiseEl) insightCohortPairwiseEl.innerHTML = '';
+            eligibleGroupby = [];
             statusEl.textContent = 'No benchmark configs have enough evidence for the current thresholds.';
             return;
         }
@@ -354,6 +659,7 @@
                 o.value = '';
                 o.textContent = 'No systems found for this config';
                 systemSelect.appendChild(o);
+                refreshEligibleGroupby();
                 return;
             }
 
@@ -365,6 +671,7 @@
             });
 
             systemSelect.value = String(systems[0].id);
+            refreshEligibleGroupby();
         } catch (e) {
             systemSelect.innerHTML = '';
             const o = document.createElement('option');
@@ -481,7 +788,7 @@
 
         const rows = data.rows || [];
         if (!rows.length) {
-            statusEl.textContent = 'Not enough systems or distinct component values for this benchmark (try lowering min distinct cohorts).';
+            statusEl.textContent = 'No qualifying features: need distinct component values and at least one value shared by 2+ systems (so the split is not just one-machine-per-label). Try another benchmark/config or add systems that share a component.';
             return;
         }
 
@@ -551,6 +858,8 @@
     minDistinctInput.addEventListener('change', () => refreshBenchmarks());
     runBtn.addEventListener('click', runScatter);
     explainBtn.addEventListener('click', explainUnderperformance);
+    if (groupbyBtn) groupbyBtn.addEventListener('click', () => runGroupbyChart());
+    if (groupbySelect) groupbySelect.addEventListener('change', () => runGroupbyChart());
 
     refreshBenchmarks();
 </script>

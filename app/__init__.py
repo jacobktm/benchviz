@@ -70,6 +70,21 @@ def ensure_schema_compatibility():
                 "UPDATE benchmarks SET is_primary = CASE WHEN display_format = 'BAR_GRAPH' THEN 1 ELSE 0 END"
             ))
 
+        if 'hardware_theoretical_ranks' not in table_names:
+            connection.execute(text(
+                """
+                CREATE TABLE hardware_theoretical_ranks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    part_kind VARCHAR(8) NOT NULL,
+                    match_key VARCHAR(256) NOT NULL,
+                    rank_value FLOAT NOT NULL,
+                    display_label VARCHAR(512),
+                    source_note VARCHAR(255),
+                    UNIQUE (part_kind, match_key)
+                )
+                """
+            ))
+
 def create_app():
     app = Flask(__name__)
     # Use an absolute path so the DB is consistent regardless of current working directory

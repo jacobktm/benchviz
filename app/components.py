@@ -24,6 +24,48 @@ def extract_hardware_component(hardware_string: str, component_prefix: str) -> s
     return None
 
 
+def normalize_processor_name(processor: str) -> str:
+    """
+    Shorten CPU model strings for labels and for matching `HardwareTheoreticalRank.match_key`.
+
+    Example: "AMD Ryzen 9 9950X 16-Core @ 5.76GHz ..." -> "AMD Ryzen 9 9950X"
+    """
+    s = clean_text(processor)
+    if not s:
+        return ""
+    s = re.split(r"\s*@\s*", s, maxsplit=1)[0].strip()
+    s = re.sub(r"\s*\d+\s*-\s*Core[s]?\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\d+\s*-\s*Core\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\d+\s*Core[s]?\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def normalize_graphics_name(graphics: str) -> str:
+    """
+    Shorten GPU strings for matching theoretical ranks (VRAM, Laptop GPU suffix, etc.).
+    """
+    s = clean_text(graphics)
+    if not s:
+        return ""
+    s = re.split(r"\s*@\s*", s, maxsplit=1)[0].strip()
+    s = re.sub(r"\s*\d+\s*GB\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*\d+\s*MB\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+Laptop\s+GPU\s*$", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def hardware_rank_match_key(feature_key: str, display_value: str) -> str:
+    """Normalize component label for `HardwareTheoreticalRank` lookup."""
+    fk = (feature_key or "").strip().lower()
+    if fk == "processor":
+        return normalize_processor_name(display_value)
+    if fk == "graphics":
+        return normalize_graphics_name(display_value)
+    return clean_text(display_value)
+
+
 def extract_software_component(software_text: str, label: str) -> str:
     """Extract value for a label from Phoronix-style software string (e.g. 'Kernel: 6.8.0' or 'NVIDIA Driver: 560')."""
     if not software_text or not label:
@@ -40,36 +82,6 @@ def get_system_components(system) -> dict[str, str]:
     """Build a dict of component keys -> display values for comparison labels (CPU, GPU, OS, etc.)."""
     hardware = system.hardware or ""
 
-    def normalize_processor_name(processor: str) -> str:
-        """
-        Shorten CPU model strings for UI labels.
-
-        Example inputs:
-          - "AMD Ryzen 9 9950X 16-Core @ 5.76GHz (16 Cores / 32 Threads)"
-          - "Intel Core Ultra 9 275HX @ 3.90GHz (24 Cores)"
-          - "AMD Ryzen 7 7840U @ 5.13GHz (8 Cores / 16 Threads)"
-
-        Example outputs:
-          - "AMD Ryzen 9 9950X"
-          - "Intel Core Ultra 9 275HX"
-          - "AMD Ryzen 7 7840U"
-        """
-        s = clean_text(processor)
-        if not s:
-            return ""
-
-        # Drop the frequency portion (" @ 5.76GHz ...")
-        s = re.split(r'\s*@\s*', s, maxsplit=1)[0].strip()
-
-        # Drop trailing core-count descriptors like "16-Core"
-        s = re.sub(r'\s*\d+\s*-\s*Core[s]?\s*$', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\s*\d+\s*-\s*Core\s*$', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\s*\d+\s*Core[s]?\s*$', '', s, flags=re.IGNORECASE)
-
-        # Collapse whitespace for safety.
-        s = re.sub(r'\s+', ' ', s).strip()
-        return s
-
     def extract_hw_any(prefixes: list[str]) -> str:
         for p in prefixes:
             v = extract_hardware_component(hardware, p)
@@ -81,6 +93,7 @@ def get_system_components(system) -> dict[str, str]:
     processor = extract_hw_any(["Processor", "CPU", "CPU Model"])
     processor = normalize_processor_name(processor) if processor else ""
     graphics = extract_hw_any(["Graphics", "GPU", "Graphics Processor"])
+    graphics = normalize_graphics_name(graphics) if graphics else ""
     memory = extract_hw_any(["Memory", "RAM", "System Memory"])
     motherboard = extract_hw_any(["Motherboard", "Mainboard", "Motherboard / Mainboard"])
     chipset = extract_hw_any(["Chipset"])

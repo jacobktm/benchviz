@@ -1,5 +1,13 @@
 from app import create_app, db
-from app.models import System, Benchmark, BenchmarkResult, SystemNvmeConfig, BenchmarkAnalysis, SavedComparison
+from app.models import (
+    System,
+    Benchmark,
+    BenchmarkResult,
+    SystemNvmeConfig,
+    BenchmarkAnalysis,
+    SavedComparison,
+    HardwareTheoreticalRank,
+)
 from app.parser import parse_benchmark_files, parse_file
 from app.analyzer import analyze_benchmarks
 from app.components import get_system_components
@@ -585,6 +593,254 @@ NVME_LAYOUT_LEADERBOARD_KEYS = frozenset({
     "thermal_pad_sandwich_nvme",
     "nvme_fans",
 })
+
+INSIGHT_CPU_SCOPED_KEYS = frozenset({
+    "processor",
+    "memory",
+    "motherboard",
+    "chipset",
+    "os",
+    "kernel_version",
+    "llvm_version",
+    "cooler_model",
+    "chassis_version",
+    "psu",
+    "custom_hardware",
+    "external_off",
+    "memory_fans",
+})
+INSIGHT_GPU_SCOPED_KEYS = frozenset({
+    "graphics",
+    "nvidia_driver",
+    "mesa_version",
+    "llvm_version",
+    "vulkan_driver",
+    "processor",
+    "memory",
+    "os",
+    "chassis_version",
+    "gpu_fans",
+})
+INSIGHT_STORAGE_SCOPED_KEYS = frozenset({
+    "nvme_fans",
+    "thermal_pad_above_nvme",
+    "thermal_pad_below_nvme",
+    "thermal_pad_sandwich_nvme",
+    "custom_hardware",
+    "chassis_version",
+    "external_off",
+    "psu",
+    "memory",
+    "processor",
+})
+
+
+def _insights_infer_scope(text_blob: str) -> str:
+    scope = "general"
+    if ("kernel" in text_blob and ("build" in text_blob or "compil" in text_blob or "make" in text_blob
+         or "gcc" in text_blob or "clang" in text_blob)) or ("compil" in text_blob and "linux" in text_blob):
+        scope = "cpu"
+    elif any(h in text_blob for h in _CPU_BENCHMARK_HINTS):
+        scope = "cpu"
+    elif any(k in text_blob for k in ["vulkan", "cuda", "opengl", "render", "graphics", "gpu "]):
+        scope = "gpu"
+    elif any(k in text_blob for k in ["nvme", "disk", "io", "i/o", "storage", "ssd", "hdd", "throughput",
+                                        "fio", "postmark", "iometer"]):
+        scope = "storage"
+    return scope
+
+
+def _insights_allowed_singles_for_scope(scope: str, include_all_component_keys: bool):
+    from app.analyzer import INSIGHT_COMPONENT_KEYS
+    if scope == "cpu":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in INSIGHT_CPU_SCOPED_KEYS]
+    elif scope == "gpu":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in INSIGHT_GPU_SCOPED_KEYS]
+    elif scope == "storage":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in INSIGHT_STORAGE_SCOPED_KEYS]
+    elif include_all_component_keys:
+        allowed_singles = list(INSIGHT_COMPONENT_KEYS)
+    else:
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k not in NVME_LAYOUT_LEADERBOARD_KEYS]
+    if not allowed_singles:
+        allowed_singles = list(INSIGHT_COMPONENT_KEYS)
+    return allowed_singles
+
+
+def _load_primary_insights_bundle(title, app_version, args_str, scope_override=""):
+    """
+    Load primary BAR_GRAPH scores and component maps for a benchmark/config.
+    Returns (bundle_dict, None) or (None, (error_message, http_code)).
+    """
+    from app.analyzer import MIN_SYSTEMS_TOTAL
+
+    title = (title or "").strip()
+    app_version = (app_version or "").strip()
+    args_str = (args_str or "").strip()
+    scope_override = (scope_override or "").strip().lower()
+
+    if not title:
+        return None, ("Missing benchmark_title query parameter", 400)
+
+    bms_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == "BAR_GRAPH",
+        Benchmark.is_primary.is_(True),
+    )
+    if app_version:
+        bms_q = bms_q.filter(Benchmark.app_version == app_version)
+    primary_bms = bms_q.all()
+    if not primary_bms:
+        return None, ("No primary BAR_GRAPH benchmark found for the given title/app_version", 404)
+
+    rep_bm = primary_bms[0]
+    label_map = dict(COMPARE_BY_OPTIONS)
+
+    def proportion_is_lower_better(p):
+        p = (p or "").strip().upper()
+        if p == "LIB":
+            return True
+        if p == "HIB":
+            return False
+        pl = (p or "").lower()
+        return "lower" in pl and "better" in pl
+
+    is_lower_better = any(proportion_is_lower_better(b.proportion) for b in primary_bms)
+    y_flip = -1.0 if is_lower_better else 1.0
+
+    args_analysis_key = "default" if (not args_str or args_str.lower() == "default") else args_str
+    args_db = "" if args_analysis_key == "default" else args_str
+
+    primary_bm_ids = [b.id for b in primary_bms]
+    all_results = BenchmarkResult.query.filter(
+        BenchmarkResult.benchmark_id.in_(primary_bm_ids),
+        BenchmarkResult.arguments == args_db,
+        BenchmarkResult.value.isnot(None),
+    ).all()
+
+    if not all_results:
+        return None, ("No BAR_GRAPH results for this benchmark/config", 404)
+
+    by_system_vals = defaultdict(list)
+    for r in all_results:
+        by_system_vals[r.system_id].append(r.value)
+
+    y_norm_by_system = {}
+    y_raw_by_system = {}
+    for sid, vals in by_system_vals.items():
+        y_raw = statistics.mean([v for v in vals if v is not None])
+        y_raw_by_system[sid] = y_raw
+        y_norm_by_system[sid] = y_raw * y_flip
+
+    sys_ids = sorted(y_raw_by_system.keys())
+    systems = System.query.filter(System.id.in_(sys_ids)).all()
+    systems_by_id = {s.id: s for s in systems}
+    comps_by_sid = {s.id: get_system_components(s) for s in systems}
+
+    text_blob = " ".join([
+        (rep_bm.title or ""),
+        (rep_bm.description or ""),
+        args_str or "",
+    ]).lower()
+    scope = _insights_infer_scope(text_blob)
+    include_all_component_keys = scope_override == "all"
+    if scope_override in {"all", "general"}:
+        scope = "general"
+    elif scope_override in {"cpu", "gpu", "storage"}:
+        scope = scope_override
+    allowed_singles = _insights_allowed_singles_for_scope(scope, include_all_component_keys)
+
+    bundle = {
+        "MIN_SYSTEMS_TOTAL": MIN_SYSTEMS_TOTAL,
+        "rep_bm": rep_bm,
+        "primary_bms": primary_bms,
+        "primary_bm_ids": primary_bm_ids,
+        "label_map": label_map,
+        "y_label_base": rep_bm.scale or "Score",
+        "is_lower_better": is_lower_better,
+        "y_flip": y_flip,
+        "args_analysis_key": args_analysis_key,
+        "args_db": args_db,
+        "y_raw_by_system": y_raw_by_system,
+        "y_norm_by_system": y_norm_by_system,
+        "sys_ids": sys_ids,
+        "systems_by_id": systems_by_id,
+        "comps_by_sid": comps_by_sid,
+        "scope": scope,
+        "allowed_singles": allowed_singles,
+        "title": title,
+        "app_version": app_version,
+    }
+    return bundle, None
+
+
+def _insights_signal_to_noise_raw(buckets_sid, y_raw_by_system):
+    """
+    Ratio: spread of cohort means / median within-cohort stdev (raw benchmark units).
+    High values => cohort centroids differ more than typical scatter inside a cohort.
+    """
+    cohort_means = []
+    inner_stds = []
+    for sids in buckets_sid.values():
+        ys = [y_raw_by_system[sid] for sid in sids if sid in y_raw_by_system]
+        if not ys:
+            continue
+        cohort_means.append(statistics.mean(ys))
+        if len(ys) > 1:
+            inner_stds.append(statistics.stdev(ys))
+    if len(cohort_means) < 2:
+        return 0.0, 0.0
+    spread = max(cohort_means) - min(cohort_means)
+    med_inner = statistics.median(inner_stds) if inner_stds else 0.0
+    sn = spread / (med_inner + 1e-9)
+    return float(sn), float(spread)
+
+
+def _insights_alignment_tier(eta_sq, sn_ratio):
+    """
+    Heuristic label for whether scores track this component split vs looking noise-like.
+    Not causal — association only, with replication gates applied upstream.
+    """
+    eta_sq = float(eta_sq)
+    sn_ratio = float(sn_ratio)
+    if eta_sq >= 0.55 or sn_ratio >= 5.0:
+        return (
+            "strong",
+            "Scores line up distinctly across these component values versus within-cohort scatter.",
+        )
+    if eta_sq >= 0.28 or sn_ratio >= 2.5:
+        return (
+            "moderate",
+            "Meaningful-looking spread between cohorts; more data would firm up how much this part matters.",
+        )
+    return (
+        "weak",
+        "Alignment is limited: cohort differences are small relative to noise, or effects overlap a lot.",
+    )
+
+
+def _insights_alignment_rank_score(eta_sq, sn_ratio):
+    """Order components by combined association strength (unitless, ~0–1)."""
+    sn_term = min(1.0, float(sn_ratio) / 6.0)
+    return 0.55 * float(eta_sq) + 0.45 * sn_term
+
+
+def _insights_eta_squared_norm_buckets(value_to_y_norm_lists):
+    vals = []
+    for ys in value_to_y_norm_lists.values():
+        vals.extend(ys)
+    if len(vals) < 2:
+        return 0.0
+    grand_mean = statistics.mean(vals)
+    ss_total = sum((y - grand_mean) ** 2 for y in vals)
+    if ss_total < 1e-18:
+        return 0.0
+    ss_between = 0.0
+    for ys in value_to_y_norm_lists.values():
+        nj = len(ys)
+        mj = statistics.mean(ys)
+        ss_between += nj * (mj - grand_mean) ** 2
+    return ss_between / ss_total
 
 
 @app.route('/compare')
@@ -1861,11 +2117,9 @@ def api_variance_leaderboard():
 
     We rank primarily by one-way eta-squared: fraction of total score variance that lies
     *between* component cohorts (larger = more separation across component values).
-    This works when each CPU/Cohort appears only once (unique systems), where the old
-    "conditional spread reduction" gate wrongly dropped every feature except a few
-    duplicated Yes/No chassis fields.
 
-    We still report conditional_spread reduction as supplemental context.
+    Rows require at least one cohort with 2+ systems so pure per-system labels
+    (100% eta² with no replication) are omitted.
     """
     from app.analyzer import INSIGHT_COMPONENT_KEYS, MIN_SYSTEMS_TOTAL
 
@@ -1962,88 +2216,19 @@ def api_variance_leaderboard():
     overall_spread = robust_spread(all_y_norm)
     overall_spread_eps = overall_spread + 1e-9
 
-    # Feature scope inference: restrict candidate keys to reduce confounding.
-    # We infer whether the benchmark is CPU/GPU/storage heavy based on the benchmark text,
-    # and then only rank keys that are plausibly relevant to that scope.
     text_blob = " ".join([
         (rep_bm.title or ""),
         (rep_bm.description or ""),
         args_str or "",
     ]).lower()
-
-    cpu_scoped_keys = {
-        "processor",
-        "memory",
-        "motherboard",
-        "chipset",
-        "os",
-        "kernel_version",
-        "llvm_version",
-        "cooler_model",
-        "chassis_version",
-        "psu",
-        "custom_hardware",
-        "external_off",
-        "memory_fans",
-    }
-    gpu_scoped_keys = {
-        "graphics",
-        "nvidia_driver",
-        "mesa_version",
-        "llvm_version",
-        "vulkan_driver",
-        "processor",
-        "memory",
-        "os",
-        "chassis_version",
-        "gpu_fans",
-    }
-    storage_scoped_keys = {
-        "nvme_fans",
-        "thermal_pad_above_nvme",
-        "thermal_pad_below_nvme",
-        "thermal_pad_sandwich_nvme",
-        "custom_hardware",
-        "chassis_version",
-        "external_off",
-        "psu",
-        "memory",
-        "processor",
-    }
-
-    scope = "general"
-    if ("kernel" in text_blob and ("build" in text_blob or "compil" in text_blob or "make" in text_blob or "gcc" in text_blob or "clang" in text_blob)) or \
-       ("compil" in text_blob and "linux" in text_blob):
-        scope = "cpu"
-    elif any(h in text_blob for h in _CPU_BENCHMARK_HINTS):
-        scope = "cpu"
-    elif any(k in text_blob for k in ["vulkan", "cuda", "opengl", "render", "graphics", "gpu "]):
-        scope = "gpu"
-    elif any(k in text_blob for k in ["nvme", "disk", "io", "i/o", "storage", "ssd", "hdd", "throughput", "fio", "postmark", "iometer"]):
-        scope = "storage"
-
-    # Optional override for debugging / experimentation.
-    # scope=all includes NVMe layout keys on non-storage tests (legacy / full list).
+    scope = _insights_infer_scope(text_blob)
     scope_override = (request.args.get('scope') or '').strip().lower()
     include_all_component_keys = scope_override == "all"
     if scope_override in {"all", "general"}:
         scope = "general"
     elif scope_override in {"cpu", "gpu", "storage"}:
         scope = scope_override
-
-    if scope == "cpu":
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in cpu_scoped_keys]
-    elif scope == "gpu":
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in gpu_scoped_keys]
-    elif scope == "storage":
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in storage_scoped_keys]
-    elif include_all_component_keys:
-        allowed_singles = list(INSIGHT_COMPONENT_KEYS)
-    else:
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k not in NVME_LAYOUT_LEADERBOARD_KEYS]
-
-    if not allowed_singles:
-        allowed_singles = list(INSIGHT_COMPONENT_KEYS)
+    allowed_singles = _insights_allowed_singles_for_scope(scope, include_all_component_keys)
 
     rows = []
 
@@ -2059,6 +2244,9 @@ def api_variance_leaderboard():
         if systems_with_nonempty < MIN_SYSTEMS_TOTAL:
             return
         if len(buckets) < min_distinct_cohorts:
+            return
+        # Drop identifier-like splits: every cohort must not be all singletons.
+        if not any(len(ys) >= 2 for ys in buckets.values()):
             return
 
         vals = []
@@ -2113,6 +2301,8 @@ def api_variance_leaderboard():
         if systems_with_pair < MIN_SYSTEMS_TOTAL:
             return
         if len(buckets) < min_distinct_cohorts:
+            return
+        if not any(len(ys) >= 2 for ys in buckets.values()):
             return
 
         vals = []
@@ -2193,7 +2383,227 @@ def api_variance_leaderboard():
             "include_pairs": include_pairs,
             "feature_scope": scope,
             "ranking": "eta_squared_primary",
+            "require_replicated_cohort": True,
         }
+    }, 200
+
+
+@app.route('/api/insights_eligible_groupby')
+def api_insights_eligible_groupby():
+    """
+    Components that have enough cohort replication to compare spread safely
+    (same gates as the variance leaderboard for singles): min_distinct cohorts,
+    at least one cohort with min_cohort_n systems.
+    """
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+    scope_override = (request.args.get('scope') or '').strip().lower()
+    min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    min_distinct_cohorts = int(request.args.get('min_distinct_cohorts') or 2)
+
+    bundle, err = _load_primary_insights_bundle(title, app_version, args_str, scope_override)
+    if err:
+        return {"error": err[0]}, err[1]
+
+    label_map = bundle["label_map"]
+    y_norm_by_system = bundle["y_norm_by_system"]
+    y_raw_by_system = bundle["y_raw_by_system"]
+    sys_ids = bundle["sys_ids"]
+    comps_by_sid = bundle["comps_by_sid"]
+    min_systems_total = bundle["MIN_SYSTEMS_TOTAL"]
+
+    features = []
+    for feature_key in bundle["allowed_singles"]:
+        buckets_sid = defaultdict(list)
+        for sid in sys_ids:
+            v = (comps_by_sid.get(sid, {}).get(feature_key) or '').strip()
+            if not v:
+                continue
+            buckets_sid[v].append(sid)
+
+        buckets = defaultdict(list)
+        for v, sids in buckets_sid.items():
+            for sid in sids:
+                buckets[v].append(y_norm_by_system[sid])
+
+        systems_with_nonempty = sum(len(ys) for ys in buckets.values())
+        if systems_with_nonempty < min_systems_total:
+            continue
+        if len(buckets) < min_distinct_cohorts:
+            continue
+        if not any(len(ys) >= min_cohort_n for ys in buckets.values()):
+            continue
+
+        vals = []
+        for ys in buckets.values():
+            vals.extend(ys)
+        grand_mean = statistics.mean(vals)
+        ss_total = sum((y - grand_mean) ** 2 for y in vals)
+        if ss_total < 1e-18:
+            continue
+        ss_between = 0.0
+        for ys in buckets.values():
+            nj = len(ys)
+            mj = statistics.mean(ys)
+            ss_between += nj * (mj - grand_mean) ** 2
+        eta_sq = ss_between / ss_total
+
+        sn_ratio, spread_raw = _insights_signal_to_noise_raw(buckets_sid, y_raw_by_system)
+        tier, tier_summary = _insights_alignment_tier(eta_sq, sn_ratio)
+        rank_score = _insights_alignment_rank_score(eta_sq, sn_ratio)
+
+        features.append({
+            "feature_key": feature_key,
+            "feature_label": label_map.get(feature_key, feature_key),
+            "eta_squared": eta_sq,
+            "signal_to_noise": sn_ratio,
+            "cohort_mean_spread_raw": spread_raw,
+            "alignment_tier": tier,
+            "alignment_summary": tier_summary,
+            "alignment_rank_score": rank_score,
+            "n_distinct_values": len(buckets),
+            "max_cohort_size": max(len(ys) for ys in buckets.values()),
+            "n_systems": systems_with_nonempty,
+        })
+
+    features.sort(key=lambda x: (x["alignment_rank_score"], x["eta_squared"]), reverse=True)
+    for i, row in enumerate(features, start=1):
+        row["alignment_rank"] = i
+
+    return {
+        "features": features,
+        "meta": {
+            "benchmark_title": bundle["title"],
+            "app_version": bundle["app_version"],
+            "args": bundle["args_analysis_key"],
+            "feature_scope": bundle["scope"],
+            "min_cohort_n": min_cohort_n,
+            "min_distinct_cohorts": min_distinct_cohorts,
+            "alignment_ranking_note": (
+                "alignment_rank_score blends eta² (between-cohort variance share) and "
+                "signal-to-noise (spread of cohort means vs median within-cohort stdev). "
+                "Tiers are heuristics for association, not proof a part drives the score."
+            ),
+        },
+    }, 200
+
+
+@app.route('/api/insights_cohort_spread')
+def api_insights_cohort_spread():
+    """Per-cohort mean and per-system raw scores for one component (feature_key)."""
+    title = (request.args.get('benchmark_title') or '').strip()
+    app_version = (request.args.get('app_version') or '').strip()
+    args_str = (request.args.get('args') or '').strip()
+    feature_key = (request.args.get('feature_key') or '').strip()
+    scope_override = (request.args.get('scope') or '').strip().lower()
+    min_cohort_n = int(request.args.get('min_cohort_n') or 2)
+    min_distinct_cohorts = int(request.args.get('min_distinct_cohorts') or 2)
+
+    if not feature_key:
+        return {"error": "Missing feature_key query parameter"}, 400
+
+    bundle, err = _load_primary_insights_bundle(title, app_version, args_str, scope_override)
+    if err:
+        return {"error": err[0]}, err[1]
+
+    if feature_key not in bundle["allowed_singles"]:
+        return {"error": "feature_key is not allowed for this benchmark scope"}, 400
+
+    y_raw_by_system = bundle["y_raw_by_system"]
+    sys_ids = bundle["sys_ids"]
+    comps_by_sid = bundle["comps_by_sid"]
+    systems_by_id = bundle["systems_by_id"]
+    min_systems_total = bundle["MIN_SYSTEMS_TOTAL"]
+
+    buckets = defaultdict(list)
+    for sid in sys_ids:
+        v = (comps_by_sid.get(sid, {}).get(feature_key) or '').strip()
+        if not v:
+            continue
+        buckets[v].append((sid, y_raw_by_system[sid]))
+
+    systems_with_nonempty = sum(len(pairs) for pairs in buckets.values())
+    if systems_with_nonempty < min_systems_total:
+        return {"error": "Insufficient systems with this feature populated"}, 400
+    if len(buckets) < min_distinct_cohorts:
+        return {"error": "Need at least min_distinct_cohorts values for this feature"}, 400
+    if not any(len(pairs) >= min_cohort_n for pairs in buckets.values()):
+        return {"error": "Need at least one cohort with min_cohort_n systems"}, 400
+
+    is_lower_better = bundle["is_lower_better"]
+    cohort_rows = []
+    for v, pairs in buckets.items():
+        ys_raw = [p[1] for p in pairs]
+        mean_raw = statistics.mean(ys_raw)
+        stdev_raw = statistics.stdev(ys_raw) if len(ys_raw) > 1 else 0.0
+        cohort_rows.append({
+            "value": v,
+            "n": len(pairs),
+            "mean_raw": mean_raw,
+            "stdev_raw": stdev_raw,
+            "systems": [
+                {
+                    "system_id": sid,
+                    "label": format_system_profile_label(systems_by_id[sid]),
+                    "y_raw": yr,
+                }
+                for sid, yr in pairs
+            ],
+        })
+
+    cohort_rows.sort(key=lambda c: c["mean_raw"], reverse=not is_lower_better)
+    means = [c["mean_raw"] for c in cohort_rows]
+    spread = (max(means) - min(means)) if means else 0.0
+    inner_stds = [c["stdev_raw"] for c in cohort_rows if c["n"] > 1]
+    med_inner = statistics.median(inner_stds) if inner_stds else 0.0
+    sn_ratio = float(spread / (med_inner + 1e-9))
+
+    norm_by_val = defaultdict(list)
+    y_norm_by_system = bundle["y_norm_by_system"]
+    for c in cohort_rows:
+        for s in c["systems"]:
+            norm_by_val[c["value"]].append(y_norm_by_system[s["system_id"]])
+    eta_sel = _insights_eta_squared_norm_buckets(norm_by_val)
+    tier, tier_summary = _insights_alignment_tier(eta_sel, sn_ratio)
+
+    pairwise = []
+    for i in range(len(cohort_rows)):
+        for j in range(i + 1, len(cohort_rows)):
+            hi, lo = cohort_rows[i], cohort_rows[j]
+            pairwise.append({
+                "rank_a": i + 1,
+                "rank_b": j + 1,
+                "cohort_a_value": hi["value"],
+                "cohort_b_value": lo["value"],
+                "mean_a_raw": hi["mean_raw"],
+                "mean_b_raw": lo["mean_raw"],
+                "mean_gap_raw": abs(hi["mean_raw"] - lo["mean_raw"]),
+                "note": "Rank 1 is best performance for this benchmark (raw units).",
+            })
+
+    from app.hardware_ranks import theoretical_alignment_payload
+    theoretical_alignment = theoretical_alignment_payload(feature_key, cohort_rows, is_lower_better)
+
+    return {
+        "feature_key": feature_key,
+        "feature_label": bundle["label_map"].get(feature_key, feature_key),
+        "cohorts": cohort_rows,
+        "pairwise_ordered": pairwise,
+        "theoretical_alignment": theoretical_alignment,
+        "meta": {
+            "benchmark_title": bundle["title"],
+            "app_version": bundle["app_version"],
+            "args": bundle["args_analysis_key"],
+            "y_label": bundle["y_label_base"],
+            "is_lower_better": is_lower_better,
+            "feature_scope": bundle["scope"],
+            "cohort_mean_spread_raw": spread,
+            "signal_to_noise": sn_ratio,
+            "eta_squared": eta_sel,
+            "alignment_tier": tier,
+            "alignment_summary": tier_summary,
+        },
     }, 200
 
 
@@ -3004,6 +3414,120 @@ def debug_primary_perf_benchmarks():
         print("Primary BAR_GRAPH benchmarks that look perf-like:", len(rows))
         for b in rows:
             print(f"- id={b.id} title='{b.title}' app_version='{b.app_version}' scale='{b.scale}' identifier='{b.identifier}' desc_prefix='{(b.description or '')[:40]}'")
+
+
+@app.cli.command("import-hardware-ranks")
+@click.argument("path")
+def import_hardware_ranks_cmd(path):
+    """
+    Load CPU/GPU reference scores from JSON for theoretical-vs-observed alignment.
+
+    Format:
+      { "cpus": [ { "match_key": "AMD Ryzen 9 9950X", "rank_value": 100.0 }, ... ],
+        "gpus": [ { "match_key": "NVIDIA GeForce RTX 5080", "rank_value": 95 }, ... ] }
+
+    rank_value: higher = theoretically better (faster / stronger). Names are normalized
+    the same way as BenchViz processor/graphics fields. See hardware_ranks.example.json.
+    """
+    import json
+    from pathlib import Path
+    from app.components import hardware_rank_match_key
+
+    p = Path(path)
+    if not p.is_file():
+        print(f"Not found: {path}")
+        return
+
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    counters = {"added": 0, "updated": 0}
+
+    def ingest_list(kind_db: str, items, feature_key_for_norm: str):
+        for row in items:
+            if not isinstance(row, dict):
+                continue
+            mk_raw = (row.get("match_key") or row.get("name") or "").strip()
+            if not mk_raw:
+                continue
+            mk = hardware_rank_match_key(feature_key_for_norm, mk_raw)
+            if not mk:
+                continue
+            rv = row.get("rank_value")
+            if rv is None:
+                print(f"Skip (no rank_value): {mk_raw!r}")
+                continue
+            rv = float(rv)
+            rec = HardwareTheoreticalRank.query.filter_by(part_kind=kind_db, match_key=mk).first()
+            label = ((row.get("display_label") or mk_raw) or "")[:512] or None
+            note = ((row.get("source_note") or row.get("source") or "") or "")[:255] or None
+            if rec:
+                rec.rank_value = rv
+                rec.display_label = label
+                rec.source_note = note
+                counters["updated"] += 1
+            else:
+                db.session.add(HardwareTheoreticalRank(
+                    part_kind=kind_db,
+                    match_key=mk,
+                    rank_value=rv,
+                    display_label=label,
+                    source_note=note,
+                ))
+                counters["added"] += 1
+
+    with app.app_context():
+        cpus = payload.get("cpus") or payload.get("CPU") or []
+        gpus = payload.get("gpus") or payload.get("GPU") or []
+        if not cpus and not gpus:
+            print("JSON must contain 'cpus' and/or 'gpus' arrays.")
+            return
+        ingest_list("cpu", cpus, "processor")
+        ingest_list("gpu", gpus, "graphics")
+        db.session.commit()
+        print(
+            "hardware_theoretical_ranks:",
+            counters["added"], "inserted,",
+            counters["updated"], "updated.",
+        )
+
+
+@app.cli.command("sync-hardware-ranks-api")
+@click.option(
+    "--base-url",
+    default="http://localhost:7432",
+    show_default=True,
+    help="Parts service root (GET /api/cpu and /api/gpu).",
+)
+@click.option("--timeout", default=120, show_default=True, help="HTTP timeout seconds per endpoint.")
+@click.option("--dry-run", is_flag=True, help="Fetch and print counts only; do not write the database.")
+def sync_hardware_ranks_api_cmd(base_url: str, timeout: int, dry_run: bool):
+    """
+    Pull CPUs/GPUs from your local Parts API and fill hardware_theoretical_ranks.
+
+    Scores are derived from specs (CPU: cores × clocks × thread factor; GPU: TDP × bandwidth).
+    Match keys match BenchViz processor/graphics normalization for Kendall τ alignment on Insights.
+    """
+    from app.hardware_ranks_api_sync import build_rank_entries_from_api, upsert_theoretical_ranks
+
+    entries, errs = build_rank_entries_from_api(base_url, timeout=timeout)
+    for msg in errs:
+        print(msg)
+    n_cpu = sum(1 for kind, *_ in entries if kind == "cpu")
+    n_gpu = sum(1 for kind, *_ in entries if kind == "gpu")
+    print(f"Fetched: {n_cpu} CPU keys, {n_gpu} GPU keys (after dedup).")
+    if not entries:
+        print("Nothing to upsert.")
+        return
+    if dry_run:
+        print("Dry run: no database changes.")
+        return
+    with app.app_context():
+        ct = upsert_theoretical_ranks(entries)
+        db.session.commit()
+        print(
+            "hardware_theoretical_ranks:",
+            ct["added"], "inserted,",
+            ct["updated"], "updated.",
+        )
 
 
 if __name__ == '__main__':

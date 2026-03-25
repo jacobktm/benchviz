@@ -1,0 +1,28 @@
+{
+  "cpus": [
+    {
+      "match_key": "AMD Ryzen 9 9950X",
+      "rank_value": 100,
+      "source_note": "example — replace with your scores (higher = faster)"
+    },
+    {
+      "match_key": "Intel Core Ultra 9 275HX",
+      "rank_value": 88
+    },
+    {
+      "match_key": "AMD Ryzen 7 7840U",
+      "rank_value": 52
+    }
+  ],
+  "gpus": [
+    {
+      "match_key": "NVIDIA GeForce RTX 5080",
+      "rank_value": 100,
+      "source_note": "example — normalize like BenchViz graphics strings"
+    },
+    {
+      "match_key": "NVIDIA GeForce RTX 5080 Laptop GPU",
+      "rank_value": 85
+    }
+  ]
+}
