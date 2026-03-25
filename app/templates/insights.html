@@ -133,7 +133,7 @@
     <p class="card-meta" style="margin-bottom: 0;">
         Only lists components that meet the same replication rules as the leaderboard.
         Components are <strong>ranked</strong> by a composite alignment score (η² plus signal-to-noise between cohort means vs within-cohort scatter). Tiers (<em>strong / moderate / weak</em>) are heuristic: strong means scores tend to track that split; weak means the benchmark looks comparatively insensitive or noisy for that part.
-        The chart uses <strong>raw</strong> scores; cohort order is best → worst for this benchmark.
+        The bar chart shows each cohort’s <strong>mean</strong> raw score (best → worst left to right). Tables below list cohort stats (min / median / max / mean) and every system’s raw score, similar to sensor summaries on Compare.
         For <strong>CPU</strong> and <strong>GPU</strong> groupings, sync from your Parts API with <code>flask sync-hardware-ranks-api</code> or load a JSON file via <code>flask import-hardware-ranks</code>; the page then shows Kendall τ vs that reference order.
     </p>
     <div class="scatter-controls" style="margin-top: 1rem;">
@@ -146,7 +146,8 @@
         </button>
     </div>
     <div id="insightGroupbyStatus" style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem;"></div>
-    <div id="insightGroupbyChart" style="min-height: 420px; width: 100%;"></div>
+    <div id="insightGroupbyChart" style="min-height: 360px; width: 100%;"></div>
+    <div id="insightGroupbyTables" style="font-size: 0.88rem; color: var(--text-secondary);"></div>
     <p id="insightAlignmentNote" class="card-meta" style="margin-top: 0.75rem; margin-bottom: 0.5rem;"></p>
     <div id="insightAlignmentTable" style="margin-bottom: 1rem;"></div>
     <div id="insightTheoreticalAlign" style="font-size: 0.88rem; color: var(--text-secondary);"></div>
@@ -274,6 +275,7 @@
     const groupbyBtn = document.getElementById('insightGroupbyBtn');
     const groupbyStatusEl = document.getElementById('insightGroupbyStatus');
     const groupbyChartEl = document.getElementById('insightGroupbyChart');
+    const insightGroupbyTablesEl = document.getElementById('insightGroupbyTables');
     const insightAlignmentTableEl = document.getElementById('insightAlignmentTable');
     const insightAlignmentNoteEl = document.getElementById('insightAlignmentNote');
     const insightCohortPairwiseEl = document.getElementById('insightCohortPairwise');
@@ -295,6 +297,88 @@
         const t = String(s);
         if (t.length <= maxLen) return t;
         return t.slice(0, maxLen - 3) + '…';
+    }
+
+    function fmtCohortStat(v) {
+        if (v == null || Number.isNaN(Number(v))) return '—';
+        return Number(v).toPrecision(5);
+    }
+
+    /** Sensor-style tables: cohort rollups then one row per system run (raw scores). */
+    function renderCohortSpreadTables(cohorts, yLabel, featureLabel) {
+        if (!insightGroupbyTablesEl) return;
+        if (!cohorts.length) {
+            insightGroupbyTablesEl.innerHTML = '';
+            return;
+        }
+        const unit = (yLabel && String(yLabel).trim()) ? String(yLabel).trim() : 'raw score';
+        const feat = (featureLabel && String(featureLabel).trim()) ? String(featureLabel).trim() : 'Component';
+
+        let html = '<div style="margin-top:0.75rem;font-weight:600;color:var(--text-primary);">Cohort statistics</div>';
+        html += '<p class="card-meta" style="margin:0.35rem 0 0.5rem 0;">Same units as the benchmark: ' + escapeHtml(unit) + '.</p>';
+        html += '<div style="padding:0.5rem 0.75rem;background:rgba(0,0,0,0.22);border-radius:8px;">';
+        html += '<table style="width:100%;max-width:920px;border-collapse:collapse;text-align:left;font-size:0.84rem;">';
+        html += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
+        ['Cohort', 'n', 'Mean', 'Stdev', 'Min', 'Median', 'Max'].forEach((h) => {
+            html += '<th style="padding:0.35rem 0.4rem;">' + h + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+
+        cohorts.forEach((c) => {
+            const systems = c.systems || [];
+            const ys = systems.map((s) => Number(s.y_raw)).filter((v) => !Number.isNaN(v)).sort((a, b) => a - b);
+            const minV = ys.length ? ys[0] : null;
+            const maxV = ys.length ? ys[ys.length - 1] : null;
+            let med = null;
+            if (ys.length) {
+                const mid = Math.floor(ys.length / 2);
+                med = ys.length % 2 ? ys[mid] : (ys[mid - 1] + ys[mid]) / 2;
+            }
+            const mean = c.mean_raw != null ? Number(c.mean_raw) : null;
+            const sd = c.stdev_raw != null ? Number(c.stdev_raw) : null;
+            const n = c.n != null ? c.n : systems.length;
+            html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">';
+            html += '<td style="padding:0.4rem;">' + escapeHtml(truncateLabel(c.value, 56)) + '</td>';
+            html += '<td style="padding:0.4rem;">' + n + '</td>';
+            html += '<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">' + fmtCohortStat(mean) + '</td>';
+            html += '<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">' + fmtCohortStat(sd) + '</td>';
+            html += '<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">' + fmtCohortStat(minV) + '</td>';
+            html += '<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">' + fmtCohortStat(med) + '</td>';
+            html += '<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">' + fmtCohortStat(maxV) + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+
+        const rows = [];
+        cohorts.forEach((c) => {
+            (c.systems || []).forEach((s) => {
+                rows.push({ cohort: c.value, label: s.label, y: s.y_raw });
+            });
+        });
+        rows.sort((a, b) => {
+            const ca = String(a.cohort).localeCompare(String(b.cohort));
+            if (ca !== 0) return ca;
+            return Number(a.y) - Number(b.y);
+        });
+
+        html += '<div style="margin-top:1rem;font-weight:600;color:var(--text-primary);">Each run</div>';
+        html += '<div style="margin-top:0.35rem;padding:0.5rem 0.75rem;background:rgba(0,0,0,0.22);border-radius:8px;">';
+        html += '<table style="width:100%;max-width:960px;border-collapse:collapse;text-align:left;font-size:0.84rem;">';
+        html += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
+        html += '<th style="padding:0.35rem 0.4rem;">System</th>';
+        html += '<th style="padding:0.35rem 0.4rem;">Cohort (' + escapeHtml(feat) + ')</th>';
+        html += '<th style="padding:0.35rem 0.4rem;">Score</th>';
+        html += '</tr></thead><tbody>';
+        rows.forEach((r) => {
+            html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">';
+            html += '<td style="padding:0.4rem;">' + escapeHtml(truncateLabel(r.label, 64)) + '</td>';
+            html += '<td style="padding:0.4rem;">' + escapeHtml(truncateLabel(r.cohort, 48)) + '</td>';
+            html += '<td style="padding:0.4rem;font-variant-numeric:tabular-nums;">' + fmtCohortStat(r.y) + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+
+        insightGroupbyTablesEl.innerHTML = html;
     }
 
     function renderAlignmentRankTable(features, meta) {
@@ -398,6 +482,7 @@
         if (insightAlignmentNoteEl) insightAlignmentNoteEl.textContent = '';
         if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
         if (insightCohortPairwiseEl) insightCohortPairwiseEl.innerHTML = '';
+        if (insightGroupbyTablesEl) insightGroupbyTablesEl.innerHTML = '';
         groupbyStatusEl.textContent = 'Loading components with cohort data...';
 
         const min_cohort_n = Number(minPointsInput.value || 2);
@@ -461,6 +546,7 @@
         try {
             if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
             if (insightCohortPairwiseEl) insightCohortPairwiseEl.innerHTML = '';
+            if (insightGroupbyTablesEl) insightGroupbyTablesEl.innerHTML = '';
             const resp = await fetch(url.toString());
             const data = await resp.json();
             if (data.error) {
@@ -470,16 +556,24 @@
             }
             const cohorts = data.cohorts || [];
             const meta = data.meta || {};
-            const traces = cohorts.map((c) => ({
-                type: 'box',
-                y: c.systems.map((s) => s.y_raw),
-                name: truncateLabel(c.value, 26),
-                boxpoints: 'all',
-                jitter: 0.28,
-                pointpos: -1.6,
-                text: c.systems.map((s) => `${s.label}<br>${s.y_raw}`),
-                hoverinfo: 'y+text',
-            }));
+            const cohortLabels = cohorts.map((c) => truncateLabel(c.value, 28));
+            const means = cohorts.map((c) => Number(c.mean_raw));
+            const hoverText = cohorts.map((c) => {
+                const n = c.n != null ? c.n : (c.systems || []).length;
+                const m = fmtCohortStat(c.mean_raw);
+                return `${c.value}<br>n=${n}<br>mean=${m}`;
+            });
+            const traces = [{
+                type: 'bar',
+                x: cohortLabels,
+                y: means,
+                text: hoverText,
+                hoverinfo: 'text',
+                marker: {
+                    color: cohorts.map((_, i) => defaultColors[i % defaultColors.length]),
+                    opacity: 0.9,
+                },
+            }];
 
             const spread = (meta.cohort_mean_spread_raw != null) ? Number(meta.cohort_mean_spread_raw) : null;
             const subtitle = spread != null && !Number.isNaN(spread)
@@ -506,6 +600,7 @@
             };
 
             await Plotly.react(groupbyChartEl, traces, layout, { displayModeBar: true, responsive: true });
+            renderCohortSpreadTables(cohorts, meta.y_label || '', data.feature_label || '');
             const tier = meta.alignment_tier || '';
             const tnote = meta.alignment_summary || '';
             let st = meta.is_lower_better
@@ -537,6 +632,7 @@
         } catch (e) {
             groupbyStatusEl.textContent = 'Failed to render chart.';
             if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
+            if (insightGroupbyTablesEl) insightGroupbyTablesEl.innerHTML = '';
             console.error(e);
         }
     }
@@ -587,6 +683,7 @@
             if (insightAlignmentNoteEl) insightAlignmentNoteEl.textContent = '';
             if (insightTheoreticalAlignEl) insightTheoreticalAlignEl.innerHTML = '';
             if (insightCohortPairwiseEl) insightCohortPairwiseEl.innerHTML = '';
+            if (insightGroupbyTablesEl) insightGroupbyTablesEl.innerHTML = '';
             eligibleGroupby = [];
             statusEl.textContent = 'No benchmark configs have enough evidence for the current thresholds.';
             return;
