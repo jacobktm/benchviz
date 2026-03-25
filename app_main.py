@@ -179,7 +179,12 @@ def dashboard():
         
     grouped_systems = list(grouped_systems_dict.values())
 
-    primary_benchmarks = Benchmark.query.filter_by(display_format='BAR_GRAPH').all()
+    # Perf counters are stored as BAR_GRAPH benchmarks too, but marked non-primary.
+    # We exclude them from the dashboard "benchmarks" listing for clarity.
+    primary_benchmarks = Benchmark.query.filter(
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    ).all()
     
     dashboard_groups = {}
     for p_bm in primary_benchmarks:
@@ -323,10 +328,13 @@ def system_detail(id):
     
     unique_values = get_unique_field_values()
     
-    # Group results by title and app_version
+    # Group results by title and app_version.
+    # Exclude perf counters (BAR_GRAPH that are marked non-primary).
     grouped_results = {}
     for result in system.results:
         b = result.benchmark
+        if b and b.display_format == 'BAR_GRAPH' and not b.is_primary:
+            continue
         id_str = f" [{b.identifier}]" if b.identifier else ""
         key = f"{b.title} ({b.app_version}){id_str}"
         if key not in grouped_results:
