@@ -43,7 +43,11 @@ def normalize_processor_name(processor: str) -> str:
 
 def normalize_graphics_name(graphics: str) -> str:
     """
-    Shorten GPU strings for matching theoretical ranks (VRAM, Laptop GPU suffix, etc.).
+    Shorten GPU strings for labels and `HardwareTheoreticalRank` / cohort grouping.
+
+    Strips clock (@ …), trailing VRAM (e.g. 16 GB), then a trailing ' GPU' — including
+    in '… Laptop GPU' — so mobile becomes '… RTX 5080 Laptop', desktop '… RTX 5080 GPU'
+    becomes '… RTX 5080'; laptop and desktop cohorts stay separate.
     """
     s = clean_text(graphics)
     if not s:
@@ -51,8 +55,8 @@ def normalize_graphics_name(graphics: str) -> str:
     s = re.split(r"\s*@\s*", s, maxsplit=1)[0].strip()
     s = re.sub(r"\s*\d+\s*GB\s*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s*\d+\s*MB\s*$", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s+Laptop\s+GPU\s*$", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\s+GPU\s*$", "", s, flags=re.IGNORECASE).strip()
     return s
 
 
