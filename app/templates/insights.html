@@ -305,7 +305,7 @@
     }
 
     /** Sensor-style tables: cohort rollups then one row per system run (raw scores). */
-    function renderCohortSpreadTables(cohorts, yLabel, featureLabel, isLowerBetter) {
+    function renderCohortSpreadTables(cohorts, yLabel, featureLabel, isLowerBetter = false) {
         if (!insightGroupbyTablesEl) return;
         if (!cohorts.length) {
             insightGroupbyTablesEl.innerHTML = '';
@@ -358,13 +358,24 @@
                 rows.push({ cohort: c.value, label: s.label, y: s.y_raw });
             });
         });
+        const lowerFirst = !!isLowerBetter;
         rows.sort((a, b) => {
-            const ca = String(a.cohort).localeCompare(String(b.cohort));
-            if (ca !== 0) return ca;
-            return Number(a.y) - Number(b.y);
+            const ya = Number(a.y);
+            const yb = Number(b.y);
+            const na = Number.isNaN(ya);
+            const nb = Number.isNaN(yb);
+            if (na && nb) return 0;
+            if (na) return 1;
+            if (nb) return -1;
+            let cmp = lowerFirst ? ya - yb : yb - ya;
+            if (cmp !== 0) return cmp;
+            const cc = String(a.cohort).localeCompare(String(b.cohort));
+            if (cc !== 0) return cc;
+            return String(a.label).localeCompare(String(b.label));
         });
 
         html += '<div style="margin-top:1rem;font-weight:600;color:var(--text-primary);">Each run</div>';
+        html += '<p class="card-meta" style="margin:0.25rem 0 0.4rem 0;">Rows: <strong>best → worst</strong> (same rule as the chart).</p>';
         html += '<div style="margin-top:0.35rem;padding:0.5rem 0.75rem;background:rgba(0,0,0,0.22);border-radius:8px;">';
         html += '<table style="width:100%;max-width:960px;border-collapse:collapse;text-align:left;font-size:0.84rem;">';
         html += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
