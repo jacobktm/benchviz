@@ -32,6 +32,20 @@ def load_rank_lookup(part_kind: str) -> dict[str, float]:
     return {r.match_key: float(r.rank_value) for r in rows}
 
 
+def load_spec_rank_lookup(part_kind: str) -> dict[str, float]:
+    """Baseline spec scores (before empirical calibration), when present."""
+    kind = (part_kind or "").strip().lower()
+    rows = HardwareTheoreticalRank.query.filter_by(part_kind=kind).all()
+    out: dict[str, float] = {}
+    for r in rows:
+        base = r.rank_value_spec
+        if base is not None:
+            out[r.match_key] = float(base)
+        else:
+            out[r.match_key] = float(r.rank_value)
+    return out
+
+
 def theoretical_alignment_payload(
     feature_key: str,
     cohort_rows: list[dict],
@@ -50,11 +64,12 @@ def theoretical_alignment_payload(
         return None
 
     lookup = load_rank_lookup(part_kind)
+    spec_lookup = load_spec_rank_lookup(part_kind)
     if not lookup:
         return {
             "available": False,
             "part_kind": part_kind,
-            "reason": "No reference rows in hardware_theoretical_ranks for this part type. Run: flask sync-hardware-ranks-api — or: flask import-hardware-ranks <file.json>",
+            "reason": "No reference rows in hardware_theoretical_ranks for this part type. Run: flask sync-hardware-ranks-api — or: flask import-hardware-ranks <file.json>; then optional flask calibrate-hardware-ranks.",
         }
 
     enriched: list[dict[str, Any]] = []
@@ -62,11 +77,13 @@ def theoretical_alignment_payload(
         val = (c.get("value") or "").strip()
         mk = hardware_rank_match_key(fk, val)
         rv = lookup.get(mk)
+        sv = spec_lookup.get(mk)
         enriched.append({
             "cohort_value": val,
             "match_key": mk,
             "mean_raw": c.get("mean_raw"),
             "theoretical_rank_value": rv,
+            "spec_rank_value": sv,
             "matched_reference": rv is not None,
         })
 

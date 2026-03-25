@@ -134,7 +134,7 @@
         Only lists components that meet the same replication rules as the leaderboard.
         Components are <strong>ranked</strong> by a composite alignment score (η² plus signal-to-noise between cohort means vs within-cohort scatter). Tiers (<em>strong / moderate / weak</em>) are heuristic: strong means scores tend to track that split; weak means the benchmark looks comparatively insensitive or noisy for that part.
         The bar chart shows each cohort’s <strong>mean</strong> raw score (best → worst left to right). Tables below list cohort stats (min / median / max / mean) and every system’s raw score, similar to sensor summaries on Compare.
-        For <strong>CPU</strong> and <strong>GPU</strong> groupings, sync from your Parts API with <code>flask sync-hardware-ranks-api</code> or load a JSON file via <code>flask import-hardware-ranks</code>; the page then shows Kendall τ vs that reference order.
+        For <strong>CPU</strong> / <strong>GPU</strong>, sync specs with <code>flask sync-hardware-ranks-api</code> or <code>flask import-hardware-ranks</code>; then run <code>flask calibrate-hardware-ranks</code> so reference ranks fold in your actual primary benchmark results (e.g. V-cache vs non-X3D). Kendall τ uses the calibrated ref; tables also show the spec baseline.
     </p>
     <div class="scatter-controls" style="margin-top: 1rem;">
         <div class="scatter-control" style="min-width: 280px;">
@@ -448,18 +448,20 @@
         if (cohorts.length) {
             html += '<table style="width:100%;max-width:820px;margin-top:0.45rem;border-collapse:collapse;font-size:0.84rem;">';
             html += '<thead><tr style="text-align:left;border-bottom:1px solid rgba(255,255,255,0.1);">';
-            ['Cohort', 'Lookup key', 'Ref. score', 'Cohort mean (raw)', 'Matched'].forEach((h) => {
+            ['Cohort', 'Lookup key', 'Ref (cal.)', 'Spec baseline', 'Cohort mean', 'Matched'].forEach((h) => {
                 html += `<th style="padding:0.35rem 0.3rem;">${h}</th>`;
             });
             html += '</tr></thead><tbody>';
             cohorts.forEach((c) => {
                 const ref = c.theoretical_rank_value != null ? Number(c.theoretical_rank_value).toPrecision(4) : '—';
+                const specv = c.spec_rank_value != null ? Number(c.spec_rank_value).toPrecision(4) : ref;
                 const mean = c.mean_raw != null ? Number(c.mean_raw).toPrecision(4) : '—';
                 const matched = c.matched_reference ? 'yes' : '';
                 html += `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);${c.matched_reference ? '' : 'opacity:0.72'}">`;
                 html += `<td style="padding:0.4rem 0.3rem;">${escapeHtml(truncateLabel(c.cohort_value, 44))}</td>`;
                 html += `<td style="padding:0.4rem 0.3rem;font-size:0.8rem;">${escapeHtml(truncateLabel(c.match_key, 40))}</td>`;
                 html += `<td style="padding:0.4rem 0.3rem;font-variant-numeric:tabular-nums;">${ref}</td>`;
+                html += `<td style="padding:0.4rem 0.3rem;font-variant-numeric:tabular-nums;">${specv}</td>`;
                 html += `<td style="padding:0.4rem 0.3rem;font-variant-numeric:tabular-nums;">${mean}</td>`;
                 html += `<td style="padding:0.4rem 0.3rem;">${matched}</td>`;
                 html += '</tr>';

@@ -78,12 +78,26 @@ def ensure_schema_compatibility():
                     part_kind VARCHAR(8) NOT NULL,
                     match_key VARCHAR(256) NOT NULL,
                     rank_value FLOAT NOT NULL,
+                    rank_value_spec FLOAT,
                     display_label VARCHAR(512),
                     source_note VARCHAR(255),
                     UNIQUE (part_kind, match_key)
                 )
                 """
             ))
+
+    inspector2 = inspect(db.engine)
+    if 'hardware_theoretical_ranks' in inspector2.get_table_names():
+        hw_rank_columns = {c['name'] for c in inspector2.get_columns('hardware_theoretical_ranks')}
+        if 'rank_value_spec' not in hw_rank_columns:
+            with db.engine.begin() as connection:
+                connection.execute(text(
+                    "ALTER TABLE hardware_theoretical_ranks ADD COLUMN rank_value_spec FLOAT"
+                ))
+                connection.execute(text(
+                    "UPDATE hardware_theoretical_ranks SET rank_value_spec = rank_value "
+                    "WHERE rank_value_spec IS NULL"
+                ))
 
 def create_app():
     app = Flask(__name__)

@@ -199,6 +199,7 @@ def upsert_theoretical_ranks(
     for kind, mk, rv, label, note in entries:
         rec = HardwareTheoreticalRank.query.filter_by(part_kind=kind, match_key=mk).first()
         if rec:
+            rec.rank_value_spec = rv
             rec.rank_value = rv
             rec.display_label = label or None
             rec.source_note = note or None
@@ -208,6 +209,7 @@ def upsert_theoretical_ranks(
                 part_kind=kind,
                 match_key=mk,
                 rank_value=rv,
+                rank_value_spec=rv,
                 display_label=label or None,
                 source_note=note or None,
             ))

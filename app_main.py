@@ -3426,8 +3426,8 @@ def import_hardware_ranks_cmd(path):
       { "cpus": [ { "match_key": "AMD Ryzen 9 9950X", "rank_value": 100.0 }, ... ],
         "gpus": [ { "match_key": "NVIDIA GeForce RTX 5080", "rank_value": 95 }, ... ] }
 
-    rank_value: higher = theoretically better (faster / stronger). Names are normalized
-    the same way as BenchViz processor/graphics fields. See hardware_ranks.example.json.
+    rank_value: higher = theoretically better. Stored as both rank_value_spec (baseline)
+    and rank_value until you run `flask calibrate-hardware-ranks`.
     """
     import json
     from pathlib import Path
@@ -3460,6 +3460,7 @@ def import_hardware_ranks_cmd(path):
             label = ((row.get("display_label") or mk_raw) or "")[:512] or None
             note = ((row.get("source_note") or row.get("source") or "") or "")[:255] or None
             if rec:
+                rec.rank_value_spec = rv
                 rec.rank_value = rv
                 rec.display_label = label
                 rec.source_note = note
@@ -3469,6 +3470,7 @@ def import_hardware_ranks_cmd(path):
                     part_kind=kind_db,
                     match_key=mk,
                     rank_value=rv,
+                    rank_value_spec=rv,
                     display_label=label,
                     source_note=note,
                 ))
@@ -3528,6 +3530,45 @@ def sync_hardware_ranks_api_cmd(base_url: str, timeout: int, dry_run: bool):
             ct["added"], "inserted,",
             ct["updated"], "updated.",
         )
+
+
+@app.cli.command("calibrate-hardware-ranks")
+@click.option(
+    "--spec-weight",
+    default=0.35,
+    show_default=True,
+    help="Weight for spec baseline vs bench data (0=all empirical, 1=all spec).",
+)
+@click.option(
+    "--part-kind",
+    type=click.Choice(["both", "cpu", "gpu"], case_sensitive=False),
+    default="both",
+    show_default=True,
+    help="Which part class to update.",
+)
+def calibrate_hardware_ranks_cmd(spec_weight: float, part_kind: str):
+    """
+    Recompute rank_value from rank_value_spec + primary BAR_GRAPH results in this database.
+
+    Within each benchmark (and argument profile), systems get a performance percentile; that
+    pulls 9950X3D-style parts up on cache-heavy tests when your uploads show it, even when
+    the parts API scores them like a plain 9950X.
+    """
+    from app.hardware_ranks_calibrate import calibrate_hardware_ranks
+
+    with app.app_context():
+        out = calibrate_hardware_ranks(spec_weight=spec_weight, part_kind=part_kind.lower())
+        if out.get("error"):
+            print(out["error"])
+            return
+        db.session.commit()
+        print(f"Updated {out['updated']} row(s); spec_weight={out['spec_weight']:.2f}")
+        for kind, info in (out.get("detail") or {}).get("kinds", {}).items():
+            print(
+                f"  {kind}: {info.get('rows', 0)} rows, "
+                f"{info.get('with_bench_signal', 0)} with empirical signal, "
+                f"{info.get('match_keys_with_empirical', 0)} distinct parts seen in benchmarks.",
+            )
 
 
 if __name__ == '__main__':

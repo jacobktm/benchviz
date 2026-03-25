@@ -94,9 +94,12 @@ class HardwareTheoreticalRank(db.Model):
     """
     Reference CPU/GPU performance ordering (from your external rankings / scores).
 
-    `rank_value`: higher = theoretically faster / more capable for that part class.
-    `match_key`: normalized name; must match `hardware_rank_match_key()` in components.py
-    (same rules as parsed processor/graphics strings in BenchViz).
+    `rank_value`: score used for reference ordering (Kendall τ, etc.); may be **calibrated**
+    from real benchmark results. Higher = faster / more capable.
+
+    `rank_value_spec`: baseline from your parts API / JSON (spec-only). Preserved when you run
+    `flask calibrate-hardware-ranks` so you can re-blend after new uploads.
+    `match_key`: normalized name; must match `hardware_rank_match_key()` in components.py.
     """
     __tablename__ = "hardware_theoretical_ranks"
 
@@ -104,6 +107,7 @@ class HardwareTheoreticalRank(db.Model):
     part_kind = db.Column(db.String(8), nullable=False)  # "cpu" | "gpu"
     match_key = db.Column(db.String(256), nullable=False)
     rank_value = db.Column(db.Float, nullable=False)
+    rank_value_spec = db.Column(db.Float, nullable=True)  # baseline before empirical calibration
     display_label = db.Column(db.String(512), nullable=True)
     source_note = db.Column(db.String(255), nullable=True)
 
