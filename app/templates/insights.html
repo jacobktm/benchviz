@@ -133,7 +133,7 @@
     <p class="card-meta" style="margin-bottom: 0;">
         Only lists components that meet the same replication rules as the leaderboard.
         Components are <strong>ranked</strong> by a composite alignment score (η² plus signal-to-noise between cohort means vs within-cohort scatter). Tiers (<em>strong / moderate / weak</em>) are heuristic: strong means scores tend to track that split; weak means the benchmark looks comparatively insensitive or noisy for that part.
-        The bar chart shows each cohort’s <strong>mean</strong> raw score (best → worst left to right). Tables below list cohort stats (min / median / max / mean) and every system’s raw score, similar to sensor summaries on Compare.
+        The bar chart shows each cohort’s <strong>mean</strong> raw score, ordered <strong>best → worst left to right</strong>. The chart title, Y-axis, and table blurb state whether <strong>lower</strong> or <strong>higher</strong> raw values are better for the benchmark you selected (from its Phoronix proportion). Tables list cohort stats and every system’s raw score.
         For <strong>CPU</strong> / <strong>GPU</strong>, sync specs with <code>flask sync-hardware-ranks-api</code> or <code>flask import-hardware-ranks</code>; then run <code>flask calibrate-hardware-ranks</code> so reference ranks fold in your actual primary benchmark results (e.g. V-cache vs non-X3D). Kendall τ uses the calibrated ref; tables also show the spec baseline.
     </p>
     <div class="scatter-controls" style="margin-top: 1rem;">
@@ -305,7 +305,7 @@
     }
 
     /** Sensor-style tables: cohort rollups then one row per system run (raw scores). */
-    function renderCohortSpreadTables(cohorts, yLabel, featureLabel) {
+    function renderCohortSpreadTables(cohorts, yLabel, featureLabel, isLowerBetter) {
         if (!insightGroupbyTablesEl) return;
         if (!cohorts.length) {
             insightGroupbyTablesEl.innerHTML = '';
@@ -313,9 +313,12 @@
         }
         const unit = (yLabel && String(yLabel).trim()) ? String(yLabel).trim() : 'raw score';
         const feat = (featureLabel && String(featureLabel).trim()) ? String(featureLabel).trim() : 'Component';
+        const dirHtml = isLowerBetter
+            ? '<strong>Lower is better</strong> for this benchmark (e.g. shorter time).'
+            : '<strong>Higher is better</strong> for this benchmark.';
 
         let html = '<div style="margin-top:0.75rem;font-weight:600;color:var(--text-primary);">Cohort statistics</div>';
-        html += '<p class="card-meta" style="margin:0.35rem 0 0.5rem 0;">Same units as the benchmark: ' + escapeHtml(unit) + '.</p>';
+        html += '<p class="card-meta" style="margin:0.35rem 0 0.5rem 0;">Units: ' + escapeHtml(unit) + '. ' + dirHtml + '</p>';
         html += '<div style="padding:0.5rem 0.75rem;background:rgba(0,0,0,0.22);border-radius:8px;">';
         html += '<table style="width:100%;max-width:920px;border-collapse:collapse;text-align:left;font-size:0.84rem;">';
         html += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
@@ -367,7 +370,7 @@
         html += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
         html += '<th style="padding:0.35rem 0.4rem;">System</th>';
         html += '<th style="padding:0.35rem 0.4rem;">Cohort (' + escapeHtml(feat) + ')</th>';
-        html += '<th style="padding:0.35rem 0.4rem;">Score</th>';
+        html += '<th style="padding:0.35rem 0.4rem;">Raw score</th>';
         html += '</tr></thead><tbody>';
         rows.forEach((r) => {
             html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">';
@@ -558,12 +561,14 @@
             }
             const cohorts = data.cohorts || [];
             const meta = data.meta || {};
+            const lowerBetter = !!meta.is_lower_better;
             const cohortLabels = cohorts.map((c) => truncateLabel(c.value, 28));
             const means = cohorts.map((c) => Number(c.mean_raw));
+            const hoverDir = lowerBetter ? 'Lower mean is better' : 'Higher mean is better';
             const hoverText = cohorts.map((c) => {
                 const n = c.n != null ? c.n : (c.systems || []).length;
                 const m = fmtCohortStat(c.mean_raw);
-                return `${c.value}<br>n=${n}<br>mean=${m}`;
+                return `${c.value}<br>n=${n}<br>mean=${m}<br><b>${hoverDir}</b>`;
             });
             const traces = [{
                 type: 'bar',
@@ -581,28 +586,37 @@
             const subtitle = spread != null && !Number.isNaN(spread)
                 ? `<br><sub style="font-size:0.78rem;opacity:0.85">Spread of cohort means: ${spread.toPrecision(4)} ${meta.y_label || ''}</sub>`
                 : '';
+            const directionSub = lowerBetter
+                ? '<br><sub style="font-size:0.78rem;opacity:0.95;color:#c4b5fd">↓ <b>Lower</b> raw score is better — <b>shorter bars win</b>. Cohorts ordered best → worst (left → right).</sub>'
+                : '<br><sub style="font-size:0.78rem;opacity:0.95;color:#c4b5fd">↑ <b>Higher</b> raw score is better — <b>taller bars win</b>. Cohorts ordered best → worst (left → right).</sub>';
+
+            const yBase = meta.y_label || 'Score';
+            const yAxisTitle = lowerBetter ? `${yBase} (lower is better)` : `${yBase} (higher is better)`;
+            const xAxisTitle = lowerBetter
+                ? 'Cohort (left = best = lowest mean)'
+                : 'Cohort (left = best = highest mean)';
 
             const layout = {
-                title: { text: `${data.feature_label} · ${meta.benchmark_title || ''}${subtitle}`, font: { size: 16 } },
+                title: { text: `${data.feature_label} · ${meta.benchmark_title || ''}${subtitle}${directionSub}`, font: { size: 16 } },
                 paper_bgcolor: 'rgba(0,0,0,0)',
                 plot_bgcolor: 'rgba(0,0,0,0.18)',
                 font: { color: '#e8eaed' },
                 yaxis: {
-                    title: meta.y_label || 'Score',
+                    title: yAxisTitle,
                     gridcolor: 'rgba(255,255,255,0.08)',
                     zerolinecolor: 'rgba(255,255,255,0.12)',
                 },
                 xaxis: {
-                    title: 'Component value (cohort)',
+                    title: xAxisTitle,
                     tickangle: -28,
                     automargin: true,
                 },
                 showlegend: false,
-                margin: { t: 72, b: 100, l: 64, r: 28 },
+                margin: { t: 100, b: 100, l: 72, r: 28 },
             };
 
             await Plotly.react(groupbyChartEl, traces, layout, { displayModeBar: true, responsive: true });
-            renderCohortSpreadTables(cohorts, meta.y_label || '', data.feature_label || '');
+            renderCohortSpreadTables(cohorts, meta.y_label || '', data.feature_label || '', lowerBetter);
             const tier = meta.alignment_tier || '';
             const tnote = meta.alignment_summary || '';
             let st = meta.is_lower_better
