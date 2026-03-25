@@ -112,7 +112,8 @@ def _merge_best_by_match_key(
         if not mk or rv <= 0:
             continue
         cur = best.get(mk)
-        if cur is None or rv > cur[1]:
+        # Tuple is (kind, match_key, rank_value, label, note) — rank is index 2, not 1.
+        if cur is None or rv > cur[2]:
             best[mk] = (kind, mk, rv, label, note)
     return list(best.values())
 
