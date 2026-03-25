@@ -2067,7 +2067,18 @@ def api_variance_leaderboard_coverage():
     min_cohort_n = int(request.args.get('min_cohort_n') or 2)
     min_distinct_cohorts = int(request.args.get('min_distinct_cohorts') or 2)
 
-    analyses = BenchmarkAnalysis.query.all()
+    # Keep only analyses whose (title, app_version) has at least one primary BAR_GRAPH benchmark.
+    primary_pairs = set(
+        (b.title, b.app_version or '')
+        for b in Benchmark.query.filter(
+            Benchmark.display_format == 'BAR_GRAPH',
+            Benchmark.is_primary.is_(True),
+        ).all()
+    )
+    analyses = [
+        a for a in BenchmarkAnalysis.query.all()
+        if (a.benchmark_title, a.benchmark_app_version or '') in primary_pairs
+    ]
 
     # (benchmark_title, app_version) -> set(args)
     buckets = defaultdict(set)
@@ -2352,7 +2363,18 @@ def api_explain_underperformance():
 
 @app.route('/insights')
 def insights():
-    analyses = BenchmarkAnalysis.query.order_by(BenchmarkAnalysis.benchmark_title, BenchmarkAnalysis.benchmark_app_version).all()
+    # Exclude analysis rows that correspond only to non-primary BAR_GRAPH metrics (e.g. perf counters).
+    primary_pairs = set(
+        (b.title, b.app_version or '')
+        for b in Benchmark.query.filter(
+            Benchmark.display_format == 'BAR_GRAPH',
+            Benchmark.is_primary.is_(True),
+        ).all()
+    )
+    analyses = [
+        a for a in BenchmarkAnalysis.query.order_by(BenchmarkAnalysis.benchmark_title, BenchmarkAnalysis.benchmark_app_version).all()
+        if (a.benchmark_title, a.benchmark_app_version or '') in primary_pairs
+    ]
     # Return as an array of structured mappings for the Jinja template
     return render_template('insights.html', analyses=analyses)
 

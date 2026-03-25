@@ -44,9 +44,12 @@ def analyze_benchmarks():
     """Runs the background statistical analysis."""
     print("Starting background benchmark analysis...")
     
-    # We only analyze scalar BAR_GRAPH results for simplicity of the correlation engine.
-    # Group benchmarking instances by their definition to aggregate all system executions.
-    benchmarks = Benchmark.query.filter_by(display_format='BAR_GRAPH').all()
+    # We only analyze scalar primary BAR_GRAPH results for simplicity of the
+    # correlation engine. Perf counters are BAR_GRAPH too, but non-primary.
+    benchmarks = Benchmark.query.filter(
+        Benchmark.display_format == 'BAR_GRAPH',
+        Benchmark.is_primary.is_(True),
+    ).all()
     
     analysis_results = []
     
