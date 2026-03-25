@@ -104,6 +104,46 @@
                         </div>
                     </div>
 
+                    {% if group.geom_by_system %}
+                    <div style="margin-bottom: 1.5rem;">
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Geometric mean (all configurations)</p>
+                        <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem; max-width: 52rem; line-height: 1.5;">
+                            For each system, we take the mean score for every argument profile, then the <strong>geometric mean</strong> of those values across profiles (needs finite scores &gt; 0). Compare systems using the same unit as the raw results.
+                        </p>
+                        <div class="table-container" style="max-width: 720px;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                                <thead>
+                                    <tr style="text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                                        <th style="padding: 0.45rem 0;">System</th>
+                                        <th style="padding: 0.45rem 0;">Profiles</th>
+                                        <th style="padding: 0.45rem 0; text-align: right;">Geom. mean</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for sys in group.system_variations %}
+                                    {% set g = group.geom_by_system.get(sys.id) %}
+                                    {% if g %}
+                                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                        <td style="padding: 0.5rem 0;">
+                                            <a href="{{ url_for('system_detail', id=sys.id) }}" style="color: inherit; text-decoration: none;">
+                                                <span style="font-weight: 600;">{{ sys.primary_group_name }}</span>
+                                                <span style="color: var(--text-secondary); font-size: 0.85rem;"> · {{ sys.profile_label }}</span>
+                                            </a>
+                                        </td>
+                                        <td style="padding: 0.5rem 0; color: var(--text-secondary);">{{ g.n_configs }}</td>
+                                        <td style="padding: 0.5rem 0; text-align: right; font-variant-numeric: tabular-nums;">
+                                            {{ "%.6g"|format(g.geometric_mean) }}
+                                            <span style="color: var(--text-secondary); font-size: 0.85rem; margin-left: 0.35rem;">{{ g.scale }}</span>
+                                        </td>
+                                    </tr>
+                                    {% endif %}
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {% endif %}
+
                     <div style="margin-bottom: 1.5rem;">
                         <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Tests & Configurations:</p>
                         <ul style="list-style-type: none; padding-left: 0; font-size: 0.9rem;">

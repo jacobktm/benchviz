@@ -12,6 +12,7 @@ import zipfile
 import tempfile
 import shutil
 import statistics
+import math
 import json
 from collections import defaultdict
 import re
@@ -40,6 +41,74 @@ PROFILE_BOOL_FIELDS = (
 
 def clean_text(value):
     return (value or '').strip()
+
+
+def geometric_mean_positive(values):
+    """
+    Geometric mean for strictly positive finite samples.
+    Returns None if empty or any non-positive value is included after filtering.
+    """
+    xs = []
+    for x in values:
+        if x is None:
+            continue
+        try:
+            xf = float(x)
+        except (TypeError, ValueError):
+            return None
+        if xf <= 0 or math.isnan(xf) or math.isinf(xf):
+            return None
+        xs.append(xf)
+    if not xs:
+        return None
+    try:
+        return statistics.geometric_mean(xs)
+    except statistics.StatisticsError:
+        return None
+
+
+def geometric_mean_by_system_across_arguments(benchmark_rows):
+    """
+    For a group of Benchmark ORM rows (same suite), compute per-system geometric mean
+    across distinct argument strings. Repeated results for the same (system, args)
+    are averaged first, then geometric mean is taken across argument groups.
+    """
+    by_sys_then_args = defaultdict(lambda: defaultdict(list))
+    scale = None
+    proportion = None
+    for bm in benchmark_rows:
+        if scale is None:
+            scale = bm.scale
+        if proportion is None:
+            proportion = bm.proportion
+        for res in bm.results:
+            if res.value is None:
+                continue
+            try:
+                v = float(res.value)
+            except (TypeError, ValueError):
+                continue
+            if v <= 0 or math.isnan(v) or math.isinf(v):
+                continue
+            arg = res.arguments or ""
+            by_sys_then_args[res.system_id][arg].append(v)
+
+    out = {}
+    for sid, by_arg in by_sys_then_args.items():
+        per_cfg_means = [statistics.mean(vs) for vs in by_arg.values() if vs]
+        if not per_cfg_means:
+            continue
+        gm = geometric_mean_positive(per_cfg_means)
+        if gm is None:
+            continue
+        out[sid] = {
+            "geometric_mean": gm,
+            "n_configs": len(per_cfg_means),
+            "scale": scale or "",
+            "proportion": proportion or "",
+        }
+    return out
+
 
 def get_unique_field_values():
     unique_values = {}
@@ -222,6 +291,7 @@ def dashboard():
     for group in dashboard_groups.values():
         group['search_tags_str'] = " ".join(group['search_tags'])
         group['system_variations'] = list(group['system_variations_map'].values())
+        group['geom_by_system'] = geometric_mean_by_system_across_arguments(group['runs'])
         
     grouped_benchmarks = list(dashboard_groups.values())
         
@@ -385,7 +455,29 @@ def system_detail(id):
             return (base_args, int(is_sensor), str(b.scale) if not is_sensor else "", sensor_type)
             
         group['runs'].sort(key=sort_key)
-        
+
+        by_arg = defaultdict(list)
+        rep_scale = None
+        for r in group['runs']:
+            b = r.benchmark
+            if b.display_format != 'BAR_GRAPH' or not b.is_primary:
+                continue
+            if r.value is None:
+                continue
+            try:
+                v = float(r.value)
+            except (TypeError, ValueError):
+                continue
+            if v <= 0 or math.isnan(v) or math.isinf(v):
+                continue
+            by_arg[r.arguments or ""].append(v)
+            if rep_scale is None:
+                rep_scale = b.scale
+        per_cfg_means = [statistics.mean(vs) for vs in by_arg.values() if vs]
+        group['geometric_mean_across_configs'] = geometric_mean_positive(per_cfg_means)
+        group['geometric_mean_n_configs'] = len(per_cfg_means)
+        group['geometric_mean_scale'] = rep_scale or ""
+
     grouped_list = list(grouped_results.values())
     hardware_components = split_component_list(system.hardware)
     software_components = split_component_list(system.software)
@@ -469,6 +561,30 @@ COMPARE_BY_OPTIONS = [
     ('thermal_pad_below_nvme', 'Thermal pad below NVMe'),
     ('thermal_pad_sandwich_nvme', 'Thermal pad sandwich NVMe'),
 ]
+
+# Hint substrings for CPU-bound workloads (used to scope leaderboard features).
+_CPU_BENCHMARK_HINTS = (
+    "stockfish", "chess",
+    "7-zip", "7zip",
+    "compression", "decompression",
+    "openssl",
+    "ffmpeg", "x264", "x265", "handbrake", "encoding", "transcod",
+    "coremark", "pybench", "phpbench",
+    "compilebench",
+    "dav1d", "rav1e", "svt-av1",
+    "blosc", "lz4", "zstd",
+    "redis", "memcached",
+    "sqlite",
+)
+
+# NVMe chassis layout toggles: often aligned with system type and replicate across
+# machines; they are misleading on CPU/GPU workloads unless the test is storage-class.
+NVME_LAYOUT_LEADERBOARD_KEYS = frozenset({
+    "thermal_pad_above_nvme",
+    "thermal_pad_below_nvme",
+    "thermal_pad_sandwich_nvme",
+    "nvme_fans",
+})
 
 
 @app.route('/compare')
@@ -1743,14 +1859,13 @@ def api_variance_leaderboard():
     """
     Compute a leaderboard of component features that explain benchmark differences best.
 
-    For a feature_key (e.g. 'processor'), we:
-      1) Group systems by their component value.
-      2) Compute within-bucket spread of the benchmark (how much performance varies
-         even when the component is held constant).
-      3) Compare the bucket spread to the overall spread across all systems.
+    We rank primarily by one-way eta-squared: fraction of total score variance that lies
+    *between* component cohorts (larger = more separation across component values).
+    This works when each CPU/Cohort appears only once (unique systems), where the old
+    "conditional spread reduction" gate wrongly dropped every feature except a few
+    duplicated Yes/No chassis fields.
 
-    A higher reduction_ratio => holding that component constant reduces variability
-    more => the component is more explanatory for this benchmark/config.
+    We still report conditional_spread reduction as supplemental context.
     """
     from app.analyzer import INSIGHT_COMPONENT_KEYS, MIN_SYSTEMS_TOTAL
 
@@ -1897,16 +2012,20 @@ def api_variance_leaderboard():
     }
 
     scope = "general"
-    if ("kernel" in text_blob and ("build" in text_blob or "compil" in text_blob or "make" in text_blob or "gcc" in text_blob)) or \
-       ("compil" in text_blob and ("linux" in text_blob)):
+    if ("kernel" in text_blob and ("build" in text_blob or "compil" in text_blob or "make" in text_blob or "gcc" in text_blob or "clang" in text_blob)) or \
+       ("compil" in text_blob and "linux" in text_blob):
+        scope = "cpu"
+    elif any(h in text_blob for h in _CPU_BENCHMARK_HINTS):
         scope = "cpu"
     elif any(k in text_blob for k in ["vulkan", "cuda", "opengl", "render", "graphics", "gpu "]):
         scope = "gpu"
-    elif any(k in text_blob for k in ["nvme", "disk", "io", "i/o", "storage", "ssd", "hdd", "throughput"]):
+    elif any(k in text_blob for k in ["nvme", "disk", "io", "i/o", "storage", "ssd", "hdd", "throughput", "fio", "postmark", "iometer"]):
         scope = "storage"
 
     # Optional override for debugging / experimentation.
+    # scope=all includes NVMe layout keys on non-storage tests (legacy / full list).
     scope_override = (request.args.get('scope') or '').strip().lower()
+    include_all_component_keys = scope_override == "all"
     if scope_override in {"all", "general"}:
         scope = "general"
     elif scope_override in {"cpu", "gpu", "storage"}:
@@ -1918,8 +2037,10 @@ def api_variance_leaderboard():
         allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in gpu_scoped_keys]
     elif scope == "storage":
         allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in storage_scoped_keys]
-    else:
+    elif include_all_component_keys:
         allowed_singles = list(INSIGHT_COMPONENT_KEYS)
+    else:
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k not in NVME_LAYOUT_LEADERBOARD_KEYS]
 
     if not allowed_singles:
         allowed_singles = list(INSIGHT_COMPONENT_KEYS)
@@ -1927,88 +2048,108 @@ def api_variance_leaderboard():
     rows = []
 
     def eval_single(feature_key):
-        # Group by component value => bucket -> list of y_norm per system.
         buckets = defaultdict(list)
-        systems_with_nonempty = 0
         for sid in sys_ids:
             v = (comps_by_sid.get(sid, {}).get(feature_key) or '').strip()
             if not v:
                 continue
-            systems_with_nonempty += 1
             buckets[v].append(y_norm_by_system[sid])
 
+        systems_with_nonempty = sum(len(ys) for ys in buckets.values())
         if systems_with_nonempty < MIN_SYSTEMS_TOTAL:
             return
-
-        qualifying_buckets = [(v, ys) for v, ys in buckets.items() if len(ys) >= min_cohort_n]
-        if len(qualifying_buckets) < min_distinct_cohorts:
+        if len(buckets) < min_distinct_cohorts:
             return
+
+        vals = []
+        for ys in buckets.values():
+            vals.extend(ys)
+        grand_mean = statistics.mean(vals)
+        ss_total = sum((y - grand_mean) ** 2 for y in vals)
+        if ss_total < 1e-18:
+            return
+
+        ss_between = 0.0
+        for ys in buckets.values():
+            nj = len(ys)
+            mj = statistics.mean(ys)
+            ss_between += nj * (mj - grand_mean) ** 2
+        eta_sq = ss_between / ss_total
 
         bucket_spreads = []
-        for v, ys in qualifying_buckets:
+        for ys in buckets.values():
             s = robust_spread(ys)
-            bucket_spreads.append((v, s, len(ys)))
-
-        if len(bucket_spreads) < min_distinct_cohorts:
-            return
-
-        # Weighted by bucket size so big buckets matter more.
-        total_n = sum(n for _, _, n in bucket_spreads) or 1
-        conditional_spread = sum(s * n for _, s, n in bucket_spreads) / total_n
-
+            bucket_spreads.append((s, len(ys)))
+        total_w = sum(n for _, n in bucket_spreads) or 1
+        conditional_spread = sum(s * n for s, n in bucket_spreads) / total_w
         reduction_ratio = 1.0 - (conditional_spread / overall_spread_eps)
+
+        cohorts_meeting_min_n = sum(1 for ys in buckets.values() if len(ys) >= min_cohort_n)
 
         rows.append({
             "feature_type": "single",
             "feature_key": feature_key,
             "feature_label": label_map.get(feature_key, feature_key),
+            "eta_squared": eta_sq,
             "reduction_ratio": reduction_ratio,
             "overall_spread": overall_spread,
             "conditional_spread": conditional_spread,
-            "distinct_cohort_values": len(bucket_spreads),
+            "distinct_cohort_values": len(buckets),
             "systems_with_feature": systems_with_nonempty,
+            "cohorts_meeting_min_n": cohorts_meeting_min_n,
             "min_cohort_n": min_cohort_n,
         })
 
     def eval_pair(k1, k2):
-        buckets = defaultdict(list)  # (v1,v2) -> [y_norm]
-        systems_with_pair = 0
+        buckets = defaultdict(list)
         for sid in sys_ids:
             c1 = (comps_by_sid.get(sid, {}).get(k1) or '').strip()
             c2 = (comps_by_sid.get(sid, {}).get(k2) or '').strip()
             if not c1 or not c2:
                 continue
-            systems_with_pair += 1
             buckets[(c1, c2)].append(y_norm_by_system[sid])
 
+        systems_with_pair = sum(len(ys) for ys in buckets.values())
         if systems_with_pair < MIN_SYSTEMS_TOTAL:
             return
-
-        qualifying = [(pair, ys) for pair, ys in buckets.items() if len(ys) >= min_cohort_n]
-        if len(qualifying) < min_distinct_cohorts:
+        if len(buckets) < min_distinct_cohorts:
             return
+
+        vals = []
+        for ys in buckets.values():
+            vals.extend(ys)
+        grand_mean = statistics.mean(vals)
+        ss_total = sum((y - grand_mean) ** 2 for y in vals)
+        if ss_total < 1e-18:
+            return
+
+        ss_between = 0.0
+        for ys in buckets.values():
+            nj = len(ys)
+            mj = statistics.mean(ys)
+            ss_between += nj * (mj - grand_mean) ** 2
+        eta_sq = ss_between / ss_total
 
         bucket_spreads = []
-        for pair, ys in qualifying:
+        for ys in buckets.values():
             s = robust_spread(ys)
-            bucket_spreads.append((pair, s, len(ys)))
-
-        if len(bucket_spreads) < min_distinct_cohorts:
-            return
-
-        total_n = sum(n for _, _, n in bucket_spreads) or 1
-        conditional_spread = sum(s * n for _, s, n in bucket_spreads) / total_n
+            bucket_spreads.append((s, len(ys)))
+        total_w = sum(n for _, n in bucket_spreads) or 1
+        conditional_spread = sum(s * n for s, n in bucket_spreads) / total_w
         reduction_ratio = 1.0 - (conditional_spread / overall_spread_eps)
+        cohorts_meeting_min_n = sum(1 for ys in buckets.values() if len(ys) >= min_cohort_n)
 
         rows.append({
             "feature_type": "pair",
             "feature_key": f"{k1}+{k2}",
             "feature_label": f"{label_map.get(k1,k1)} + {label_map.get(k2,k2)}",
+            "eta_squared": eta_sq,
             "reduction_ratio": reduction_ratio,
             "overall_spread": overall_spread,
             "conditional_spread": conditional_spread,
-            "distinct_cohort_values": len(bucket_spreads),
+            "distinct_cohort_values": len(buckets),
             "systems_with_feature": systems_with_pair,
+            "cohorts_meeting_min_n": cohorts_meeting_min_n,
             "min_cohort_n": min_cohort_n,
         })
 
@@ -2031,7 +2172,10 @@ def api_variance_leaderboard():
         for k1, k2 in pair_defs:
             eval_pair(k1, k2)
 
-    rows.sort(key=lambda r: r["reduction_ratio"], reverse=True)
+    rows.sort(
+        key=lambda r: (r["eta_squared"], r["cohorts_meeting_min_n"], r["reduction_ratio"]),
+        reverse=True,
+    )
     rows = rows[:top_k]
 
     return {
@@ -2041,13 +2185,14 @@ def api_variance_leaderboard():
             "app_version": app_version,
             "args": args_analysis_key,
             "y_label": y_label_base,
-            "x_label": "conditional within-bucket spread (lower is better)",
+            "x_label": "between-cohort share of variance (eta²)",
             "overall_spread": overall_spread,
             "overall_spread_eps": overall_spread_eps,
             "min_cohort_n": min_cohort_n,
             "min_distinct_cohorts": min_distinct_cohorts,
             "include_pairs": include_pairs,
             "feature_scope": scope,
+            "ranking": "eta_squared_primary",
         }
     }, 200
 
@@ -2055,12 +2200,11 @@ def api_variance_leaderboard():
 @app.route('/api/variance_leaderboard_coverage')
 def api_variance_leaderboard_coverage():
     """
-    Returns benchmark+args keys that have enough evidence to produce leaderboard rows.
+    Returns benchmark+args keys for the Performance Insights dropdown.
 
-    Evidence is checked using stored BenchmarkAnalysis.analysis_json:
-    for each args bucket, if ANY feature has at least `min_distinct_cohorts`
-    cohort values with `n >= min_cohort_n`, we consider that (benchmark,args)
-    selectable for the variance leaderboard.
+    Includes configs from BenchmarkAnalysis when cohort gates pass, and unions configs
+    that have enough distinct systems in primary BAR_GRAPH results (including empty
+    arguments, keyed as \"default\") so missing profiles do not disappear from the UI.
     """
     from app.analyzer import INSIGHT_COMPONENT_KEYS
 
@@ -2082,6 +2226,8 @@ def api_variance_leaderboard_coverage():
 
     # (benchmark_title, app_version) -> set(args)
     buckets = defaultdict(set)
+    from app.analyzer import MIN_SYSTEMS_TOTAL as _INS_MIN_SYSTEMS
+
     for a in analyses:
         if not a.analysis_json:
             continue
@@ -2100,14 +2246,47 @@ def api_variance_leaderboard_coverage():
                 if feature_values[0].get('error'):
                     continue
 
-                # feature_values are cohort-value entries
-                qualified = [v for v in feature_values if isinstance(v, dict) and (v.get('n') or 0) >= min_cohort_n]
-                if len(qualified) >= min_distinct_cohorts:
-                    has_any_feature = True
-                    break
+                cohorts = [
+                    v for v in feature_values
+                    if isinstance(v, dict) and not v.get('error') and (v.get('n') or 0) >= 1
+                ]
+                if len(cohorts) < min_distinct_cohorts:
+                    continue
+                if sum((v.get('n') or 0) for v in cohorts) < _INS_MIN_SYSTEMS:
+                    continue
+                has_any_feature = True
+                break
 
             if has_any_feature:
                 buckets[(b_title, b_app)].add(args_key)
+
+    # Also surface any (title, app_version, arguments) that has enough systems in the DB,
+    # so empty-argument profiles are not missing when analysis_json skipped or failed them.
+    from sqlalchemy import func as sa_func
+
+    cov_rows = (
+        db.session.query(
+            Benchmark.title,
+            Benchmark.app_version,
+            BenchmarkResult.arguments,
+            sa_func.count(sa_func.distinct(BenchmarkResult.system_id)).label("n_sys"),
+        )
+        .join(BenchmarkResult, BenchmarkResult.benchmark_id == Benchmark.id)
+        .filter(
+            Benchmark.display_format == "BAR_GRAPH",
+            Benchmark.is_primary.is_(True),
+            BenchmarkResult.value.isnot(None),
+        )
+        .group_by(Benchmark.title, Benchmark.app_version, BenchmarkResult.arguments)
+        .having(sa_func.count(sa_func.distinct(BenchmarkResult.system_id)) >= _INS_MIN_SYSTEMS)
+        .all()
+    )
+    for t, av, arg, _n in cov_rows:
+        pair = (t, av or "")
+        if pair not in primary_pairs:
+            continue
+        cfg_key = "default" if (arg is None or str(arg).strip() == "") else str(arg).strip()
+        buckets[pair].add(cfg_key)
 
     out = []
     for (b_title, b_app), args_set in sorted(buckets.items(), key=lambda t: (t[0][0], t[0][1])):

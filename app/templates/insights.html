@@ -74,7 +74,8 @@
         Variance explained leaderboard
     </h2>
     <p class="card-meta" style="margin-bottom: 0;">
-        Ranks components by how much they reduce benchmark variability when held constant (conditional spread reduction).
+        Ranks components by how much benchmark scores separate across their values (η²: between-cohort share of variance).
+        NVMe pad/fan toggles are omitted for non-storage tests so they do not dominate CPU/GPU benchmarks.
     </p>
 
     <div class="scatter-controls">
@@ -99,7 +100,7 @@
         </div>
 
         <div class="scatter-control">
-            <label for="scatterMinPoints">Min cohort size (per component value)</label>
+            <label for="scatterMinPoints">Min systems per cohort (replication evidence)</label>
             <input id="scatterMinPoints" type="number" min="1" max="50" step="1" value="2" />
         </div>
 
@@ -290,16 +291,30 @@
         populateBenchmarks();
     }
 
+    function formatArgLabel(arg) {
+        if (arg === 'default' || arg === '') return 'Default (no extra arguments)';
+        return String(arg);
+    }
+
+    function sortArgKeys(args) {
+        const copy = [...args].filter(a => a !== '' && a != null);
+        copy.sort((a, b) => {
+            const aDef = (a === 'default') ? 0 : 1;
+            const bDef = (b === 'default') ? 0 : 1;
+            if (aDef !== bDef) return aDef - bDef;
+            return String(a).localeCompare(String(b));
+        });
+        return copy;
+    }
+
     function populateArgs() {
         argsSelect.innerHTML = '';
         const bench = benchIndex[Number(benchSelect.value)];
-        let args = (bench && bench.args ? bench.args : []).filter(a => a && a !== 'default');
-        // If the analyzer only produced a "default" config key, still allow it.
-        if (!args.length) args = (bench && bench.args ? bench.args : []).filter(a => a);
+        let args = sortArgKeys(bench && bench.args ? bench.args : []);
         args.forEach(arg => {
             const opt = document.createElement('option');
-            opt.value = arg;
-            opt.textContent = arg;
+            opt.value = arg === 'default' ? 'default' : String(arg);
+            opt.textContent = formatArgLabel(arg);
             argsSelect.appendChild(opt);
         });
         if (args.length) argsSelect.value = args[0];
@@ -466,7 +481,7 @@
 
         const rows = data.rows || [];
         if (!rows.length) {
-            statusEl.textContent = 'Not enough repeated cohort evidence to rank features (try lowering min cohort size or min distinct cohorts).';
+            statusEl.textContent = 'Not enough systems or distinct component values for this benchmark (try lowering min distinct cohorts).';
             return;
         }
 
@@ -482,7 +497,7 @@
         summary.style.color = 'var(--text-secondary)';
         summary.style.fontSize = '0.9rem';
         summary.style.marginBottom = '0.75rem';
-        summary.textContent = `Overall spread=${overallSpread != null ? fmt3(overallSpread) : ''} (robust). Evidence: min_cohort_n=${min_cohort_n}. Higher reduction means component holds performance more consistent.`;
+        summary.textContent = `Overall spread=${overallSpread != null ? fmt3(overallSpread) : ''} (robust). Primary rank: η² (between cohorts). Cohorts≥${min_cohort_n} counts replicated component values; higher is stronger evidence.`;
         wrap.appendChild(summary);
 
         let tableHtml = `
@@ -492,7 +507,8 @@
                   <th style="padding: 0.5rem 0;">Rank</th>
                   <th style="padding: 0.5rem 0;">Feature</th>
                   <th style="padding: 0.5rem 0;">Type</th>
-                  <th style="padding: 0.5rem 0;">Reduction</th>
+                  <th style="padding: 0.5rem 0;">η² (explained)</th>
+                  <th style="padding: 0.5rem 0;">Spread reduction</th>
                   <th style="padding: 0.5rem 0;">Conditional spread</th>
                   <th style="padding: 0.5rem 0;">Evidence</th>
                 </tr>
@@ -501,14 +517,18 @@
         `;
 
         rows.forEach((r, idx) => {
+            const eta = Number(r.eta_squared);
+            const etaPct = (isNaN(eta) ? '' : (eta * 100).toFixed(1) + '%');
             const red = Number(r.reduction_ratio);
             const redPct = (isNaN(red) ? '' : (red * 100).toFixed(1) + '%');
-            const evid = `cohorts=${r.distinct_cohort_values}, systems=${r.systems_with_feature}`;
+            const rn = (r.cohorts_meeting_min_n != null) ? r.cohorts_meeting_min_n : '';
+            const evid = `cohorts=${r.distinct_cohort_values}, systems=${r.systems_with_feature}, cohorts≥${min_cohort_n}=${rn}`;
             tableHtml += `
                 <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
                   <td style="padding: 0.65rem 0; color: var(--text-secondary);">${idx + 1}</td>
                   <td style="padding: 0.65rem 0; font-weight: 600; color: var(--text-primary);">${r.feature_label}</td>
                   <td style="padding: 0.65rem 0; color: var(--text-secondary);">${r.feature_type || ''}</td>
+                  <td style="padding: 0.65rem 0; color: var(--text-secondary);">${etaPct}</td>
                   <td style="padding: 0.65rem 0; color: var(--text-secondary);">${redPct}</td>
                   <td style="padding: 0.65rem 0; color: var(--text-secondary);">${fmt3(r.conditional_spread)}</td>
                   <td style="padding: 0.65rem 0; color: var(--text-secondary);">${evid}</td>
