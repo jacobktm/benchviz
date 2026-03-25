@@ -2768,5 +2768,64 @@ def debug_insights_summary():
         print("Total non-error feature entries (approx):", total_non_error_feature_entries)
 
 
+@app.cli.command("debug-insights-perf-args")
+def debug_insights_perf_args():
+    """
+    Check whether Performance Insights analysis_json still contains perf-like
+    BenchmarkResult.arguments keys (e.g. 'perf page-faults ...').
+    """
+    from app.models import BenchmarkAnalysis
+
+    perf_arg_hits = defaultdict(int)  # args_key -> count analyses mentioning it
+    analyses_with_perf = 0
+
+    with app.app_context():
+        analyses = BenchmarkAnalysis.query.all()
+        for r in analyses:
+            aj = r.analysis_json or {}
+            found = False
+            for args_key, feature_stats in aj.items():
+                if not isinstance(args_key, str):
+                    continue
+                k = args_key.strip().lower()
+                if "perf " in k or k.startswith("perf-") or k.startswith("perf "):
+                    perf_arg_hits[args_key] += 1
+                    found = True
+            if found:
+                analyses_with_perf += 1
+
+        print("Analyses containing perf-like args keys:", analyses_with_perf)
+        top = sorted(perf_arg_hits.items(), key=lambda t: t[1], reverse=True)[:20]
+        for args_key, n in top:
+            print(f"- args='{args_key}': analyses={n}")
+
+
+@app.cli.command("debug-primary-perf-benchmarks")
+def debug_primary_perf_benchmarks():
+    """
+    Print BAR_GRAPH benchmarks marked primary that look perf-like.
+    If this list is non-empty, perf counters will still appear in insights after rebuild.
+    """
+    from app.models import Benchmark
+
+    with app.app_context():
+        q = Benchmark.query.filter(
+            Benchmark.display_format == "BAR_GRAPH",
+            Benchmark.is_primary.is_(True),
+        )
+
+        q = q.filter(
+            (Benchmark.identifier.ilike("perf%")) |
+            (Benchmark.title.ilike("perf%")) |
+            (Benchmark.description.ilike("perf%")) |
+            (Benchmark.scale.ilike("perf%"))
+        )
+
+        rows = q.all()[:25]
+        print("Primary BAR_GRAPH benchmarks that look perf-like:", len(rows))
+        for b in rows:
+            print(f"- id={b.id} title='{b.title}' app_version='{b.app_version}' scale='{b.scale}' identifier='{b.identifier}' desc_prefix='{(b.description or '')[:40]}'")
+
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)
