@@ -1206,21 +1206,144 @@ def api_compare():
             matching_primary_bm_ids = [primary_benchmark.id]
 
         pooling_active = False
-        raw_args_for_query = None
-        pool_key_display = None
+        raw_args_for_query_by_args_val = None
 
         if pool_equivalent_configs and args_filter is not None:
-            pool_key_display = pool_key_for_args_by_flags(args_filter, pool_flags)
-            if pool_key_display:
-                task_key = (primary_benchmark.title, primary_benchmark.app_version, pool_key_display)
-                if task_key in pool_processed_keys:
+            # Pooling is computed per (benchmark title+version) suite across all selected
+            # configs so we can build axes like:
+            #   --cycles-device HIP,CUDA   and   --cycles-device HIP,OPTIX
+            #
+            # We also keep common flag values (present on all selected systems) unpooled.
+            suite_key = (primary_benchmark.title, primary_benchmark.app_version)
+            suite_task_key = (suite_key[0], suite_key[1], "pool-axes")
+            if suite_task_key in pool_processed_keys:
+                continue
+            pool_processed_keys.add(suite_task_key)
+            pooling_active = True
+
+            # Collect all selected raw args filters for this suite key (not just this one loop item).
+            suite_raw_args_filters: list[str] = []
+            for b_id2, args_filter2 in config_list:
+                if args_filter2 is None:
                     continue
-                pool_processed_keys.add(task_key)
-                pooling_active = True
-                raw_args_for_query = sorted(pool_raw_args_map.get(task_key, {args_filter}))
-                args_list = [pool_key_display]
-            else:
+                try:
+                    b_id2_int = int(b_id2)
+                except (ValueError, TypeError):
+                    continue
+                b2 = db.session.get(Benchmark, b_id2_int)
+                if not b2:
+                    continue
+                if not getattr(b2, "is_primary", False):
+                    cand = Benchmark.query.filter(
+                        Benchmark.title == b2.title,
+                        Benchmark.app_version == b2.app_version,
+                        Benchmark.display_format == "BAR_GRAPH",
+                        Benchmark.is_primary == True,
+                    ).first()
+                    if cand:
+                        b2 = cand
+                if getattr(b2, "title", None) == primary_benchmark.title and (b2.app_version or "") == (primary_benchmark.app_version or ""):
+                    suite_raw_args_filters.append(str(args_filter2))
+
+            # De-dupe while preserving order
+            deduped = []
+            seen_ra = set()
+            for ra in suite_raw_args_filters:
+                if ra in seen_ra:
+                    continue
+                seen_ra.add(ra)
+                deduped.append(ra)
+            suite_raw_args_filters = deduped
+
+            # Extract the pooled-flag "values" for each selected raw args string.
+            # For now we treat "value" as the first extracted value.
+            raw_args_to_value: dict[str, str] = {}
+            value_order: list[str] = []
+            for ra in suite_raw_args_filters:
+                vals = extract_flag_values(ra, pool_flags)
+                if not vals:
+                    continue
+                v0 = str(vals[0]).strip()
+                if not v0:
+                    continue
+                raw_args_to_value[ra] = v0
+                if v0 not in value_order:
+                    value_order.append(v0)
+
+            # If we didn't recognize any pool-flag values, fall back to normal behavior.
+            if not raw_args_to_value:
+                pooling_active = False
                 args_list = [args_filter]
+            else:
+                all_raw_args = list(raw_args_to_value.keys())
+                # Determine which (flag value) is present for which selected systems.
+                system_present_by_value: dict[str, set[int]] = defaultdict(set)
+                q_all = BenchmarkResult.query.filter(
+                    BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+                    BenchmarkResult.system_id.in_(sys_id_ints),
+                    BenchmarkResult.arguments.in_(all_raw_args),
+                ).all()
+                for r in q_all:
+                    v = raw_args_to_value.get(r.arguments)
+                    if v:
+                        system_present_by_value[v].add(r.system_id)
+
+                selected_sys_set = set(sys_id_ints)
+                common_values = {v for v in value_order if system_present_by_value.get(v, set()) == selected_sys_set}
+                non_common_values = [v for v in value_order if v not in common_values]
+
+                axis_raw_args_map: dict[str, list[str]] = {}
+                axis_args_list: list[str] = []
+
+                # Common values: keep as separate axes using their original raw args string.
+                for ra in suite_raw_args_filters:
+                    v = raw_args_to_value.get(ra)
+                    if not v:
+                        continue
+                    if v in common_values:
+                        if ra not in axis_raw_args_map:
+                            axis_args_list.append(ra)
+                        axis_raw_args_map[ra] = [ra]
+
+                # Non-common values: build overlapping independent pooled groups.
+                def _compatible_with_group(v: str, group_values: list[str]) -> bool:
+                    v_set = system_present_by_value.get(v, set())
+                    for m in group_values:
+                        m_set = system_present_by_value.get(m, set())
+                        if v_set.intersection(m_set):
+                            return False
+                    return True
+
+                # Candidate axis label uses the first pooled flag's "name".
+                axis_flag_name = pool_flags[0].lstrip('-') if pool_flags else 'arg'
+
+                seen_groups: set[frozenset[str]] = set()
+                for pivot in non_common_values:
+                    group = [pivot]
+                    # Deterministic order: iterate non_common_values sorted.
+                    for u in sorted(non_common_values):
+                        if u == pivot:
+                            continue
+                        if _compatible_with_group(u, group):
+                            group.append(u)
+                    gset = frozenset(group)
+                    if not gset or gset in seen_groups:
+                        continue
+                    seen_groups.add(gset)
+                    sorted_vals = sorted(gset)
+                    group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
+                    # Collect all selected raw args strings whose pool value is in this group.
+                    group_raw_args = [ra for ra in suite_raw_args_filters if raw_args_to_value.get(ra) in gset]
+                    axis_raw_args_map[group_label] = group_raw_args
+                    axis_args_list.append(group_label)
+
+                # If somehow we have no axes (e.g. only common values), fall back.
+                if not axis_args_list:
+                    pooling_active = False
+                    args_list = [args_filter]
+                else:
+                    args_list = axis_args_list
+                    raw_args_for_query_by_args_val = axis_raw_args_map
         elif args_filter is not None:
             args_list = [args_filter]
         else:
@@ -1258,8 +1381,13 @@ def api_compare():
             )
             if pooling_active:
                 # args_val is a canonical pool key (display), but filtering must use
-                # the raw args strings that were selected and mapped into this pool.
-                q_prim = q_prim.filter(BenchmarkResult.arguments.in_(raw_args_for_query or []))
+                # the raw args strings that were selected and mapped into this axis.
+                axis_raw = []
+                if raw_args_for_query_by_args_val:
+                    axis_raw = raw_args_for_query_by_args_val.get(args_val, []) or []
+                if not axis_raw:
+                    axis_raw = [args_filter]
+                q_prim = q_prim.filter(BenchmarkResult.arguments.in_(axis_raw))
             elif args_val is None or (isinstance(args_val, str) and args_val.strip() == ""):
                 q_prim = q_prim.filter(
                     (BenchmarkResult.arguments.is_(None)) | (BenchmarkResult.arguments == "")
