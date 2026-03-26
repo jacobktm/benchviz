@@ -1109,7 +1109,16 @@ def api_compare():
     pool_equivalent_configs = str(request.args.get('pool_equivalent_configs') or '').strip().lower() in {
         '1', 'true', 'yes', 'on'
     }
-    from app.option_equivalence import pool_key_for_args
+    from app.args_pooling import (
+        extract_flag_values,
+        parse_pool_flags,
+        pool_key_for_args_by_flags,
+    )
+
+    pool_flags = parse_pool_flags(request.args.get('pool_arg_flags'))
+    if pool_equivalent_configs and not pool_flags:
+        # Pooling enabled but no flags specified -> no-op (falls back to normal compare).
+        pool_equivalent_configs = False
 
     comparison_groups = []
 
@@ -1137,11 +1146,23 @@ def api_compare():
                 ).first()
                 if candidate:
                     primary_benchmark = candidate
-            pk = pool_key_for_args(primary_benchmark.title, args_filter)
+            pk = pool_key_for_args_by_flags(args_filter, pool_flags)
             if pk:
                 pool_raw_args_map[(primary_benchmark.title, primary_benchmark.app_version, pk)].add(args_filter)
 
     pool_processed_keys = set()  # prevent duplicate comparison groups within a pool
+
+    def _pooled_flag_suffix_from_args(args_text: str | None) -> str:
+        """For pooled compare mode, label bars with the actual pooled flag value(s)."""
+        if not args_text or not pool_flags:
+            return ""
+        vals = extract_flag_values(args_text, pool_flags)
+        if not vals:
+            return ""
+        if len(vals) == 1:
+            return str(vals[0])
+        # Keep it compact; exact content is still readable in hover.
+        return "/".join(str(v) for v in vals[:3])
 
     for b_id, args_filter in config_list:
         try:
@@ -1189,7 +1210,7 @@ def api_compare():
         pool_key_display = None
 
         if pool_equivalent_configs and args_filter is not None:
-            pool_key_display = pool_key_for_args(primary_benchmark.title, args_filter)
+            pool_key_display = pool_key_for_args_by_flags(args_filter, pool_flags)
             if pool_key_display:
                 task_key = (primary_benchmark.title, primary_benchmark.app_version, pool_key_display)
                 if task_key in pool_processed_keys:
@@ -1303,14 +1324,19 @@ def api_compare():
                         continue
                     system_label = format_system_profile_label(system)
                     short_name = system.identifier
+                    trace_name = short_name
+                    if pooling_active:
+                        suffix = _pooled_flag_suffix_from_args(res.arguments)
+                        if suffix:
+                            trace_name = f"{short_name} ({suffix})"
                     trace = {
-                        "name": short_name,
+                        "name": trace_name,
                         "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
-                        "customdata": [system_label],
+                        "customdata": [system_label + (f" ({suffix})" if pooling_active and suffix else "")],
                         "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if bm.display_format == "BAR_GRAPH" else None
                     }
                     if bm.display_format == "BAR_GRAPH":
-                        trace["x"] = [short_name]
+                        trace["x"] = [trace_name]
                         trace["y"] = [res.value]
                     elif bm.display_format == "LINE_GRAPH":
                         y_data = res.data_json or []

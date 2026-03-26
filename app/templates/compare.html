@@ -72,12 +72,46 @@
             <div style="margin-top: 0.75rem;">
                 <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;color:var(--text-secondary);font-size:0.9rem;user-select:none;">
                     <input type="checkbox" id="poolEquivalentConfigs" />
-                    <span>Pool comparable hardware options inside config (GPU backend + resolution classes)</span>
+                    <span>Pool comparable hardware options inside config (remove values for pooled argument flags)</span>
                 </label>
+                <button type="button" id="poolEquivalentConfigsConfigureBtn" class="btn-primary-sm" style="margin-top:0.5rem; width:100%;" disabled>
+                    Configure pooled argument flags
+                </button>
             </div>
         </div>
     </div>
 </details>
+
+<!-- Modal: choose which CLI args flags should be pooled together -->
+<div id="poolArgFlagsModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#161b22;border-radius:12px;padding:1.25rem 1.5rem;min-width:420px;z-index:1001;border:1px solid rgba(240,246,252,0.1);box-shadow:0 18px 40px rgba(0,0,0,0.5);">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;">
+        <div>
+            <div style="font-weight:700;color:var(--text-primary);font-size:1rem;margin-bottom:0.25rem;">
+                Pooled argument flags
+            </div>
+            <div style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:0.75rem;line-height:1.35;">
+                Enter the flags you want to treat as equivalent across systems. We pool configs by removing the values for these flags, then keep other parts unchanged.
+            </div>
+        </div>
+        <button type="button" id="poolArgFlagsModalCloseBtn" class="btn-primary-sm" style="padding:0.2rem 0.6rem;font-size:0.8rem;">Close</button>
+    </div>
+
+    <div style="margin-bottom:0.75rem;">
+        <label style="display:block;color:var(--text-secondary);font-size:0.85rem;margin-bottom:0.35rem;">
+            Flags (comma or newline separated)
+        </label>
+        <textarea id="poolArgFlagsText" style="width:100%;min-height:120px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:var(--text-primary);padding:0.65rem 0.75rem;font-family:monospace;font-size:0.9rem;" placeholder="--cycles-device&#10;-F&#10;--renderer"></textarea>
+        <div style="color:var(--text-secondary);font-size:0.75rem;margin-top:0.45rem;">
+            Example: <code>--cycles-device</code> will pool CUDA/OptiX/HIP variants together.
+        </div>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+        <button type="button" id="poolArgFlagsModalSaveBtn" class="btn-primary-sm" style="padding:0.35rem 0.9rem;">
+            Save
+        </button>
+    </div>
+</div>
 
 <!-- Chart Area (Results) -->
 <div class="animate-in delay-3" style="width: 100%; display: flex; flex-direction: column;">
@@ -134,6 +168,50 @@
         if (window.Chart && window.ChartDataLabels) {
             Chart.register(ChartDataLabels);
         }
+
+        // Pooled config option: user selects which CLI argument flags should be treated
+        // as equivalent (values removed from the pooling key).
+        const poolEquivalentConfigsEl = document.getElementById('poolEquivalentConfigs');
+        const poolEquivalentConfigsConfigureBtn = document.getElementById('poolEquivalentConfigsConfigureBtn');
+        const poolArgFlagsModal = document.getElementById('poolArgFlagsModal');
+        const poolArgFlagsText = document.getElementById('poolArgFlagsText');
+        const poolArgFlagsModalSaveBtn = document.getElementById('poolArgFlagsModalSaveBtn');
+        const poolArgFlagsModalCloseBtn = document.getElementById('poolArgFlagsModalCloseBtn');
+        let poolArgFlagsValue = '--cycles-device';
+
+        function refreshPoolConfigButton() {
+            if (!poolEquivalentConfigsConfigureBtn || !poolEquivalentConfigsEl) return;
+            poolEquivalentConfigsConfigureBtn.disabled = !poolEquivalentConfigsEl.checked;
+        }
+
+        if (poolEquivalentConfigsEl) {
+            poolEquivalentConfigsEl.addEventListener('change', () => refreshPoolConfigButton());
+        }
+
+        if (poolEquivalentConfigsConfigureBtn) {
+            poolEquivalentConfigsConfigureBtn.addEventListener('click', () => {
+                if (!poolArgFlagsModal || !poolArgFlagsText) return;
+                poolArgFlagsText.value = poolArgFlagsValue || '';
+                poolArgFlagsModal.style.display = 'block';
+            });
+        }
+
+        if (poolArgFlagsModalCloseBtn) {
+            poolArgFlagsModalCloseBtn.addEventListener('click', () => {
+                if (poolArgFlagsModal) poolArgFlagsModal.style.display = 'none';
+            });
+        }
+
+        if (poolArgFlagsModalSaveBtn) {
+            poolArgFlagsModalSaveBtn.addEventListener('click', () => {
+                if (poolArgFlagsText) {
+                    poolArgFlagsValue = poolArgFlagsText.value || '';
+                }
+                if (poolArgFlagsModal) poolArgFlagsModal.style.display = 'none';
+            });
+        }
+
+        refreshPoolConfigButton();
 
         const defaultColors = [
             '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
@@ -239,7 +317,20 @@
                 const comp = (s.components && s.components[key]) ? String(s.components[key]).trim() : '';
                 map[s.shortName] = comp || (s.primaryName || s.shortName || String(s.id));
             });
-            return (traceNames || []).map(n => map[n] ?? n);
+            return (traceNames || []).map(n => {
+                const raw = String(n ?? '');
+                // If pooled mode appends " (HIP)" / " (CUDA)" etc, strip it for lookup,
+                // then re-append for display.
+                const m = raw.match(/^(.*?)(?:\s*\(([^()]*)\))\s*$/);
+                if (m) {
+                    const base = m[1].trim();
+                    const suffix = m[2].trim();
+                    const baseLabel = map[base] ?? map[raw] ?? null;
+                    if (baseLabel && suffix) return `${baseLabel} (${suffix})`;
+                    if (baseLabel) return baseLabel;
+                }
+                return map[raw] ?? raw;
+            });
         }
 
         function serializeCurrentComparisonPayload() {
@@ -2222,6 +2313,9 @@
                 const poolEqEl = document.getElementById('poolEquivalentConfigs');
                 if (poolEqEl && poolEqEl.checked) {
                     url.searchParams.set('pool_equivalent_configs', '1');
+                    if (poolArgFlagsValue && poolArgFlagsValue.trim()) {
+                        url.searchParams.set('pool_arg_flags', poolArgFlagsValue.trim());
+                    }
                 }
 
                 const response = await fetch(url.toString());

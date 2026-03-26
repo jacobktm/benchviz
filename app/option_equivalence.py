@@ -86,14 +86,23 @@ def _canonicalize_args_for_pool(args_str: str) -> tuple[str, bool]:
     # Pool backend keywords by replacing with one token.
     backend_token = _backend_pool_token(out)
     if backend_token:
-        # Replace backend tokens individually so multi-arg strings get normalized.
-        out2 = re.sub(r"\bcuda\b", backend_token, out, flags=re.IGNORECASE)
-        out2 = re.sub(r"\boptix\b", backend_token, out2, flags=re.IGNORECASE)
-        out2 = re.sub(r"\bhip\b", backend_token, out2, flags=re.IGNORECASE)
-        out2 = re.sub(r"\brocm\b", backend_token, out2, flags=re.IGNORECASE)
-        # Reduce repeated insertion.
-        out2 = re.sub(r"(GPU backend \(pooled: CUDA/OptiX/HIP/ROCm\))(?:\s*\1)+", r"\1", out2)
-        out = out2
+        # Replace any backend keyword in a single pass so the inserted token
+        # itself isn't re-processed (important because the token contains
+        # the keywords CUDA/OptiX/HIP/ROCm).
+        out = re.sub(
+            r"\b(?:cuda|optix|hip|rocm)\b",
+            backend_token,
+            out,
+            flags=re.IGNORECASE,
+        )
+        # If users/benchmarks include vendor prefixes like "NVIDIA CUDA" or
+        # "AMD HIP", drop the prefix so the pooled key matches across vendors.
+        out = re.sub(
+            r"\b(?:nvidia|amd)\s+(?=GPU backend \(pooled:)",
+            "",
+            out,
+            flags=re.IGNORECASE,
+        )
         changed = True
 
     # Normalize resolution into a class token (so 4k 16:9 and 16:10 group).
