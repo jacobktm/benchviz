@@ -68,6 +68,13 @@
             <button id="generateBtn" class="btn-primary" style="width: 100%; margin-top: 1rem;" disabled>
                 Generate Comparison ➔
             </button>
+
+            <div style="margin-top: 0.75rem;">
+                <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;color:var(--text-secondary);font-size:0.9rem;user-select:none;">
+                    <input type="checkbox" id="poolEquivalentConfigs" />
+                    <span>Pool comparable hardware options inside config (GPU backend + resolution classes)</span>
+                </label>
+            </div>
         </div>
     </div>
 </details>
@@ -2211,6 +2218,11 @@
                     url.searchParams.append('config', config);
                 });
                 systemIds.forEach(id => url.searchParams.append('system_ids', id));
+
+                const poolEqEl = document.getElementById('poolEquivalentConfigs');
+                if (poolEqEl && poolEqEl.checked) {
+                    url.searchParams.set('pool_equivalent_configs', '1');
+                }
 
                 const response = await fetch(url.toString());
                 const data = await response.json();

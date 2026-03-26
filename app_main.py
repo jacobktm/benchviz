@@ -1106,7 +1106,42 @@ def api_compare():
     if not sys_id_ints:
         return {"error": "Invalid system_ids"}, 400
 
+    pool_equivalent_configs = str(request.args.get('pool_equivalent_configs') or '').strip().lower() in {
+        '1', 'true', 'yes', 'on'
+    }
+    from app.option_equivalence import pool_key_for_args
+
     comparison_groups = []
+
+    # When pooling equivalent configs, build a lookup of:
+    # (benchmark_title, app_version, pool_key) -> set(raw_args_strings)
+    pool_raw_args_map = defaultdict(set)  # only used when pool_equivalent_configs=True
+    if pool_equivalent_configs:
+        for b_id, args_filter in config_list:
+            try:
+                b_id_int = int(b_id)
+            except (ValueError, TypeError):
+                continue
+            if args_filter is None:
+                continue
+            primary_benchmark = db.session.get(Benchmark, b_id_int)
+            if not primary_benchmark:
+                continue
+            # Pivot to primary benchmark with same title+version (same as main loop).
+            if not getattr(primary_benchmark, "is_primary", False):
+                candidate = Benchmark.query.filter(
+                    Benchmark.title == primary_benchmark.title,
+                    Benchmark.app_version == primary_benchmark.app_version,
+                    Benchmark.display_format == 'BAR_GRAPH',
+                    Benchmark.is_primary == True,
+                ).first()
+                if candidate:
+                    primary_benchmark = candidate
+            pk = pool_key_for_args(primary_benchmark.title, args_filter)
+            if pk:
+                pool_raw_args_map[(primary_benchmark.title, primary_benchmark.app_version, pk)].add(args_filter)
+
+    pool_processed_keys = set()  # prevent duplicate comparison groups within a pool
 
     for b_id, args_filter in config_list:
         try:
@@ -1149,7 +1184,23 @@ def api_compare():
         if not matching_primary_bm_ids:
             matching_primary_bm_ids = [primary_benchmark.id]
 
-        if args_filter is not None:
+        pooling_active = False
+        raw_args_for_query = None
+        pool_key_display = None
+
+        if pool_equivalent_configs and args_filter is not None:
+            pool_key_display = pool_key_for_args(primary_benchmark.title, args_filter)
+            if pool_key_display:
+                task_key = (primary_benchmark.title, primary_benchmark.app_version, pool_key_display)
+                if task_key in pool_processed_keys:
+                    continue
+                pool_processed_keys.add(task_key)
+                pooling_active = True
+                raw_args_for_query = sorted(pool_raw_args_map.get(task_key, {args_filter}))
+                args_list = [pool_key_display]
+            else:
+                args_list = [args_filter]
+        elif args_filter is not None:
             args_list = [args_filter]
         else:
             distinct_rows = db.session.query(BenchmarkResult.arguments).filter(
@@ -1165,10 +1216,12 @@ def api_compare():
 
         # Track non-empty primary arguments for this benchmark so we can
         # associate sensor runs even when the primary run's arguments are empty.
-        nonempty_primary_args = [
-            a.strip() for a in args_list
-            if isinstance(a, str) and a.strip()
-        ]
+        nonempty_primary_args = []
+        if not pooling_active:
+            nonempty_primary_args = [
+                a.strip() for a in args_list
+                if isinstance(a, str) and a.strip()
+            ]
 
         for args_val in args_list:
             charts = []
@@ -1182,7 +1235,11 @@ def api_compare():
                 BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
                 BenchmarkResult.system_id.in_(sys_id_ints),
             )
-            if args_val is None or (isinstance(args_val, str) and args_val.strip() == ""):
+            if pooling_active:
+                # args_val is a canonical pool key (display), but filtering must use
+                # the raw args strings that were selected and mapped into this pool.
+                q_prim = q_prim.filter(BenchmarkResult.arguments.in_(raw_args_for_query or []))
+            elif args_val is None or (isinstance(args_val, str) and args_val.strip() == ""):
                 q_prim = q_prim.filter(
                     (BenchmarkResult.arguments.is_(None)) | (BenchmarkResult.arguments == "")
                 )
@@ -1222,7 +1279,23 @@ def api_compare():
                     continue
                 primary_traces = []
                 for sys_id in sys_id_ints:
-                    res = next((r for r in results_for_bm if r.system_id == sys_id), None)
+                    res = None
+                    if pooling_active:
+                        candidates = [r for r in results_for_bm if r.system_id == sys_id]
+                        if candidates:
+                            prop = (bm.proportion or "").strip().upper()
+                            lower_better = prop == "LIB"
+                            def score_key(r):
+                                v = r.value
+                                # Ensure None goes to the bottom.
+                                if v is None:
+                                    return float("inf") if lower_better else float("-inf")
+                                return float(v)
+
+                            # For LIB: min is best; for HIB: max is best.
+                            res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
+                    else:
+                        res = next((r for r in results_for_bm if r.system_id == sys_id), None)
                     if not res:
                         continue
                     system = db.session.get(System, sys_id)
@@ -1267,6 +1340,10 @@ def api_compare():
             # skip other LINE_GRAPH data (e.g. sample indices or raw timestamps) that would show wrong scale.
             sensor_keywords = ('temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts')
             sensors = [s for s in sensors if s.description and any(k in s.description.lower() for k in sensor_keywords)]
+            if pooling_active:
+                # Pooling mixes multiple raw primary options; keep compare focused on the
+                # comparable primary results by skipping sensor attachment in this mode.
+                sensors = []
 
             for s_bm in sensors:
                 s_traces = []
@@ -1374,7 +1451,9 @@ def api_compare():
                 # Compute display label for this run so sensor data is explicitly correlated
                 # (e.g. "Unix Makefiles" for empty-args run when other option is "Ninja").
                 args_label = None
-                if args_val and (isinstance(args_val, str) and args_val.strip()):
+                if pooling_active:
+                    args_label = args_val
+                elif args_val and (isinstance(args_val, str) and args_val.strip()):
                     args_label = args_val
                 else:
                     # Get the benchmark that corresponds to this args_val (for description).
