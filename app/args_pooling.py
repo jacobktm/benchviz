@@ -46,7 +46,8 @@ def parse_pool_flags(pool_arg_flags: str | None) -> list[str]:
         return []
     # Split on commas/newlines but keep spaces inside tokens untouched.
     parts: list[str] = []
-    for chunk in re.split(r"[,\\n]+", raw):
+    # Split on commas or actual newline characters.
+    for chunk in re.split(r"[,\n]+", raw):
         f = _normalize_flag(chunk)
         if f:
             parts.append(f)

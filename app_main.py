@@ -3806,3 +3806,41 @@ def calibrate_hardware_ranks_cmd(spec_weight: float, part_kind: str):
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8765)
+
+
+@app.cli.command("debug-pool-args")
+@click.option(
+    "--pool-arg-flags",
+    default="--cycles-device",
+    show_default=True,
+    help="Flags whose values should be pooled together (comma/newline separated).",
+)
+@click.option(
+    "--args",
+    "args_list",
+    multiple=True,
+    required=True,
+    help="Repeat this option with each args string to test.",
+)
+def debug_pool_args_cmd(pool_arg_flags: str, args_list: tuple[str, ...]):
+    """Debug pooling argument parsing: tokenization, extracted values, pooled key."""
+    from app.args_pooling import (
+        parse_pool_flags,
+        parse_args_tokens,
+        extract_flag_values,
+        pool_key_for_args_by_flags,
+    )
+
+    pool_flags = parse_pool_flags(pool_arg_flags)
+    print("pool_arg_flags raw:", pool_arg_flags)
+    print("pool_flags parsed:", pool_flags)
+    print("")
+    for a in args_list:
+        print("ARGS:", a)
+        tokens = parse_args_tokens(a)
+        print("  tokens:", tokens)
+        extracted = extract_flag_values(a, pool_flags)
+        print("  extracted values:", extracted)
+        pooled = pool_key_for_args_by_flags(a, pool_flags)
+        print("  pooled key:", pooled)
+        print("")
