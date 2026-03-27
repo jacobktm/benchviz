@@ -1982,31 +1982,37 @@ def api_pool_flag_suggestions():
 
     candidates.sort(key=lambda x: (x["score"], len(x["distinct_values"])), reverse=True)
 
-    # Representative sample subset focused on top candidate(s), prefer rows that include
-    # non-shared values so user sees actionable variants.
-    top_flags = [c["flag"] for c in candidates[:3]]
+    # Representative sample subset:
+    # one concise example per (top-flag, non-shared value), instead of listing all variants.
+    top_candidates = candidates[:3]
+    wanted_pairs: list[tuple[str, str]] = []
+    for c in top_candidates:
+        f = c["flag"]
+        for v in c["non_shared_values"]:
+            wanted_pairs.append((f, str(v)))
+
     sample_out: list[dict] = []
-    seen_args = set()
-    for row in sample_rows:
-        if len(sample_out) >= 18:
-            break
-        pairs = parse_flag_pairs(row["args"])
-        keep = False
-        for f, v in pairs:
-            if f not in top_flags:
+    picked_pairs: set[tuple[str, str]] = set()
+    for flag, value in wanted_pairs:
+        best_row = None
+        best_len = None
+        for row in sample_rows:
+            pairs = parse_flag_pairs(row["args"])
+            hit = any((pf == flag and str(pv).strip() == value) for pf, pv in pairs)
+            if not hit:
                 continue
-            c = next((x for x in candidates if x["flag"] == f), None)
-            if not c:
-                continue
-            if str(v).strip() in set(c["non_shared_values"]):
-                keep = True
-                break
-        if not keep:
-            continue
-        if row["args"] in seen_args:
-            continue
-        seen_args.add(row["args"])
-        sample_out.append(row)
+            ln = len(row.get("args") or "")
+            if best_row is None or ln < (best_len or 10**9):
+                best_row = row
+                best_len = ln
+        if best_row is not None:
+            key = (flag, value)
+            if key not in picked_pairs:
+                sample_out.append(best_row)
+                picked_pairs.add(key)
+
+    # Keep list bounded and stable.
+    sample_out = sample_out[:18]
 
     return {"candidates": candidates[:20], "samples": sample_out}, 200
 
