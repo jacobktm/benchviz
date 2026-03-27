@@ -1795,6 +1795,222 @@ def api_compare():
     return {"comparison_groups": comparison_groups}
 
 
+@app.route('/api/pool_flag_suggestions')
+def api_pool_flag_suggestions():
+    """
+    Suggest argument flags worth pooling for the selected systems/benchmark configs.
+
+    Heuristic: a flag is "worth pooling" when it has >1 distinct values across the
+    selected data and at least one value is not shared by all selected systems.
+    """
+    from app.args_pooling import parse_args_tokens
+
+    system_ids = request.args.getlist('system_ids')
+    config_params = request.args.getlist('config')
+    if not system_ids:
+        return {"error": "Missing system_ids parameter(s)"}, 400
+
+    try:
+        sys_id_ints = [int(s) for s in system_ids]
+    except (TypeError, ValueError):
+        return {"error": "Invalid system_ids"}, 400
+
+    # Parse requested configs (same shape as /api/compare).
+    config_list: list[tuple[int, str | None]] = []
+    for c in config_params:
+        part = (c or "").strip()
+        if not part:
+            continue
+        if "|" in part:
+            b_id_str, args_str = part.split("|", 1)
+            try:
+                b_id = int((b_id_str or "").strip())
+            except (TypeError, ValueError):
+                continue
+            args_val = (args_str or "").strip() or None
+            if args_val:
+                try:
+                    args_val = unquote(args_val)
+                except Exception:
+                    pass
+            config_list.append((b_id, args_val))
+        else:
+            try:
+                b_id = int(part)
+            except (TypeError, ValueError):
+                continue
+            config_list.append((b_id, None))
+
+    if not config_list:
+        return {"error": "Missing config parameter(s)"}, 400
+
+    # Build per-suite selected args universe.
+    suite_to_selected_args: dict[tuple[str, str], set[str | None]] = defaultdict(set)
+    for b_id, args_val in config_list:
+        bm = db.session.get(Benchmark, b_id)
+        if not bm:
+            continue
+        if not getattr(bm, "is_primary", False):
+            cand = Benchmark.query.filter(
+                Benchmark.title == bm.title,
+                Benchmark.app_version == bm.app_version,
+                Benchmark.display_format == "BAR_GRAPH",
+                Benchmark.is_primary == True,
+            ).first()
+            if cand:
+                bm = cand
+        suite_key = (bm.title, bm.app_version or "")
+        suite_to_selected_args[suite_key].add(args_val)
+
+    if not suite_to_selected_args:
+        return {"candidates": [], "samples": []}, 200
+
+    selected_sys_set = set(sys_id_ints)
+    # flag -> value -> systems
+    flag_value_systems: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+    # representative sample rows
+    sample_rows: list[dict] = []
+
+    def parse_flag_pairs(args_text: str) -> list[tuple[str, str]]:
+        """
+        Extract (flag, value) pairs from CLI-ish args.
+        Supports:
+          --flag value, --flag=value, -F value, -Fvalue
+        """
+        toks = parse_args_tokens(args_text)
+        out: list[tuple[str, str]] = []
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            if not isinstance(t, str):
+                i += 1
+                continue
+            if t.startswith("--"):
+                if "=" in t:
+                    f, v = t.split("=", 1)
+                    if f and v:
+                        out.append((f, v))
+                else:
+                    if i + 1 < len(toks):
+                        nxt = toks[i + 1]
+                        if isinstance(nxt, str) and not nxt.startswith("-"):
+                            out.append((t, nxt))
+                            i += 1
+            elif t.startswith("-") and len(t) >= 2:
+                # short flag style: -F value or -Fvalue
+                if len(t) == 2:
+                    if i + 1 < len(toks):
+                        nxt = toks[i + 1]
+                        if isinstance(nxt, str) and not nxt.startswith("-"):
+                            out.append((t, nxt))
+                            i += 1
+                else:
+                    out.append((t[:2], t[2:]))
+            i += 1
+        return out
+
+    for (title, app_ver), selected_args in suite_to_selected_args.items():
+        # Resolve all primary benchmark IDs in this suite for selected systems.
+        ids_with_results = [
+            r[0] for r in db.session.query(BenchmarkResult.benchmark_id)
+            .filter(BenchmarkResult.system_id.in_(sys_id_ints))
+            .distinct().all()
+        ]
+        bm_ids = [
+            bm.id for bm in Benchmark.query.filter(
+                Benchmark.id.in_(ids_with_results),
+                Benchmark.title == title,
+                Benchmark.app_version == app_ver,
+                Benchmark.display_format == "BAR_GRAPH",
+                Benchmark.is_primary == True,
+            ).all()
+        ]
+        if not bm_ids:
+            continue
+
+        q = BenchmarkResult.query.filter(
+            BenchmarkResult.benchmark_id.in_(bm_ids),
+            BenchmarkResult.system_id.in_(sys_id_ints),
+        )
+
+        # If user selected explicit args for this suite, keep those; if "all configs" was selected
+        # (args None), keep all.
+        explicit_args = {a for a in selected_args if isinstance(a, str) and a.strip()}
+        has_all_configs = any(a is None for a in selected_args)
+        if explicit_args and not has_all_configs:
+            q = q.filter(BenchmarkResult.arguments.in_(list(explicit_args)))
+
+        rows = q.all()
+        for r in rows:
+            a = (r.arguments or "").strip()
+            if not a:
+                continue
+            pairs = parse_flag_pairs(a)
+            for f, v in pairs:
+                fv = str(v).strip()
+                if not fv:
+                    continue
+                flag_value_systems[f][fv].add(r.system_id)
+            # keep some sample strings
+            if len(sample_rows) < 200:
+                sample_rows.append({
+                    "benchmark_title": title,
+                    "app_version": app_ver,
+                    "system_id": r.system_id,
+                    "args": a,
+                })
+
+    candidates = []
+    for flag, value_map in flag_value_systems.items():
+        values = sorted(value_map.keys())
+        if len(values) < 2:
+            continue
+        shared_values = [v for v in values if value_map[v] == selected_sys_set]
+        non_shared_values = [v for v in values if value_map[v] != selected_sys_set]
+        if not non_shared_values:
+            continue
+        # score: prioritize flags with more non-shared values and better system coverage
+        coverage = len(set().union(*value_map.values())) if value_map else 0
+        score = len(non_shared_values) * 100 + coverage
+        candidates.append({
+            "flag": flag,
+            "score": score,
+            "distinct_values": values,
+            "shared_values": shared_values,
+            "non_shared_values": non_shared_values,
+        })
+
+    candidates.sort(key=lambda x: (x["score"], len(x["distinct_values"])), reverse=True)
+
+    # Representative sample subset focused on top candidate(s), prefer rows that include
+    # non-shared values so user sees actionable variants.
+    top_flags = [c["flag"] for c in candidates[:3]]
+    sample_out: list[dict] = []
+    seen_args = set()
+    for row in sample_rows:
+        if len(sample_out) >= 18:
+            break
+        pairs = parse_flag_pairs(row["args"])
+        keep = False
+        for f, v in pairs:
+            if f not in top_flags:
+                continue
+            c = next((x for x in candidates if x["flag"] == f), None)
+            if not c:
+                continue
+            if str(v).strip() in set(c["non_shared_values"]):
+                keep = True
+                break
+        if not keep:
+            continue
+        if row["args"] in seen_args:
+            continue
+        seen_args.add(row["args"])
+        sample_out.append(row)
+
+    return {"candidates": candidates[:20], "samples": sample_out}, 200
+
+
 def _longest_common_prefix(strs):
     """Return the longest string that is a prefix of all non-empty strings in strs."""
     strs = [s for s in strs if s]

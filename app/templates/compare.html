@@ -106,6 +106,30 @@
         </div>
     </div>
 
+    <div style="margin-bottom:0.75rem;">
+        <div style="display:flex;gap:0.5rem;align-items:center;justify-content:space-between;">
+            <label style="display:block;color:var(--text-secondary);font-size:0.85rem;">
+                Suggested flags worth pooling
+            </label>
+            <button type="button" id="poolArgFlagsRefreshBtn" class="btn-primary-sm" style="padding:0.2rem 0.6rem;font-size:0.78rem;">Refresh</button>
+        </div>
+        <div style="display:flex;gap:0.5rem;margin-top:0.35rem;">
+            <select id="poolArgFlagsSuggestionSelect" style="flex:1;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:var(--text-primary);padding:0.35rem 0.45rem;">
+                <option value="">(no suggestion loaded)</option>
+            </select>
+            <button type="button" id="poolArgFlagsAddSuggestionBtn" class="btn-primary-sm" style="padding:0.2rem 0.6rem;font-size:0.78rem;">Add</button>
+        </div>
+    </div>
+
+    <div style="margin-bottom:0.5rem;">
+        <label style="display:block;color:var(--text-secondary);font-size:0.85rem;margin-bottom:0.35rem;">
+            Representative args samples (non-shared variants)
+        </label>
+        <div id="poolArgFlagsSamples" style="max-height:160px;overflow:auto;background:rgba(0,0,0,0.22);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:0.55rem 0.6rem;font-size:0.78rem;color:var(--text-secondary);line-height:1.35;">
+            No sample loaded yet.
+        </div>
+    </div>
+
     <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
         <button type="button" id="poolArgFlagsModalSaveBtn" class="btn-primary-sm" style="padding:0.35rem 0.9rem;">
             Save
@@ -179,6 +203,10 @@
         const poolArgFlagsText = document.getElementById('poolArgFlagsText');
         const poolArgFlagsModalSaveBtn = document.getElementById('poolArgFlagsModalSaveBtn');
         const poolArgFlagsModalCloseBtn = document.getElementById('poolArgFlagsModalCloseBtn');
+        const poolArgFlagsRefreshBtn = document.getElementById('poolArgFlagsRefreshBtn');
+        const poolArgFlagsSuggestionSelect = document.getElementById('poolArgFlagsSuggestionSelect');
+        const poolArgFlagsAddSuggestionBtn = document.getElementById('poolArgFlagsAddSuggestionBtn');
+        const poolArgFlagsSamples = document.getElementById('poolArgFlagsSamples');
         let poolArgFlagsValue = '--cycles-device';
 
         function refreshPoolConfigButton() {
@@ -195,6 +223,7 @@
                 if (!poolArgFlagsModal || !poolArgFlagsText) return;
                 poolArgFlagsText.value = poolArgFlagsValue || '';
                 poolArgFlagsModal.style.display = 'block';
+                refreshPoolArgSuggestions();
             });
         }
 
@@ -210,6 +239,81 @@
                     poolArgFlagsValue = poolArgFlagsText.value || '';
                 }
                 if (poolArgFlagsModal) poolArgFlagsModal.style.display = 'none';
+            });
+        }
+
+        function currentConfigParams() {
+            return selectedBenchmarks.map((b) => (
+                (b.args != null && b.args !== '')
+                    ? `${b.id}|${encodeURIComponent(b.args)}`
+                    : String(b.id)
+            ));
+        }
+
+        async function refreshPoolArgSuggestions() {
+            if (!poolArgFlagsSuggestionSelect || !poolArgFlagsSamples) return;
+            poolArgFlagsSuggestionSelect.innerHTML = '<option value="">Loading...</option>';
+            poolArgFlagsSamples.textContent = 'Loading sample args...';
+
+            if (!selectedSystems.length || !selectedBenchmarks.length) {
+                poolArgFlagsSuggestionSelect.innerHTML = '<option value="">Select systems + benchmark configs first</option>';
+                poolArgFlagsSamples.textContent = 'Select systems and benchmark configs first.';
+                return;
+            }
+            try {
+                const url = new URL('/api/pool_flag_suggestions', window.location.origin);
+                selectedSystems.forEach(s => url.searchParams.append('system_ids', s.id));
+                currentConfigParams().forEach(c => url.searchParams.append('config', c));
+                const resp = await fetch(url.toString());
+                const data = await resp.json();
+                if (data.error) {
+                    poolArgFlagsSuggestionSelect.innerHTML = `<option value="">Error: ${data.error}</option>`;
+                    poolArgFlagsSamples.textContent = data.error;
+                    return;
+                }
+                const cand = data.candidates || [];
+                if (!cand.length) {
+                    poolArgFlagsSuggestionSelect.innerHTML = '<option value="">No useful pooling candidates found</option>';
+                } else {
+                    poolArgFlagsSuggestionSelect.innerHTML = '';
+                    cand.forEach((c) => {
+                        const opt = document.createElement('option');
+                        opt.value = c.flag;
+                        const nonShared = (c.non_shared_values || []).slice(0, 4).join(', ');
+                        const shared = (c.shared_values || []).slice(0, 3).join(', ');
+                        opt.textContent = `${c.flag} · non-shared: ${nonShared}${shared ? ` · shared: ${shared}` : ''}`;
+                        poolArgFlagsSuggestionSelect.appendChild(opt);
+                    });
+                }
+                const samples = data.samples || [];
+                if (!samples.length) {
+                    poolArgFlagsSamples.textContent = 'No representative non-shared sample rows found for selected data.';
+                } else {
+                    const html = samples.map((s) => {
+                        const tt = `${s.benchmark_title || ''}${s.app_version ? ' v' + s.app_version : ''} · system ${s.system_id}`;
+                        const argEsc = String(s.args || '').replace(/</g, '&lt;');
+                        return `<div style="margin-bottom:0.35rem;"><span style="opacity:0.8">${tt}</span><br><code>${argEsc}</code></div>`;
+                    }).join('');
+                    poolArgFlagsSamples.innerHTML = html;
+                }
+            } catch (e) {
+                poolArgFlagsSuggestionSelect.innerHTML = '<option value="">Failed to load suggestions</option>';
+                poolArgFlagsSamples.textContent = 'Failed to load samples.';
+            }
+        }
+
+        if (poolArgFlagsRefreshBtn) {
+            poolArgFlagsRefreshBtn.addEventListener('click', () => refreshPoolArgSuggestions());
+        }
+
+        if (poolArgFlagsAddSuggestionBtn) {
+            poolArgFlagsAddSuggestionBtn.addEventListener('click', () => {
+                if (!poolArgFlagsSuggestionSelect || !poolArgFlagsText) return;
+                const v = (poolArgFlagsSuggestionSelect.value || '').trim();
+                if (!v) return;
+                const current = (poolArgFlagsText.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+                if (!current.includes(v)) current.push(v);
+                poolArgFlagsText.value = current.join('\n');
             });
         }
 
