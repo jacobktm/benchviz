@@ -3844,3 +3844,166 @@ def debug_pool_args_cmd(pool_arg_flags: str, args_list: tuple[str, ...]):
         pooled = pool_key_for_args_by_flags(a, pool_flags)
         print("  pooled key:", pooled)
         print("")
+
+
+@app.cli.command("debug-pool-axes")
+@click.option(
+    "--benchmark-title",
+    required=True,
+    help="Primary BAR_GRAPH benchmark title (e.g. Blender).",
+)
+@click.option(
+    "--app-version",
+    default="",
+    show_default=True,
+    help="Primary BAR_GRAPH app_version for the suite.",
+)
+@click.option(
+    "--pool-arg-flags",
+    default="--cycles-device",
+    show_default=True,
+    help="Flags whose values should be pooled together (comma/newline separated).",
+)
+@click.option(
+    "--system-ids",
+    required=True,
+    help="Comma-separated system IDs to consider (e.g. 1,2,3).",
+)
+@click.option(
+    "--raw-args",
+    multiple=True,
+    required=True,
+    help="Repeat this with each selected raw args string you want to debug.",
+)
+def debug_pool_axes_cmd(
+    benchmark_title: str,
+    app_version: str,
+    pool_arg_flags: str,
+    system_ids: str,
+    raw_args: tuple[str, ...],
+):
+    """Show how /api/compare pooling would group selected args into axes."""
+    from app.args_pooling import (
+        parse_pool_flags,
+        extract_flag_values,
+    )
+
+    with app.app_context():
+        try:
+            sys_ids = [int(x.strip()) for x in system_ids.split(",") if x.strip()]
+        except Exception:
+            print("Invalid --system-ids (expected comma-separated ints).")
+            return
+
+        pool_flags = parse_pool_flags(pool_arg_flags)
+        print("pool_arg_flags:", pool_arg_flags)
+        print("pool_flags:", pool_flags)
+        print("")
+
+        raw_args_list = [str(a) for a in raw_args if a is not None]
+        print("raw_args (selected):", len(raw_args_list))
+        for ra in raw_args_list:
+            print("  ARGS:", ra)
+        print("")
+
+        # Extract pool-flag values for each raw args (use first extracted value like api_compare).
+        raw_args_to_value: dict[str, str] = {}
+        value_order: list[str] = []
+        for ra in raw_args_list:
+            vals = extract_flag_values(ra, pool_flags)
+            if not vals:
+                continue
+            v0 = str(vals[0]).strip()
+            if not v0:
+                continue
+            raw_args_to_value[ra] = v0
+            if v0 not in value_order:
+                value_order.append(v0)
+
+        print("raw_args_to_value (using first extracted value):")
+        for ra, v in raw_args_to_value.items():
+            print("  ", ra, "=>", v)
+        print("")
+
+        if not raw_args_to_value:
+            print("No extracted pool flag values from selected raw args; nothing to pool.")
+            return
+
+        matching_primary_bm_ids = [
+            bm.id
+            for bm in Benchmark.query.filter(
+                Benchmark.title == benchmark_title,
+                Benchmark.app_version == (app_version or ""),
+                Benchmark.display_format == "BAR_GRAPH",
+                Benchmark.is_primary.is_(True),
+            ).all()
+        ]
+        if not matching_primary_bm_ids:
+            print("No matching primary BAR_GRAPH benchmarks found for this title/app_version.")
+            return
+
+        q_all = BenchmarkResult.query.filter(
+            BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+            BenchmarkResult.system_id.in_(sys_ids),
+            BenchmarkResult.arguments.in_(list(raw_args_to_value.keys())),
+        ).all()
+
+        system_present_by_value: dict[str, set[int]] = defaultdict(set)
+        for r in q_all:
+            v = raw_args_to_value.get(r.arguments)
+            if v:
+                system_present_by_value[v].add(r.system_id)
+
+        print("system_present_by_value:")
+        for v in value_order:
+            print("  ", v, "=>", sorted(system_present_by_value.get(v, set())))
+        print("")
+
+        selected_sys_set = set(sys_ids)
+        common_values = {v for v in value_order if system_present_by_value.get(v, set()) == selected_sys_set}
+        non_common_values = [v for v in value_order if v not in common_values]
+        print("common_values:", sorted(common_values))
+        print("non_common_values:", non_common_values)
+        print("")
+
+        def _compatible_with_group(v: str, group_values: list[str]) -> bool:
+            v_set = system_present_by_value.get(v, set())
+            for m in group_values:
+                m_set = system_present_by_value.get(m, set())
+                if v_set.intersection(m_set):
+                    return False
+            return True
+
+        axis_flag_name = pool_flags[0].lstrip("-") if pool_flags else "arg"
+        seen_groups: set[frozenset[str]] = set()
+        axes: list[dict[str, Any]] = []
+
+        # Common values -> one axis per raw args string.
+        for ra in raw_args_list:
+            v = raw_args_to_value.get(ra)
+            if v and v in common_values:
+                axes.append({"axis": ra, "raw_args": [ra], "values": [v], "common": True})
+
+        for pivot in non_common_values:
+            group = [pivot]
+            for u in sorted(non_common_values):
+                if u == pivot:
+                    continue
+                if _compatible_with_group(u, group):
+                    group.append(u)
+            gset = frozenset(group)
+            if not gset or gset in seen_groups:
+                continue
+            seen_groups.add(gset)
+            sorted_vals = sorted(gset)
+            group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
+            group_raw_args = [
+                ra for ra in raw_args_list
+                if raw_args_to_value.get(ra) in gset
+            ]
+            axes.append({"axis": group_label, "raw_args": group_raw_args, "values": sorted_vals, "common": False})
+
+        print("Pooled axes that api_compare should produce:")
+        for ax in axes:
+            print(" -", ax["axis"], "values=", ax["values"], "raw_args=", ax["raw_args"])
+        print("")
