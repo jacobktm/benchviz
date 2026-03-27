@@ -1547,6 +1547,9 @@ def api_compare():
                 prop = (rep_bm.proportion or "").strip().upper()
                 lower_better = prop == "LIB"
                 primary_traces = []
+                # Rebuild per-system args mapping from the selected representative result
+                # so sensor correlation follows the same pooled choice.
+                sys_args_map = {}
                 for sys_id in sys_id_ints:
                     candidates = [r for r in all_prim_results if r.system_id == sys_id]
                     if not candidates:
@@ -1557,6 +1560,7 @@ def api_compare():
                             return float("inf") if lower_better else float("-inf")
                         return float(v)
                     res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
+                    sys_args_map[sys_id] = res.arguments
                     system = db.session.get(System, sys_id)
                     if not system:
                         continue
@@ -1638,10 +1642,6 @@ def api_compare():
             # skip other LINE_GRAPH data (e.g. sample indices or raw timestamps) that would show wrong scale.
             sensor_keywords = ('temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts')
             sensors = [s for s in sensors if s.description and any(k in s.description.lower() for k in sensor_keywords)]
-            if pooling_active:
-                # Pooling mixes multiple raw primary options; keep compare focused on the
-                # comparable primary results by skipping sensor attachment in this mode.
-                sensors = []
 
             for s_bm in sensors:
                 s_traces = []
