@@ -2297,12 +2297,17 @@
                 if (bGroup.configs.length > 1) {
                     // Discover sensors attached to this benchmark (for per-benchmark toggles).
                     const benchmarkSensors = [];
-                    const firstGroupCharts = (bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts) || [];
-                    firstGroupCharts.forEach(c => {
-                        if (!c.is_primary && c.display_format === 'LINE_GRAPH' && c.metric) {
-                            if (!benchmarkSensors.includes(c.metric)) benchmarkSensors.push(c.metric);
-                            if (globalToggleState[c.metric] === undefined) globalToggleState[c.metric] = false;
-                        }
+                    // Collect sensors across ALL configs in this benchmark group.
+                    // Using only the first config can hide GPU sensors when they only
+                    // appear on other pooled/non-pooled option groups.
+                    bGroup.configs.forEach(cfg => {
+                        const charts = (cfg && cfg.group && cfg.group.charts) || [];
+                        charts.forEach(c => {
+                            if (!c.is_primary && c.display_format === 'LINE_GRAPH' && c.metric) {
+                                if (!benchmarkSensors.includes(c.metric)) benchmarkSensors.push(c.metric);
+                                if (globalToggleState[c.metric] === undefined) globalToggleState[c.metric] = false;
+                            }
+                        });
                     });
                     if (benchmarkSensors.length) {
                         const sensorNote = document.createElement('div');
