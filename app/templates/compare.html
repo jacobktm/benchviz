@@ -448,6 +448,8 @@
                     normalizeComposite,
                     showCompositeBar,
                     showWinsLossCharts,
+                    poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
+                    poolArgFlags: (poolArgFlagsValue || '').trim(),
                 },
                 overallSensors: Object.entries(showOverallSensor || {}).filter(([, on]) => on).map(([metric]) => metric),
             };
@@ -487,6 +489,13 @@
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
                 showWinsLossCharts = !!opts.showWinsLossCharts;
+                if (poolEquivalentConfigsEl) {
+                    poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
+                }
+                if (opts.poolArgFlags != null) {
+                    poolArgFlagsValue = String(opts.poolArgFlags || '').trim();
+                }
+                refreshPoolConfigButton();
                 (data.overallSensors || []).forEach(metric => {
                     showOverallSensor[metric] = true;
                 });
