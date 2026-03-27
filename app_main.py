@@ -1358,6 +1358,94 @@ def api_compare():
             if not args_list:
                 continue
 
+            # If user selected "All configurations" and requested pooling, pool across all
+            # discovered args for this benchmark suite.
+            if pool_equivalent_configs:
+                suite_key = (primary_benchmark.title, primary_benchmark.app_version)
+                suite_task_key = (suite_key[0], suite_key[1], "pool-axes")
+                if suite_task_key in pool_processed_keys:
+                    continue
+                pool_processed_keys.add(suite_task_key)
+
+                suite_raw_args_filters = [
+                    str(a) for a in args_list
+                    if isinstance(a, str) and a.strip()
+                ]
+
+                raw_args_to_value: dict[str, str] = {}
+                value_order: list[str] = []
+                for ra in suite_raw_args_filters:
+                    vals = extract_flag_values(ra, pool_flags)
+                    if not vals:
+                        continue
+                    v0 = str(vals[0]).strip()
+                    if not v0:
+                        continue
+                    raw_args_to_value[ra] = v0
+                    if v0 not in value_order:
+                        value_order.append(v0)
+
+                if raw_args_to_value:
+                    pooling_active = True
+                    all_raw_args = list(raw_args_to_value.keys())
+                    system_present_by_value: dict[str, set[int]] = defaultdict(set)
+                    q_all = BenchmarkResult.query.filter(
+                        BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+                        BenchmarkResult.system_id.in_(sys_id_ints),
+                        BenchmarkResult.arguments.in_(all_raw_args),
+                    ).all()
+                    for r in q_all:
+                        v = raw_args_to_value.get(r.arguments)
+                        if v:
+                            system_present_by_value[v].add(r.system_id)
+
+                    selected_sys_set = set(sys_id_ints)
+                    common_values = {v for v in value_order if system_present_by_value.get(v, set()) == selected_sys_set}
+                    non_common_values = [v for v in value_order if v not in common_values]
+
+                    axis_raw_args_map: dict[str, list[str]] = {}
+                    axis_args_list: list[str] = []
+
+                    for ra in suite_raw_args_filters:
+                        v = raw_args_to_value.get(ra)
+                        if not v:
+                            continue
+                        if v in common_values:
+                            if ra not in axis_raw_args_map:
+                                axis_args_list.append(ra)
+                            axis_raw_args_map[ra] = [ra]
+
+                    def _compatible_with_group(v: str, group_values: list[str]) -> bool:
+                        v_set = system_present_by_value.get(v, set())
+                        for m in group_values:
+                            m_set = system_present_by_value.get(m, set())
+                            if v_set.intersection(m_set):
+                                return False
+                        return True
+
+                    axis_flag_name = pool_flags[0].lstrip('-') if pool_flags else 'arg'
+                    seen_groups: set[frozenset[str]] = set()
+                    for pivot in non_common_values:
+                        group = [pivot]
+                        for u in sorted(non_common_values):
+                            if u == pivot:
+                                continue
+                            if _compatible_with_group(u, group):
+                                group.append(u)
+                        gset = frozenset(group)
+                        if not gset or gset in seen_groups:
+                            continue
+                        seen_groups.add(gset)
+                        sorted_vals = sorted(gset)
+                        group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
+                        group_raw_args = [ra for ra in suite_raw_args_filters if raw_args_to_value.get(ra) in gset]
+                        axis_raw_args_map[group_label] = group_raw_args
+                        axis_args_list.append(group_label)
+
+                    if axis_args_list:
+                        args_list = axis_args_list
+                        raw_args_for_query_by_args_val = axis_raw_args_map
+
         # Track non-empty primary arguments for this benchmark so we can
         # associate sensor runs even when the primary run's arguments are empty.
         nonempty_primary_args = []

@@ -120,6 +120,7 @@
             <h3 style="margin:0;" id="chartTitle"></h3>
             <div id="chartActionsRow" style="display:flex;gap:0.5rem;"></div>
         </div>
+        <div id="poolSummary" style="display:none;margin-bottom:0.6rem;padding:0.55rem 0.7rem;border-radius:8px;background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.25);font-size:0.82rem;color:var(--text-secondary);"></div>
         <div id="metricToggles" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
     </div>
     
@@ -164,6 +165,7 @@
         const metricToggles = document.getElementById('metricToggles');
         const chartTitle = document.getElementById('chartTitle');
         const configureAccordion = document.getElementById('configureAccordion');
+        const poolSummaryEl = document.getElementById('poolSummary');
 
         if (window.Chart && window.ChartDataLabels) {
             Chart.register(ChartDataLabels);
@@ -1703,6 +1705,35 @@
             });
             destroyCharts();
             chartsContainer.innerHTML = '';
+
+            // Pooling summary: show the effective axes computed by the server.
+            if (poolSummaryEl) {
+                const poolingOn = !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked);
+                if (poolingOn && currentComparisonGroups.length) {
+                    const uniqueAxes = [];
+                    const seenAxes = new Set();
+                    currentComparisonGroups.forEach((cg) => {
+                        const a = (cg && cg.args != null) ? String(cg.args).trim() : '';
+                        if (!a) return;
+                        if (seenAxes.has(a)) return;
+                        seenAxes.add(a);
+                        uniqueAxes.push(a);
+                    });
+                    if (uniqueAxes.length) {
+                        const shown = uniqueAxes.slice(0, 10).map(a => `<code>${a.replace(/</g, '&lt;')}</code>`).join(' · ');
+                        const more = uniqueAxes.length > 10 ? ` <span style="opacity:0.8;">(+${uniqueAxes.length - 10} more)</span>` : '';
+                        poolSummaryEl.innerHTML =
+                            `<strong style="color:var(--text-primary);">Pooled axes:</strong> ${shown}${more}`;
+                        poolSummaryEl.style.display = 'block';
+                    } else {
+                        poolSummaryEl.style.display = 'none';
+                        poolSummaryEl.textContent = '';
+                    }
+                } else {
+                    poolSummaryEl.style.display = 'none';
+                    poolSummaryEl.textContent = '';
+                }
+            }
             
             if (currentComparisonGroups.length > 0 && currentComparisonGroups[0].system_details && currentComparisonGroups[0].system_details.length > 0) {
                 const detailsDiv = document.createElement('div');
