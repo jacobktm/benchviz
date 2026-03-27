@@ -1209,13 +1209,14 @@ def api_compare():
         raw_args_for_query_by_args_val = None
 
         if pool_equivalent_configs and args_filter is not None:
+            current_base_key = pool_key_for_args_by_flags(args_filter, pool_flags) or str(args_filter)
             # Pooling is computed per (benchmark title+version) suite across all selected
             # configs so we can build axes like:
             #   --cycles-device HIP,CUDA   and   --cycles-device HIP,OPTIX
             #
             # We also keep common flag values (present on all selected systems) unpooled.
             suite_key = (primary_benchmark.title, primary_benchmark.app_version)
-            suite_task_key = (suite_key[0], suite_key[1], "pool-axes")
+            suite_task_key = (suite_key[0], suite_key[1], "pool-axes", current_base_key)
             if suite_task_key in pool_processed_keys:
                 continue
             pool_processed_keys.add(suite_task_key)
@@ -1254,6 +1255,14 @@ def api_compare():
                 seen_ra.add(ra)
                 deduped.append(ra)
             suite_raw_args_filters = deduped
+
+            # CRITICAL: only pool configs that share the same "base args" after
+            # removing pooled flag values. This avoids merging different scenes/files
+            # when user only requested pooling e.g. --cycles-device.
+            suite_raw_args_filters = [
+                ra for ra in suite_raw_args_filters
+                if (pool_key_for_args_by_flags(ra, pool_flags) or ra) == current_base_key
+            ]
 
             # Extract the pooled-flag "values" for each selected raw args string.
             # For now we treat "value" as the first extracted value.
@@ -1331,7 +1340,10 @@ def api_compare():
                         continue
                     seen_groups.add(gset)
                     sorted_vals = sorted(gset)
-                    group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
+                    if current_base_key and current_base_key != "<pooled>":
+                        group_label = f"{current_base_key} --{axis_flag_name} {','.join(sorted_vals)}"
+                    else:
+                        group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
                     # Collect all selected raw args strings whose pool value is in this group.
                     group_raw_args = [ra for ra in suite_raw_args_filters if raw_args_to_value.get(ra) in gset]
                     axis_raw_args_map[group_label] = group_raw_args
@@ -1387,60 +1399,77 @@ def api_compare():
 
                 if raw_args_to_value:
                     pooling_active = True
-                    all_raw_args = list(raw_args_to_value.keys())
-                    system_present_by_value: dict[str, set[int]] = defaultdict(set)
-                    q_all = BenchmarkResult.query.filter(
-                        BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
-                        BenchmarkResult.system_id.in_(sys_id_ints),
-                        BenchmarkResult.arguments.in_(all_raw_args),
-                    ).all()
-                    for r in q_all:
-                        v = raw_args_to_value.get(r.arguments)
-                        if v:
-                            system_present_by_value[v].add(r.system_id)
-
-                    selected_sys_set = set(sys_id_ints)
-                    common_values = {v for v in value_order if system_present_by_value.get(v, set()) == selected_sys_set}
-                    non_common_values = [v for v in value_order if v not in common_values]
-
                     axis_raw_args_map: dict[str, list[str]] = {}
                     axis_args_list: list[str] = []
 
+                    # Partition by "base key" (args with pooled flag values removed).
+                    base_to_raws: dict[str, list[str]] = defaultdict(list)
                     for ra in suite_raw_args_filters:
-                        v = raw_args_to_value.get(ra)
-                        if not v:
-                            continue
-                        if v in common_values:
-                            if ra not in axis_raw_args_map:
-                                axis_args_list.append(ra)
-                            axis_raw_args_map[ra] = [ra]
-
-                    def _compatible_with_group(v: str, group_values: list[str]) -> bool:
-                        v_set = system_present_by_value.get(v, set())
-                        for m in group_values:
-                            m_set = system_present_by_value.get(m, set())
-                            if v_set.intersection(m_set):
-                                return False
-                        return True
+                        base = pool_key_for_args_by_flags(ra, pool_flags) or ra
+                        base_to_raws[base].append(ra)
 
                     axis_flag_name = pool_flags[0].lstrip('-') if pool_flags else 'arg'
-                    seen_groups: set[frozenset[str]] = set()
-                    for pivot in non_common_values:
-                        group = [pivot]
-                        for u in sorted(non_common_values):
-                            if u == pivot:
-                                continue
-                            if _compatible_with_group(u, group):
-                                group.append(u)
-                        gset = frozenset(group)
-                        if not gset or gset in seen_groups:
+                    selected_sys_set = set(sys_id_ints)
+
+                    for base_key, base_raws in base_to_raws.items():
+                        base_raws = list(dict.fromkeys(base_raws))  # de-dupe preserve order
+                        base_raw_to_value = {ra: raw_args_to_value.get(ra) for ra in base_raws if raw_args_to_value.get(ra)}
+                        if not base_raw_to_value:
                             continue
-                        seen_groups.add(gset)
-                        sorted_vals = sorted(gset)
-                        group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
-                        group_raw_args = [ra for ra in suite_raw_args_filters if raw_args_to_value.get(ra) in gset]
-                        axis_raw_args_map[group_label] = group_raw_args
-                        axis_args_list.append(group_label)
+                        base_values = list(dict.fromkeys(base_raw_to_value.values()))
+
+                        q_all = BenchmarkResult.query.filter(
+                            BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+                            BenchmarkResult.system_id.in_(sys_id_ints),
+                            BenchmarkResult.arguments.in_(list(base_raw_to_value.keys())),
+                        ).all()
+                        system_present_by_value: dict[str, set[int]] = defaultdict(set)
+                        for r in q_all:
+                            v = base_raw_to_value.get(r.arguments)
+                            if v:
+                                system_present_by_value[v].add(r.system_id)
+
+                        common_values = {v for v in base_values if system_present_by_value.get(v, set()) == selected_sys_set}
+                        non_common_values = [v for v in base_values if v not in common_values]
+
+                        # Keep common values unpooled (one axis each, raw args label).
+                        for ra in base_raws:
+                            v = base_raw_to_value.get(ra)
+                            if not v:
+                                continue
+                            if v in common_values:
+                                if ra not in axis_raw_args_map:
+                                    axis_args_list.append(ra)
+                                axis_raw_args_map[ra] = [ra]
+
+                        def _compatible_with_group(v: str, group_values: list[str]) -> bool:
+                            v_set = system_present_by_value.get(v, set())
+                            for m in group_values:
+                                m_set = system_present_by_value.get(m, set())
+                                if v_set.intersection(m_set):
+                                    return False
+                            return True
+
+                        seen_groups: set[frozenset[str]] = set()
+                        for pivot in non_common_values:
+                            group = [pivot]
+                            for u in sorted(non_common_values):
+                                if u == pivot:
+                                    continue
+                                if _compatible_with_group(u, group):
+                                    group.append(u)
+                            gset = frozenset(group)
+                            if not gset or gset in seen_groups:
+                                continue
+                            seen_groups.add(gset)
+                            sorted_vals = sorted(gset)
+                            if base_key and base_key != "<pooled>":
+                                group_label = f"{base_key} --{axis_flag_name} {','.join(sorted_vals)}"
+                            else:
+                                group_label = f"--{axis_flag_name} {','.join(sorted_vals)}"
+                            group_raw_args = [ra for ra in base_raws if base_raw_to_value.get(ra) in gset]
+                            axis_raw_args_map[group_label] = group_raw_args
+                            axis_args_list.append(group_label)
 
                     if axis_args_list:
                         args_list = axis_args_list
