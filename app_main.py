@@ -1538,69 +1538,96 @@ def api_compare():
             primary_benchmarks = Benchmark.query.filter(
                 Benchmark.id.in_(by_bm_id.keys())
             ).all()
-            # Keep primary charts in definition order (e.g. first in XML = first) so wins/losses use the first result.
-            for bm in sorted(primary_benchmarks, key=lambda x: x.id):
-                results_for_bm = by_bm_id.get(bm.id, [])
-                if not results_for_bm:
-                    continue
+
+            if pooling_active:
+                # In pooling mode, "all_prim_results" can span multiple benchmark IDs
+                # that are effectively fragments of one pooled axis (e.g. HIP-only bm id
+                # and CUDA-only bm id). Build ONE synthetic primary chart per args_val.
+                rep_bm = sorted(primary_benchmarks, key=lambda x: x.id)[0] if primary_benchmarks else primary_benchmark
+                prop = (rep_bm.proportion or "").strip().upper()
+                lower_better = prop == "LIB"
                 primary_traces = []
                 for sys_id in sys_id_ints:
-                    res = None
-                    if pooling_active:
-                        candidates = [r for r in results_for_bm if r.system_id == sys_id]
-                        if candidates:
-                            prop = (bm.proportion or "").strip().upper()
-                            lower_better = prop == "LIB"
-                            def score_key(r):
-                                v = r.value
-                                # Ensure None goes to the bottom.
-                                if v is None:
-                                    return float("inf") if lower_better else float("-inf")
-                                return float(v)
-
-                            # For LIB: min is best; for HIB: max is best.
-                            res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
-                    else:
-                        res = next((r for r in results_for_bm if r.system_id == sys_id), None)
-                    if not res:
+                    candidates = [r for r in all_prim_results if r.system_id == sys_id]
+                    if not candidates:
                         continue
+                    def score_key(r):
+                        v = r.value
+                        if v is None:
+                            return float("inf") if lower_better else float("-inf")
+                        return float(v)
+                    res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
                     system = db.session.get(System, sys_id)
                     if not system:
                         continue
                     system_label = format_system_profile_label(system)
                     short_name = system.identifier
-                    trace_name = short_name
-                    if pooling_active:
-                        suffix = _pooled_flag_suffix_from_args(res.arguments)
-                        if suffix:
-                            trace_name = f"{short_name} ({suffix})"
+                    suffix = _pooled_flag_suffix_from_args(res.arguments)
+                    trace_name = f"{short_name} ({suffix})" if suffix else short_name
                     trace = {
                         "name": trace_name,
-                        "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
-                        "customdata": [system_label + (f" ({suffix})" if pooling_active and suffix else "")],
-                        "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if bm.display_format == "BAR_GRAPH" else None
+                        "type": "bar",
+                        "customdata": [system_label + (f" ({suffix})" if suffix else "")],
+                        "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>",
+                        "x": [trace_name],
+                        "y": [res.value],
                     }
-                    if bm.display_format == "BAR_GRAPH":
-                        trace["x"] = [trace_name]
-                        trace["y"] = [res.value]
-                    elif bm.display_format == "LINE_GRAPH":
-                        y_data = res.data_json or []
-                        trace["x"] = list(range(len(y_data)))
-                        trace["y"] = y_data
-                        trace["mode"] = "lines"
                     primary_traces.append(trace)
                 if primary_traces:
-                    metric_label = bm.scale or (bm.description or "Primary Result")[:50]
+                    metric_label = rep_bm.scale or (rep_bm.description or "Primary Result")[:50]
                     charts.append({
                         "metric": metric_label,
-                        "description": bm.description,
-                        "scale": bm.scale,
-                        "display_format": bm.display_format,
-                        "proportion": bm.proportion,
+                        "description": rep_bm.description,
+                        "scale": rep_bm.scale,
+                        "display_format": "BAR_GRAPH",
+                        "proportion": rep_bm.proportion,
                         "options": sorted(primary_args_set),
                         "traces": primary_traces,
                         "is_primary": True
                     })
+            else:
+                # Keep primary charts in definition order (e.g. first in XML = first) so wins/losses use the first result.
+                for bm in sorted(primary_benchmarks, key=lambda x: x.id):
+                    results_for_bm = by_bm_id.get(bm.id, [])
+                    if not results_for_bm:
+                        continue
+                    primary_traces = []
+                    for sys_id in sys_id_ints:
+                        res = next((r for r in results_for_bm if r.system_id == sys_id), None)
+                        if not res:
+                            continue
+                        system = db.session.get(System, sys_id)
+                        if not system:
+                            continue
+                        system_label = format_system_profile_label(system)
+                        short_name = system.identifier
+                        trace = {
+                            "name": short_name,
+                            "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
+                            "customdata": [system_label],
+                            "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if bm.display_format == "BAR_GRAPH" else None
+                        }
+                        if bm.display_format == "BAR_GRAPH":
+                            trace["x"] = [short_name]
+                            trace["y"] = [res.value]
+                        elif bm.display_format == "LINE_GRAPH":
+                            y_data = res.data_json or []
+                            trace["x"] = list(range(len(y_data)))
+                            trace["y"] = y_data
+                            trace["mode"] = "lines"
+                        primary_traces.append(trace)
+                    if primary_traces:
+                        metric_label = bm.scale or (bm.description or "Primary Result")[:50]
+                        charts.append({
+                            "metric": metric_label,
+                            "description": bm.description,
+                            "scale": bm.scale,
+                            "display_format": bm.display_format,
+                            "proportion": bm.proportion,
+                            "options": sorted(primary_args_set),
+                            "traces": primary_traces,
+                            "is_primary": True
+                        })
 
             sensors = Benchmark.query.filter(
                 Benchmark.title == primary_benchmark.title,
