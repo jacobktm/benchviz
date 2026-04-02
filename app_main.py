@@ -1542,53 +1542,75 @@ def api_compare():
             if pooling_active:
                 # In pooling mode, "all_prim_results" can span multiple benchmark IDs
                 # that are effectively fragments of one pooled axis (e.g. HIP-only bm id
-                # and CUDA-only bm id). Build ONE synthetic primary chart per args_val.
-                rep_bm = sorted(primary_benchmarks, key=lambda x: x.id)[0] if primary_benchmarks else primary_benchmark
-                prop = (rep_bm.proportion or "").strip().upper()
-                lower_better = prop == "LIB"
-                primary_traces = []
-                # Rebuild per-system args mapping from the selected representative result
-                # so sensor correlation follows the same pooled choice.
+                # and CUDA-only bm id). Build ONE synthetic chart per logical metric
+                # signature (description/scale/proportion), not one total chart.
+                bm_by_id = {bm.id: bm for bm in primary_benchmarks}
+                sig_to_rows: dict[tuple[str, str, str, str], list[BenchmarkResult]] = defaultdict(list)
+                for r in all_prim_results:
+                    bm = bm_by_id.get(r.benchmark_id)
+                    if not bm:
+                        continue
+                    sig = (
+                        (bm.description or "").strip(),
+                        (bm.scale or "").strip(),
+                        (bm.proportion or "").strip(),
+                        (bm.display_format or "").strip(),
+                    )
+                    sig_to_rows[sig].append(r)
+
+                # Rebuild sys_args_map from the first synthetic metric; sufficient to
+                # map sensors to the same pooled run arguments.
                 sys_args_map = {}
-                for sys_id in sys_id_ints:
-                    candidates = [r for r in all_prim_results if r.system_id == sys_id]
-                    if not candidates:
-                        continue
-                    def score_key(r):
-                        v = r.value
-                        if v is None:
-                            return float("inf") if lower_better else float("-inf")
-                        return float(v)
-                    res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
-                    sys_args_map[sys_id] = res.arguments
-                    system = db.session.get(System, sys_id)
-                    if not system:
-                        continue
-                    system_label = format_system_profile_label(system)
-                    short_name = system.identifier
-                    suffix = _pooled_flag_suffix_from_args(res.arguments)
-                    trace_name = f"{short_name} ({suffix})" if suffix else short_name
-                    trace = {
-                        "name": trace_name,
-                        "type": "bar",
-                        "customdata": [system_label + (f" ({suffix})" if suffix else "")],
-                        "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>",
-                        "x": [trace_name],
-                        "y": [res.value],
-                    }
-                    primary_traces.append(trace)
-                if primary_traces:
-                    metric_label = rep_bm.scale or (rep_bm.description or "Primary Result")[:50]
-                    charts.append({
-                        "metric": metric_label,
-                        "description": rep_bm.description,
-                        "scale": rep_bm.scale,
-                        "display_format": "BAR_GRAPH",
-                        "proportion": rep_bm.proportion,
-                        "options": sorted(primary_args_set),
-                        "traces": primary_traces,
-                        "is_primary": True
-                    })
+                first_sig = True
+
+                for sig, sig_rows in sig_to_rows.items():
+                    desc_sig, scale_sig, prop_sig, disp_sig = sig
+                    prop = (prop_sig or "").strip().upper()
+                    lower_better = prop == "LIB"
+                    primary_traces = []
+                    for sys_id in sys_id_ints:
+                        candidates = [r for r in sig_rows if r.system_id == sys_id]
+                        if not candidates:
+                            continue
+                        def score_key(r):
+                            v = r.value
+                            if v is None:
+                                return float("inf") if lower_better else float("-inf")
+                            return float(v)
+                        res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
+                        if first_sig:
+                            sys_args_map[sys_id] = res.arguments
+                        system = db.session.get(System, sys_id)
+                        if not system:
+                            continue
+                        system_label = format_system_profile_label(system)
+                        short_name = system.identifier
+                        suffix = _pooled_flag_suffix_from_args(res.arguments)
+                        trace_name = f"{short_name} ({suffix})" if suffix else short_name
+                        trace = {
+                            "name": trace_name,
+                            "type": "bar",
+                            "customdata": [system_label + (f" ({suffix})" if suffix else "")],
+                            "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>",
+                            "x": [trace_name],
+                            "y": [res.value],
+                        }
+                        primary_traces.append(trace)
+                    if primary_traces:
+                        # Prefer description for disambiguating metrics like
+                        # 7-Zip Compression vs Decompression (both scale=MIPS).
+                        metric_label = (desc_sig or "").strip() or (scale_sig or "Primary Result")
+                        charts.append({
+                            "metric": metric_label,
+                            "description": desc_sig,
+                            "scale": scale_sig,
+                            "display_format": disp_sig or "BAR_GRAPH",
+                            "proportion": prop_sig,
+                            "options": sorted(primary_args_set),
+                            "traces": primary_traces,
+                            "is_primary": True
+                        })
+                    first_sig = False
             else:
                 # Keep primary charts in definition order (e.g. first in XML = first) so wins/losses use the first result.
                 for bm in sorted(primary_benchmarks, key=lambda x: x.id):
@@ -1621,7 +1643,7 @@ def api_compare():
                             trace["mode"] = "lines"
                         primary_traces.append(trace)
                     if primary_traces:
-                        metric_label = bm.scale or (bm.description or "Primary Result")[:50]
+                        metric_label = (bm.description or "").strip() or (bm.scale or "Primary Result")
                         charts.append({
                             "metric": metric_label,
                             "description": bm.description,
