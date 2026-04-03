@@ -1008,39 +1008,84 @@
 
             // NON-NORMALIZED MODE: behave like the original aggregate (no cross-metric normalization).
             if (!useRatios) {
-                const scales = bGroup.scale ? [bGroup.scale] : [];
                 const wins = systems.map(() => 0);
                 const losses = systems.map(() => 0);
 
-                // Use existing valuesBySystem (primary metric chosen in groupComparisonGroupsByBenchmark)
+                const primaryValueFromChart = (ch, sysName) => {
+                    const t = (ch.traces || []).find(tr => tr.name === sysName);
+                    if (!t) return null;
+                    const raw = Array.isArray(t.y) ? t.y[0] : t.y;
+                    const num = (raw != null && !isNaN(raw)) ? Number(raw) : null;
+                    return num;
+                };
+
+                let combinedScales = [];
+                const seenScale = new Set();
+                const noteScale = (s) => {
+                    const t = (s != null && String(s).trim() !== '') ? String(s).trim() : '';
+                    if (t && !seenScale.has(t)) {
+                        seenScale.add(t);
+                        combinedScales.push(t);
+                    }
+                };
+
+                bGroup.configs.forEach(config => {
+                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                    primaries.forEach(ch => noteScale(ch.scale || ch.metric));
+                    if (!primaries.length) noteScale(bGroup.scale);
+                });
+                if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
+
+                // Per-config composite: geometric mean of all primary metrics when a single
+                // run exposes several (e.g. 7-Zip compression + decompression).
                 bGroup.configs.forEach(config => {
                     config.compositeBySystem = {};
+                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
                     systems.forEach(sys => {
-                        const v = config.valuesBySystem[sys];
-                        config.compositeBySystem[sys] = (v != null && !isNaN(v)) ? Number(v) : null;
+                        let comp = null;
+                        if (primaries.length > 1) {
+                            const vals = primaries
+                                .map(ch => primaryValueFromChart(ch, sys))
+                                .filter(v => v != null && !isNaN(v) && v > 0);
+                            comp = vals.length ? geometricMean(vals) : null;
+                        } else {
+                            const v = config.valuesBySystem[sys];
+                            comp = (v != null && !isNaN(v)) ? Number(v) : null;
+                        }
+                        config.compositeBySystem[sys] = comp;
                     });
                 });
 
                 const aggValues = systems.map(sys => {
                     const vals = bGroup.configs
-                        .map(c => c.valuesBySystem[sys])
+                        .map(c => c.compositeBySystem[sys])
                         .filter(v => v != null && !isNaN(v) && v > 0);
                     return vals.length ? geometricMean(vals) : null;
                 });
 
-                // Wins/losses based on raw primary values per config
                 const HIB = isHigherIsBetter(bGroup.proportion);
                 bGroup.configs.forEach(config => {
-                    const vals = systems.map(s => config.valuesBySystem[s]);
-                    const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
-                    if (!valid.length) return;
-                    const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
-                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
-                    valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
-                    valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                    const runWinLoss = (vals) => {
+                        const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
+                        if (!valid.length) return;
+                        const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
+                        const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
+                        valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
+                        valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+                    };
+                    if (primaries.length > 1) {
+                        primaries.forEach(ch => {
+                            const vals = systems.map(s => primaryValueFromChart(ch, s));
+                            runWinLoss(vals);
+                        });
+                    } else {
+                        const vals = systems.map(s => config.valuesBySystem[s]);
+                        runWinLoss(vals);
+                    }
                 });
 
-                return { aggValues, wins, losses, combinedScales: scales };
+                return { aggValues, wins, losses, combinedScales };
             }
 
             // NORMALIZED MODE: ratios to worst system per metric/config (cross-metric composite).
@@ -2383,22 +2428,44 @@
                         expandHeading.textContent = '▲ Individual options';
                     }
                 } else if (bGroup.configs.length === 1) {
-                    // Single-option benchmark: still offer per-benchmark sensor toggles if sensors exist.
-                    const sensorSection = document.createElement('div');
-                    sensorSection.style.marginTop = '1.5rem';
-                    const sensorHeading = document.createElement('div');
-                    sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;font-size:0.9rem;';
-                    sensorHeading.textContent = 'Sensor data';
-                    sensorSection.appendChild(sensorHeading);
+                    // Single args/config: show composite above. Below that, skip duplicate primary
+                    // bars only when there is exactly one primary metric (same data as composite).
+                    // Multiple primaries (e.g. 7-Zip compression + decompression) always get
+                    // individual BAR_GRAPHs here.
+                    const g0 = bGroup.configs[0].group;
+                    const firstGroupCharts = (g0 && g0.charts) || [];
+                    const primaryChartsCount = firstGroupCharts.filter(c => c.is_primary).length;
+                    const skipPrimaryDup = primaryChartsCount <= 1;
+
                     const benchmarkSensors = [];
-                    const firstGroupCharts = (bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts) || [];
                     firstGroupCharts.forEach(c => {
                         if (!c.is_primary && c.display_format === 'LINE_GRAPH' && c.metric) {
                             if (!benchmarkSensors.includes(c.metric)) benchmarkSensors.push(c.metric);
                             if (globalToggleState[c.metric] === undefined) globalToggleState[c.metric] = false;
                         }
                     });
+
+                    const hasDetailCharts = benchmarkSensors.length > 0 || !skipPrimaryDup;
+                    if (!hasDetailCharts) {
+                        chartsContainer.appendChild(groupWrapper);
+                        return;
+                    }
+
+                    const detailSection = document.createElement('div');
+                    detailSection.style.marginTop = '1.5rem';
+
+                    if (!skipPrimaryDup) {
+                        const metricsHeading = document.createElement('div');
+                        metricsHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;font-size:0.9rem;';
+                        metricsHeading.textContent = 'Individual metrics';
+                        detailSection.appendChild(metricsHeading);
+                    }
+
                     if (benchmarkSensors.length) {
+                        const sensorHeading = document.createElement('div');
+                        sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;margin-top:' + (!skipPrimaryDup ? '0.75rem' : '0') + ';font-size:0.9rem;';
+                        sensorHeading.textContent = 'Sensor data';
+                        detailSection.appendChild(sensorHeading);
                         const sensorToggleRow = document.createElement('div');
                         sensorToggleRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;';
                         benchmarkSensors.forEach(sensor => {
@@ -2421,10 +2488,11 @@
                             label.appendChild(span);
                             sensorToggleRow.appendChild(label);
                         });
-                        sensorSection.appendChild(sensorToggleRow);
-                        groupWrapper.appendChild(sensorSection);
-                        renderOneCompGroup(bGroup.configs[0].group, sensorSection, true);
+                        detailSection.appendChild(sensorToggleRow);
                     }
+
+                    groupWrapper.appendChild(detailSection);
+                    renderOneCompGroup(g0, detailSection, skipPrimaryDup);
                 }
 
                 chartsContainer.appendChild(groupWrapper);
