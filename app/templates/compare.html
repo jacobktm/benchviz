@@ -1849,11 +1849,10 @@
         function renderCharts() {
             const groups = chartsContainer.querySelectorAll('.benchmark-group');
             groups.forEach((el, bGroupIdx) => {
-                const expandHeading = Array.from(el.children).find(c => {
-                    const t = c.textContent || '';
-                    return t.includes('Individual options') || t.includes('Individual metrics');
-                });
-                const expandContent = expandHeading && expandHeading.nextElementSibling;
+                // Must use querySelector: "Individual metrics" lives inside detailSection, not a
+                // direct child of .benchmark-group (unlike "Individual options").
+                const expandHeading = el.querySelector('.compare-benchmark-expand');
+                const expandContent = el.querySelector('.compare-benchmark-expand-body');
                 const individualOpen = expandContent && expandContent.style.display !== 'none';
                 const optionsOpen = [];
                 let mi = 0;
@@ -2407,9 +2406,11 @@
                         aggSection.appendChild(sensorToggleRow);
                     }
                     const expandHeading = document.createElement('div');
+                    expandHeading.className = 'compare-benchmark-expand';
                     expandHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.5rem;cursor:pointer;font-size:0.9rem;';
                     expandHeading.textContent = '▼ Individual options';
                     const expandContent = document.createElement('div');
+                    expandContent.className = 'compare-benchmark-expand-body';
                     expandContent.style.display = 'none';
                     groupWrapper.appendChild(expandHeading);
                     groupWrapper.appendChild(expandContent);
@@ -2516,9 +2517,11 @@
 
                     if (!skipPrimaryDup) {
                         const expandHeading = document.createElement('div');
+                        expandHeading.className = 'compare-benchmark-expand';
                         expandHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.5rem;cursor:pointer;font-size:0.9rem;';
                         expandHeading.textContent = '▼ Individual metrics';
                         const expandContent = document.createElement('div');
+                        expandContent.className = 'compare-benchmark-expand-body';
                         expandContent.style.display = 'none';
                         detailSection.appendChild(expandHeading);
                         detailSection.appendChild(expandContent);
