@@ -1849,14 +1849,20 @@
         function renderCharts() {
             const groups = chartsContainer.querySelectorAll('.benchmark-group');
             groups.forEach((el, bGroupIdx) => {
-                const expandHeading = Array.from(el.children).find(c => c.textContent && c.textContent.includes('Individual options'));
+                const expandHeading = Array.from(el.children).find(c => {
+                    const t = c.textContent || '';
+                    return t.includes('Individual options') || t.includes('Individual metrics');
+                });
                 const expandContent = expandHeading && expandHeading.nextElementSibling;
                 const individualOpen = expandContent && expandContent.style.display !== 'none';
                 const optionsOpen = [];
+                let mi = 0;
                 if (expandContent && expandContent.children.length) {
-                    Array.from(expandContent.children).forEach((optWrap, cIdx) => {
-                        const optBody = optWrap.children[1];
-                        if (optBody && optBody.style.display !== 'none') optionsOpen[cIdx] = true;
+                    Array.from(expandContent.children).forEach((child) => {
+                        if (!child.classList || !child.classList.contains('compare-nested-option')) return;
+                        const optBody = child.children[1];
+                        if (optBody && optBody.style.display !== 'none') optionsOpen[mi] = true;
+                        mi++;
                     });
                 }
                 expandedChartState[bGroupIdx] = { individualOpen: !!individualOpen, optionsOpen };
@@ -2145,9 +2151,14 @@
                 return ch;
             }
 
-            function renderOneCompGroup(compGroup, container, skipPrimary) {
-                compGroup.charts.forEach((chartData) => {
-                    if (skipPrimary && chartData.is_primary) return;
+            /** Human-readable title for a primary BAR (e.g. "Compression Rating" from Phoronix descriptions). */
+            function primaryChartPanelTitle(chartData) {
+                let t = (chartData.metric || chartData.description || chartData.scale || 'Result').trim();
+                t = t.replace(/^Test:\s*/i, '').trim();
+                return t || 'Result';
+            }
+
+            function renderComparisonChart(chartData, container) {
                     if (!chartData.is_primary && !globalToggleState[chartData.metric]) return;
                     const chartDiv = document.createElement('div');
                     chartDiv.style.width = '100%';
@@ -2157,6 +2168,12 @@
                     let chartInstance = null;
                     if (chartData.display_format === 'BAR_GRAPH') {
                         if (!chartData.traces || !chartData.traces.length) return;
+                        if (chartData.is_primary) {
+                            const panelTitle = document.createElement('div');
+                            panelTitle.style.cssText = 'font-size:0.95rem;font-weight:600;color:var(--text-primary);margin-bottom:0.35rem;';
+                            panelTitle.textContent = primaryChartPanelTitle(chartData);
+                            chartDiv.appendChild(panelTitle);
+                        }
                         const traceNames = chartData.traces.map(t => t.name != null ? t.name : '');
                         const labels = getSystemDisplayNames(traceNames);
                         let values = chartData.traces.map(t => {
@@ -2257,6 +2274,12 @@
                         });
                     }
                     if (chartInstance) activeCharts.push(chartInstance);
+            }
+
+            function renderOneCompGroup(compGroup, container, skipPrimary) {
+                compGroup.charts.forEach((chartData) => {
+                    if (skipPrimary && chartData.is_primary) return;
+                    renderComparisonChart(chartData, container);
                 });
             }
 
@@ -2398,6 +2421,7 @@
                     const saved = expandedChartState[bGroupIdx];
                     bGroup.configs.forEach((config, cIdx) => {
                         const optWrap = document.createElement('div');
+                        optWrap.className = 'compare-nested-option';
                         optWrap.style.marginTop = '1rem';
                         const optHeader = document.createElement('div');
                         optHeader.style.cssText = 'padding:0.4rem 0.5rem;background:rgba(255,255,255,0.05);border-radius:4px;cursor:pointer;font-size:0.85rem;margin-bottom:0.25rem;';
@@ -2454,18 +2478,14 @@
                     const detailSection = document.createElement('div');
                     detailSection.style.marginTop = '1.5rem';
 
-                    if (!skipPrimaryDup) {
-                        const metricsHeading = document.createElement('div');
-                        metricsHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;font-size:0.9rem;';
-                        metricsHeading.textContent = 'Individual metrics';
-                        detailSection.appendChild(metricsHeading);
-                    }
+                    const saved = expandedChartState[bGroupIdx];
 
-                    if (benchmarkSensors.length) {
+                    const finishSensorBlock = (host) => {
+                        if (!benchmarkSensors.length) return;
                         const sensorHeading = document.createElement('div');
-                        sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;margin-top:' + (!skipPrimaryDup ? '0.75rem' : '0') + ';font-size:0.9rem;';
+                        sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;margin-top:1rem;font-size:0.9rem;';
                         sensorHeading.textContent = 'Sensor data';
-                        detailSection.appendChild(sensorHeading);
+                        host.appendChild(sensorHeading);
                         const sensorToggleRow = document.createElement('div');
                         sensorToggleRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;';
                         benchmarkSensors.forEach(sensor => {
@@ -2488,11 +2508,59 @@
                             label.appendChild(span);
                             sensorToggleRow.appendChild(label);
                         });
-                        detailSection.appendChild(sensorToggleRow);
+                        host.appendChild(sensorToggleRow);
+                        const sensorChartsHost = document.createElement('div');
+                        host.appendChild(sensorChartsHost);
+                        renderOneCompGroup(g0, sensorChartsHost, true);
+                    };
+
+                    if (!skipPrimaryDup) {
+                        const expandHeading = document.createElement('div');
+                        expandHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.5rem;cursor:pointer;font-size:0.9rem;';
+                        expandHeading.textContent = '▼ Individual metrics';
+                        const expandContent = document.createElement('div');
+                        expandContent.style.display = 'none';
+                        detailSection.appendChild(expandHeading);
+                        detailSection.appendChild(expandContent);
+                        expandHeading.addEventListener('click', () => {
+                            const open = expandContent.style.display !== 'none';
+                            expandContent.style.display = open ? 'none' : 'block';
+                            expandHeading.textContent = open ? '▼ Individual metrics' : '▲ Individual metrics';
+                        });
+                        const primaryRows = (g0.charts || []).filter(c => c.is_primary);
+                        primaryRows.forEach((ch, cIdx) => {
+                            const optWrap = document.createElement('div');
+                            optWrap.className = 'compare-nested-option';
+                            optWrap.style.marginTop = '1rem';
+                            const optHeader = document.createElement('div');
+                            optHeader.style.cssText = 'padding:0.4rem 0.5rem;background:rgba(255,255,255,0.05);border-radius:4px;cursor:pointer;font-size:0.85rem;margin-bottom:0.25rem;';
+                            optHeader.textContent = primaryChartPanelTitle(ch);
+                            const optBody = document.createElement('div');
+                            optBody.style.display = 'none';
+                            optBody.style.paddingLeft = '0.75rem';
+                            optWrap.appendChild(optHeader);
+                            optWrap.appendChild(optBody);
+                            expandContent.appendChild(optWrap);
+                            optHeader.addEventListener('click', () => {
+                                const open = optBody.style.display !== 'none';
+                                optBody.style.display = open ? 'none' : 'block';
+                                if (!open && optBody.children.length === 0) renderComparisonChart(ch, optBody);
+                            });
+                            if (saved && saved.optionsOpen[cIdx]) {
+                                optBody.style.display = 'block';
+                                renderComparisonChart(ch, optBody);
+                            }
+                        });
+                        finishSensorBlock(expandContent);
+                        if (saved && saved.individualOpen) {
+                            expandContent.style.display = 'block';
+                            expandHeading.textContent = '▲ Individual metrics';
+                        }
+                    } else {
+                        finishSensorBlock(detailSection);
                     }
 
                     groupWrapper.appendChild(detailSection);
-                    renderOneCompGroup(g0, detailSection, skipPrimaryDup);
                 }
 
                 chartsContainer.appendChild(groupWrapper);
