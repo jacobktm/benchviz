@@ -991,10 +991,50 @@
                 return defaultColors[colorIndex % defaultColors.length];
             };
 
+            /** 2-system: flip sign so “right = ahead” matches the system that wins more subtests (ties → first system). */
+            let flip2 = false;
+            let dom2 = 0;
+            let oth2 = 1;
+            if (m === 2) {
+                let w0 = 0;
+                let w1 = 0;
+                rows.forEach(r => {
+                    const d = r.deltaPct;
+                    if (d == null || !isFinite(d)) return;
+                    if (d > 0) w0++;
+                    else if (d < 0) w1++;
+                });
+                flip2 = w1 > w0;
+                dom2 = flip2 ? 1 : 0;
+                oth2 = 1 - dom2;
+            }
+
+            /** 3+: legend order — fewer subtest “wins” left, most wins right (tie → original index). */
+            const legendIndices = (() => {
+                if (m === 2) return [oth2, dom2];
+                const wins = systems.map(() => 0);
+                rows.forEach(r => {
+                    const pts = (r.pcts || []).map((p, si) => ({ p, si })).filter(x => x.p != null && isFinite(x.p));
+                    if (pts.length < 2) return;
+                    const mx = Math.max(...pts.map(x => x.p));
+                    pts.filter(x => x.p === mx).forEach(x => { wins[x.si] += 1; });
+                });
+                return systems.map((_, i) => i).sort((a, b) => {
+                    if (wins[a] !== wins[b]) return wins[a] - wins[b];
+                    return a - b;
+                });
+            })();
+
+            const displayDelta2 = (r) => {
+                const raw = r.deltaPct;
+                if (raw == null || !isFinite(raw)) return null;
+                return flip2 ? -raw : raw;
+            };
+
             let maxAbs = 3;
             if (m === 2) {
                 rows.forEach(r => {
-                    const p = r.deltaPct;
+                    const p = displayDelta2(r);
                     if (p != null && isFinite(p)) maxAbs = Math.max(maxAbs, Math.abs(p));
                 });
             } else {
@@ -1014,16 +1054,16 @@
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
-                cap.textContent = 'Each row is one scored subtest. Bars are sorted by absolute delta (largest at top), and 0% rows are omitted. Right means ' + sysNames[0] + ' wins; left means ' + sysNames[1] + ' wins.';
+                cap.textContent = 'Each row is one scored subtest. Bars are sorted by absolute delta (largest at top), and 0% rows are omitted. Right means ' + sysNames[dom2] + ' wins that subtest; left means ' + sysNames[oth2] + ' wins.';
             } else {
-                cap.textContent = 'Each spoke is one scored subtest; values are signed delta (%) vs geometric-mean baseline for that subtest. Zero-delta rows are omitted and strongest deltas are shown first.';
+                cap.textContent = 'Each spoke is one scored subtest; values are signed delta (%) vs geometric-mean baseline for that subtest. Zero-delta rows are omitted and strongest deltas are shown first. Legend order: least often ahead on a subtest (left) → most often ahead (right).';
             }
             parent.appendChild(cap);
 
             const legendRow = document.createElement('div');
             legendRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.85rem;margin-bottom:0.65rem;align-items:center;';
             legendRow.setAttribute('aria-label', 'System colors');
-            systems.forEach((sysId, si) => {
+            legendIndices.forEach((si) => {
                 const base = systemColorAt(si);
                 const item = document.createElement('span');
                 item.style.cssText = 'display:inline-flex;align-items:center;gap:0.4rem;font-size:0.82rem;font-weight:600;color:var(--text-primary);';
@@ -1039,13 +1079,13 @@
             parent.appendChild(legendRow);
 
             const meanDelta = m === 2
-                ? rows.map(r => r.deltaPct).filter(v => v != null && isFinite(v))
+                ? rows.map(r => displayDelta2(r)).filter(v => v != null && isFinite(v))
                 : rows.flatMap(r => (r.pcts || [])).filter(v => v != null && isFinite(v));
             if (meanDelta.length && m === 2) {
                 const avg = meanDelta.reduce((a, b) => a + b, 0) / meanDelta.length;
                 const meanEl = document.createElement('div');
                 meanEl.style.cssText = 'font-size:0.8rem;color:var(--text-primary);margin-bottom:0.6rem;font-weight:500;';
-                meanEl.textContent = `Average delta across shown subtests: ${avg >= 0 ? '+' : ''}${avg.toFixed(1)}% (${sysNames[0]} vs ${sysNames[1]})`;
+                meanEl.textContent = `Average delta across shown subtests: ${avg >= 0 ? '+' : ''}${avg.toFixed(1)}% (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
                 parent.appendChild(meanEl);
             }
 
@@ -1059,26 +1099,26 @@
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
 
-            const c0 = systemColorAt(0);
-            const c1 = systemColorAt(1);
+            const cDom2 = systemColorAt(dom2);
+            const cOth2 = systemColorAt(oth2);
             const chartData = m === 2
                 ? {
                     labels: rowLabels,
                     datasets: [{
-                        label: `${sysNames[0]} vs ${sysNames[1]}`,
-                        data: rows.map(r => (r.deltaPct != null && isFinite(r.deltaPct) ? r.deltaPct : null)),
+                        label: `${sysNames[dom2]} vs ${sysNames[oth2]}`,
+                        data: rows.map(r => displayDelta2(r)),
                         backgroundColor: rows.map(r => {
-                            const v = r.deltaPct;
-                            if (v == null || !isFinite(v)) return c0 + '99';
-                            if (v > 0) return c0 + 'dd';
-                            if (v < 0) return c1 + 'dd';
+                            const v = displayDelta2(r);
+                            if (v == null || !isFinite(v)) return cDom2 + '99';
+                            if (v > 0) return cDom2 + 'dd';
+                            if (v < 0) return cOth2 + 'dd';
                             return 'rgba(128,128,128,0.4)';
                         }),
                         borderColor: rows.map(r => {
-                            const v = r.deltaPct;
-                            if (v == null || !isFinite(v)) return c0;
-                            if (v > 0) return c0;
-                            if (v < 0) return c1;
+                            const v = displayDelta2(r);
+                            if (v == null || !isFinite(v)) return cDom2;
+                            if (v > 0) return cDom2;
+                            if (v < 0) return cOth2;
                             return 'rgba(160,160,160,0.8)';
                         }),
                         borderWidth: 1,
@@ -1088,7 +1128,7 @@
                 }
                 : {
                     labels: rowLabels,
-                    datasets: systems.map((sysId, si) => {
+                    datasets: legendIndices.map((si) => {
                         const base = systemColorAt(si);
                         return {
                             label: sysNames[si],
@@ -1117,7 +1157,7 @@
                             max: xLim,
                             title: {
                                 display: true,
-                                text: `Δ% (${sysNames[0]} better → right, ${sysNames[1]} better ← left)`,
+                                text: `Δ% (${sysNames[dom2]} better → right, ${sysNames[oth2]} better ← left)`,
                                 color: BAR_CHART_TICK_COLOR,
                                 font: { size: 12 }
                             },
@@ -1199,129 +1239,108 @@
         }
 
         /**
-         * Composite score using geometric mean of ratios.
-         * For each (config, metric), express each system's value as a ratio to the
-         * worst system for that metric on that config (\"lower value system\" in
-         * terms of performance). This makes it easy to see how many percent better
-         * the stronger system is:
-         *   - HIB (higher is better): worst has min(value), ratio = value / worst.
-         *   - LIB (lower is better): worst has max(value), ratio = worst / value.
-         * Full composite per system = geometric mean of all such ratios across
-         * configs and metrics.
-         *
-         * Display logic:
-         *   - normalizeComposite = true  → show raw ratios (worst ≈ 1.0).
-         *   - normalizeComposite = false → re-scale ratios so aggregate spans 0–100
-         *                                   (worst → 0, best → 100) for easy reading.
+         * Raw per-benchmark composite: geometric mean of scores across configs; per config,
+         * geometric mean of all primary metrics when multiple exist (else first primary / valuesBySystem).
          */
-        function computeCompositeScores(bGroup, systems, opts) {
-            opts = opts || {};
-            const forGlobalAggregation = opts.forGlobalAggregation === true;
+        function computeRawBenchmarkComposite(bGroup, systems) {
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
+            const wins = systems.map(() => 0);
+            const losses = systems.map(() => 0);
 
-            // Use ratio-based composite when normalizing OR when building global summary (so we can aggregate across benchmarks).
-            const useRatios = normalizeComposite || forGlobalAggregation;
+            const primaryValueFromChart = (ch, sysName) => {
+                const t = (ch.traces || []).find(tr => tr.name === sysName);
+                if (!t) return null;
+                const raw = Array.isArray(t.y) ? t.y[0] : t.y;
+                const num = (raw != null && !isNaN(raw)) ? Number(raw) : null;
+                return num;
+            };
 
-            // NON-NORMALIZED MODE: behave like the original aggregate (no cross-metric normalization).
-            if (!useRatios) {
-                const wins = systems.map(() => 0);
-                const losses = systems.map(() => 0);
+            let combinedScales = [];
+            const seenScale = new Set();
+            const noteScale = (s) => {
+                const t = (s != null && String(s).trim() !== '') ? String(s).trim() : '';
+                if (t && !seenScale.has(t)) {
+                    seenScale.add(t);
+                    combinedScales.push(t);
+                }
+            };
 
-                const primaryValueFromChart = (ch, sysName) => {
-                    const t = (ch.traces || []).find(tr => tr.name === sysName);
-                    if (!t) return null;
-                    const raw = Array.isArray(t.y) ? t.y[0] : t.y;
-                    const num = (raw != null && !isNaN(raw)) ? Number(raw) : null;
-                    return num;
-                };
+            bGroup.configs.forEach(config => {
+                const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                primaries.forEach(ch => noteScale(ch.scale || ch.metric));
+                if (!primaries.length) noteScale(bGroup.scale);
+            });
+            if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
 
-                let combinedScales = [];
-                const seenScale = new Set();
-                const noteScale = (s) => {
-                    const t = (s != null && String(s).trim() !== '') ? String(s).trim() : '';
-                    if (t && !seenScale.has(t)) {
-                        seenScale.add(t);
-                        combinedScales.push(t);
-                    }
-                };
-
-                bGroup.configs.forEach(config => {
-                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
-                    primaries.forEach(ch => noteScale(ch.scale || ch.metric));
-                    if (!primaries.length) noteScale(bGroup.scale);
-                });
-                if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
-
-                // Per-config composite: geometric mean of all primary metrics when a single
-                // run exposes several (e.g. 7-Zip compression + decompression).
-                bGroup.configs.forEach(config => {
-                    config.compositeBySystem = {};
-                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
-                    systems.forEach(sys => {
-                        let comp = null;
-                        if (primaries.length > 1) {
-                            const vals = primaries
-                                .map(ch => primaryValueFromChart(ch, sys))
-                                .filter(v => v != null && !isNaN(v) && v > 0);
-                            comp = vals.length ? geometricMean(vals) : null;
-                        } else {
-                            const v = config.valuesBySystem[sys];
-                            comp = (v != null && !isNaN(v)) ? Number(v) : null;
-                        }
-                        config.compositeBySystem[sys] = comp;
-                    });
-                });
-
-                const aggValues = systems.map(sys => {
-                    const vals = bGroup.configs
-                        .map(c => c.compositeBySystem[sys])
-                        .filter(v => v != null && !isNaN(v) && v > 0);
-                    return vals.length ? geometricMean(vals) : null;
-                });
-
-                const HIB = isHigherIsBetter(bGroup.proportion);
-                bGroup.configs.forEach(config => {
-                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
-                    const runWinLoss = (vals) => {
-                        const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
-                        if (!valid.length) return;
-                        const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
-                        const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
-                        valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
-                        valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
-                    };
+            bGroup.configs.forEach(config => {
+                config.compositeBySystem = {};
+                const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                systems.forEach(sys => {
+                    let comp = null;
                     if (primaries.length > 1) {
-                        primaries.forEach(ch => {
-                            const vals = systems.map(s => primaryValueFromChart(ch, s));
-                            runWinLoss(vals);
-                        });
+                        const vals = primaries
+                            .map(ch => primaryValueFromChart(ch, sys))
+                            .filter(v => v != null && !isNaN(v) && v > 0);
+                        comp = vals.length ? geometricMean(vals) : null;
                     } else {
-                        const vals = systems.map(s => config.valuesBySystem[s]);
-                        runWinLoss(vals);
+                        const v = config.valuesBySystem[sys];
+                        comp = (v != null && !isNaN(v)) ? Number(v) : null;
                     }
+                    config.compositeBySystem[sys] = comp;
                 });
+            });
 
-                return { aggValues, wins, losses, combinedScales };
-            }
+            const aggValues = systems.map(sys => {
+                const vals = bGroup.configs
+                    .map(c => c.compositeBySystem[sys])
+                    .filter(v => v != null && !isNaN(v) && v > 0);
+                return vals.length ? geometricMean(vals) : null;
+            });
 
-            // NORMALIZED MODE: ratios to worst system per metric/config (cross-metric composite).
+            const HIB = isHigherIsBetter(bGroup.proportion);
+            bGroup.configs.forEach(config => {
+                const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                const runWinLoss = (vals) => {
+                    const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
+                    if (!valid.length) return;
+                    const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
+                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
+                    valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
+                    valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+                };
+                if (primaries.length > 1) {
+                    primaries.forEach(ch => {
+                        const vals = systems.map(s => primaryValueFromChart(ch, s));
+                        runWinLoss(vals);
+                    });
+                } else {
+                    const vals = systems.map(s => config.valuesBySystem[s]);
+                    runWinLoss(vals);
+                }
+            });
+
+            return { aggValues, wins, losses, combinedScales };
+        }
+
+        /**
+         * Legacy ratio-based aggregate (geom mean of per-subtest value/worst ratios).
+         * Used only for export slide summaries; does not mutate config.compositeBySystem.
+         */
+        function computeRatioGeomMeanCompositeAggValues(bGroup, systems) {
+            if (!systems.length) return { aggValues: [], combinedScales: [] };
             const primaryChartsByConfig = bGroup.configs.map(c => (c.group.charts || []).filter(ch => ch.is_primary));
             const scales = [];
             const allRatiosBySystem = systems.map(() => []);
-            const perConfigRatios = bGroup.configs.map(() => systems.map(() => []));
 
             const groupHIB = isHigherIsBetter(bGroup.proportion);
             const multiPrimary = primaryChartsByConfig.some(charts => charts.length > 1);
-            primaryChartsByConfig.forEach((charts, cIdx) => {
+            primaryChartsByConfig.forEach((charts) => {
                 charts.forEach(ch => {
                     const scale = ch.scale || ch.metric || 'Score';
                     const chHIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
-                    // When multiple primary metrics exist (e.g. ONNX: time + throughput), only include
-                    // metrics that match the group's direction so the composite matches the subtitle and doesn't tie.
                     if (multiPrimary && chHIB !== groupHIB) return;
                     if (scales.indexOf(scale) === -1) scales.push(scale);
                     const isHIB = chHIB;
-                    // Determine the worst-performing system for this metric on this config.
                     let worstVal = null;
                     (ch.traces || []).forEach(t => {
                         const v = Array.isArray(t.y) ? t.y[0] : t.y;
@@ -1341,7 +1360,6 @@
                         if (num == null || num <= 0) return;
                         const ratio = isHIB ? num / worstVal : worstVal / num;
                         allRatiosBySystem[sIdx].push(ratio);
-                        perConfigRatios[cIdx][sIdx].push(ratio);
                     });
                 });
             });
@@ -1351,43 +1369,58 @@
                 return arr.length ? geometricMean(arr) : null;
             });
 
-            // Normalize so the worst system (minimum composite ratio) = 1.0 for display.
             const validRatios = fullCompositeRatio.filter(r => r != null && !isNaN(r) && r > 0);
             const minRatio = validRatios.length ? Math.min(...validRatios) : 1;
-            const normalizedComposite = fullCompositeRatio.map(r => (r != null && r > 0) ? r / minRatio : null);
+            const aggValues = fullCompositeRatio.map(r => (r != null && r > 0) ? r / minRatio : null);
 
-            bGroup.configs.forEach((config, cIdx) => {
-                config.compositeBySystem = {};
-                systems.forEach((sys, sIdx) => {
-                    const arr = (perConfigRatios[cIdx] && perConfigRatios[cIdx][sIdx]) ? perConfigRatios[cIdx][sIdx].filter(r => r > 0) : [];
-                    config.compositeBySystem[sys] = arr.length ? geometricMean(arr) : null;
-                });
-            });
+            return { aggValues, combinedScales: scales };
+        }
 
-            // Wins/losses: always based on raw primary values per config (same as non-normalized)
-            // so they do not change when the user toggles normalization.
-            const wins = systems.map(() => 0);
-            const losses = systems.map(() => 0);
-            const HIB = isHigherIsBetter(bGroup.proportion);
-            bGroup.configs.forEach(config => {
-                const vals = systems.map(s => config.valuesBySystem[s]);
-                const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
-                if (!valid.length) return;
-                const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
-                const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
-                valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
-                valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
-            });
+        /**
+         * Per-benchmark composite for Compare UI and wins/losses.
+         * normalizeComposite: same raw geometric-mean composite, rescaled so the weakest system = 1.0
+         * in "higher is better" display units (order matches non-normalized).
+         * Export uses computeRatioGeomMeanCompositeAggValues via forGlobalAggregation.
+         */
+        function computeCompositeScores(bGroup, systems, opts) {
+            opts = opts || {};
+            const forGlobalAggregation = opts.forGlobalAggregation === true;
+            if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
 
-            // In normalized mode: worst = 1.0, better > 1.0.
-            const aggValues = normalizedComposite;
+            const raw = computeRawBenchmarkComposite(bGroup, systems);
 
-            return {
-                aggValues,
-                wins,
-                losses,
-                combinedScales: scales
-            };
+            if (forGlobalAggregation) {
+                const ratio = computeRatioGeomMeanCompositeAggValues(bGroup, systems);
+                return {
+                    aggValues: ratio.aggValues,
+                    wins: raw.wins,
+                    losses: raw.losses,
+                    combinedScales: ratio.combinedScales,
+                };
+            }
+
+            if (normalizeComposite) {
+                const HIB = isHigherIsBetter(bGroup.proportion);
+                const valid = raw.aggValues.filter(v => v != null && !isNaN(v) && v > 0);
+                let aggValues = raw.aggValues;
+                if (valid.length) {
+                    if (HIB) {
+                        const m = Math.min(...valid);
+                        aggValues = raw.aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? v / m : null);
+                    } else {
+                        const mx = Math.max(...valid);
+                        aggValues = raw.aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? mx / v : null);
+                    }
+                }
+                return {
+                    aggValues,
+                    wins: raw.wins,
+                    losses: raw.losses,
+                    combinedScales: raw.combinedScales,
+                };
+            }
+
+            return raw;
         }
 
         /**
@@ -1434,13 +1467,13 @@
                     : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
             })();
             if (!traceNames.length) return;
-            const systems = getSystemDisplayNames(traceNames);  // labels only; computations use traceNames
+            const systemLabels = getSystemDisplayNames(traceNames);
 
             // --- Data prep (normalized, higher = better) ---
             const benchSummaries = [];
             if (opts.showBenchmarks) {
                 benchmarkGroups.forEach(bGroup => {
-                    const { aggValues } = computeCompositeScores(bGroup, systems, { forGlobalAggregation: true });
+                    const { aggValues } = computeCompositeScores(bGroup, traceNames, { forGlobalAggregation: true });
                     const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
                     if (!valid.length) return;
                     const minR = Math.min(...valid);
@@ -1452,9 +1485,9 @@
                 });
             }
 
-            const { globalComposite, globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
+            const { globalComposite, globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, traceNames);
 
-            const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+            const overallSensors = computeOverallSensorMeans(currentComparisonGroups, traceNames);
             const sensorSummaries = (opts.showOverallSensors ? overallSensors : []).filter(s =>
                 !opts.sensorMetrics || !opts.sensorMetrics.length || opts.sensorMetrics.includes(s.metric)
             ).map(({ metric, scale, proportion, valuesBySystem }) => {
@@ -1511,7 +1544,7 @@
             // Per-benchmark grouped vertical bar chart
             if (opts.showBenchmarks && benchSummaries.length) {
                 const labels = benchSummaries.map(b => b.name);
-                const datasets = systems.map((s, idx) => ({
+                const datasets = systemLabels.map((s, idx) => ({
                     label: s,
                     // Round to 3 decimal places to avoid ugly long numbers
                     data: benchSummaries.map(b => {
@@ -1571,8 +1604,8 @@
 
             // Overall composite horizontal bar
             if (opts.showOverallComposite && globalComposite && globalComposite.length) {
-                const labels = systems.slice();
-                const dataVals = systems.map((_, idx) => globalComposite[idx] || 0);
+                const labels = systemLabels.slice();
+                const dataVals = systemLabels.map((_, idx) => globalComposite[idx] || 0);
                 panelPromises.push(buildExportChart({
                     type: 'bar',
                     data: {
@@ -1580,7 +1613,7 @@
                         datasets: [{
                             label: 'Overall composite (normalized, higher = better)',
                             data: dataVals,
-                            backgroundColor: systems.map((_, idx) => defaultColors[idx % defaultColors.length])
+                            backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
                         }]
                     },
                     options: {
@@ -1623,8 +1656,8 @@
 
             // Wins / losses pies
             if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
-                const labels = systems.slice();
-                const bgColors = systems.map((_, i) => defaultColors[i % defaultColors.length]);
+                const labels = systemLabels.slice();
+                const bgColors = systemLabels.map((_, i) => defaultColors[i % defaultColors.length]);
                 panelPromises.push(buildExportChart({
                     type: 'pie',
                     data: {
@@ -1663,8 +1696,8 @@
 
             // Sensor summaries: one grouped bar per sensor metric
             sensorSummaries.forEach(sensor => {
-                const labels = systems.slice();
-                const dataVals = systems.map((_, idx) => sensor.ratios[idx] || 0);
+                const labels = systemLabels.slice();
+                const dataVals = systemLabels.map((_, idx) => sensor.ratios[idx] || 0);
                 const axisDirectionText = sensor.HIB
                     ? ' (higher is better)'
                     : ' (lower is better)';
@@ -1675,7 +1708,7 @@
                         datasets: [{
                             label: sensor.metric,
                             data: dataVals,
-                            backgroundColor: systems.map((_, idx) => defaultColors[idx % defaultColors.length])
+                            backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
                         }]
                     },
                     options: {
@@ -1735,7 +1768,7 @@
                 const extraPerBenchmark = 60; // extra px per benchmark beyond 8
                 const extraPerSystem = 80;    // extra px per system beyond 3 (for legend / bars)
                 const extraWidthFromBenches = Math.max(0, benchSummaries.length - 8) * extraPerBenchmark;
-                const extraWidthFromSystems = Math.max(0, systems.length - 3) * extraPerSystem;
+                const extraWidthFromSystems = Math.max(0, systemLabels.length - 3) * extraPerSystem;
                 const slideWidth = baseWidth + extraWidthFromBenches + extraWidthFromSystems;
 
                 // Height: in mixed mode keep a generous base; in sensors-only mode,
@@ -1776,9 +1809,9 @@
                 // Legend row for systems (centered horizontally)
                 ctx.font = '16px system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
                 const legendItemWidth = 220;
-                const totalLegendWidth = Math.max(legendItemWidth * systems.length, 0);
+                const totalLegendWidth = Math.max(legendItemWidth * systemLabels.length, 0);
                 let legendStartX = (slideWidth - totalLegendWidth) / 2;
-                systems.forEach((s, idx) => {
+                systemLabels.forEach((s, idx) => {
                     const x = legendStartX + idx * legendItemWidth;
                     ctx.fillStyle = defaultColors[idx % defaultColors.length];
                     ctx.fillRect(x, y, 18, 18);
@@ -1943,8 +1976,7 @@
                 const traceNames = firstPrimary && firstPrimary.traces
                     ? firstPrimary.traces.map(t => t.name)
                     : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
-                const systems = getSystemDisplayNames(traceNames);
-                const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+                const overallSensors = computeOverallSensorMeans(currentComparisonGroups, traceNames);
                 const allMetrics = overallSensors.map(s => s.metric);
                 if (!opts.sensorMetrics.length) opts.sensorMetrics = [...allMetrics];
                 allMetrics.forEach(metric => {
@@ -2613,9 +2645,9 @@
                 aggSection.style.marginBottom = '1.5rem';
                 groupWrapper.appendChild(aggSection);
                 // Always show per-benchmark composite bar (this is the original behavior).
-                const compositeLabel = combinedScales && combinedScales.length > 1
+                const compositeLabel = (combinedScales && combinedScales.length > 1
                     ? `Composite score — ${combinedScales.join(', ')}`
-                    : 'Composite score (geometric mean)';
+                    : 'Composite score (geometric mean)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
                 const aggVals = aggValues.map(v => v != null ? v : 0);
                 const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
                 const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
@@ -2966,7 +2998,7 @@
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Show subtest relative delta chart', 'showSubtestMarginCharts'));
-                        toggleRow.appendChild(mkToggle('Normalize scores across benchmarks (ratios to worst system)', 'normalizeComposite'));
+                        toggleRow.appendChild(mkToggle('Rescale composites: weakest = 1.0 (same ranking as raw)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
                         // Overall sensor toggles (for overall charts)
