@@ -448,6 +448,7 @@
                     normalizeComposite,
                     showCompositeBar,
                     showWinsLossCharts,
+                    showSubtestMarginCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
                 },
@@ -489,6 +490,7 @@
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
                 showWinsLossCharts = !!opts.showWinsLossCharts;
+                showSubtestMarginCharts = opts.showSubtestMarginCharts !== false;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
                 }
@@ -867,6 +869,8 @@
         let showCompositeBar = false;
         let showWinsLossCharts = false;
         let showOverallSensor = {};  // metric name -> boolean, for overall sensor bar charts
+        /** Grouped Δ% vs geometric-mean chart per benchmark (shows win/loss margin). */
+        let showSubtestMarginCharts = true;
 
         function destroyCharts() {
             activeCharts.forEach(ch => {
@@ -959,6 +963,132 @@
                 canvas.height = height;
                 canvas.style.width = w + 'px';
                 canvas.style.height = height + 'px';
+                const ch = new Chart(canvas.getContext('2d'), { type: 'bar', data: chartData, options });
+                activeCharts.push(ch);
+                return ch;
+            }
+            requestAnimationFrame(() => create());
+            return null;
+        }
+
+        /**
+         * Grouped horizontal bars: one row per subtest, one dataset per system.
+         * Values are signed % vs the geometric mean on that row (0 = average on that subtest).
+         */
+        function createGroupedDivergingMarginChart(parent, rows, systems, systemDisplayNames) {
+            const rowLabels = rows.map(r => r.label);
+            const n = rowLabels.length;
+            const m = systems.length;
+            if (n < 1 || m < 2) return null;
+
+            const datasets = systems.map((sysId, si) => {
+                const idx = colorOrderIds.indexOf(String(sysId));
+                const colorIndex = idx >= 0 ? idx : si;
+                const base = defaultColors[colorIndex % defaultColors.length];
+                return {
+                    label: systemDisplayNames[si] != null ? systemDisplayNames[si] : String(sysId),
+                    data: rows.map(r => (r.pcts[si] != null && isFinite(r.pcts[si]) ? r.pcts[si] : null)),
+                    backgroundColor: base + 'dd',
+                    borderColor: base,
+                    borderWidth: 1,
+                    borderRadius: 3,
+                    maxBarThickness: 20
+                };
+            });
+
+            let maxAbs = 3;
+            rows.forEach(r => {
+                (r.pcts || []).forEach(p => {
+                    if (p != null && isFinite(p)) maxAbs = Math.max(maxAbs, Math.abs(p));
+                });
+            });
+            const pad = Math.max(maxAbs * 0.12, 2);
+            const xMin = -(maxAbs + pad);
+            const xMax = maxAbs + pad;
+
+            const titleEl = document.createElement('div');
+            titleEl.style.cssText = 'font-size:0.9rem;font-weight:600;color:var(--text-secondary);margin-top:1rem;margin-bottom:0.35rem;';
+            titleEl.textContent = 'Subtest margins (vs geometric mean)';
+            parent.appendChild(titleEl);
+            const cap = document.createElement('div');
+            cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
+            cap.textContent = 'Each row is one scored subtest (configuration / metric). Bars show percent above or below the geometric mean of systems on that row only (0% = average there—Phoronix-style “faster/slower than middle”). Right of center = stronger on that row, left = weaker; length shows how decisive the result was. This complements the composite, which can look “flat” when wins and losses differ in magnitude.';
+            parent.appendChild(cap);
+
+            const meanParts = systems.map((sysId, si) => {
+                const vals = rows.map(r => r.pcts[si]).filter(v => v != null && isFinite(v));
+                if (!vals.length) return null;
+                const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+                const name = systemDisplayNames[si] != null ? systemDisplayNames[si] : String(sysId);
+                return `${name}: ${mean >= 0 ? '+' : ''}${mean.toFixed(1)}%`;
+            }).filter(Boolean);
+            if (meanParts.length) {
+                const meanEl = document.createElement('div');
+                meanEl.style.cssText = 'font-size:0.8rem;color:var(--text-primary);margin-bottom:0.6rem;font-weight:500;';
+                meanEl.textContent = 'Average Δ% across subtests on this benchmark: ' + meanParts.join(' · ');
+                parent.appendChild(meanEl);
+            }
+
+            const wrap = document.createElement('div');
+            wrap.style.width = '100%';
+            wrap.style.marginBottom = '0.5rem';
+            const estH = Math.min(n * (m * 6 + 28) + 120, 4200);
+            wrap.style.maxHeight = 'min(70vh, ' + estH + 'px)';
+            wrap.style.overflowY = 'auto';
+            const canvas = document.createElement('canvas');
+            wrap.appendChild(canvas);
+            parent.appendChild(wrap);
+
+            const chartData = { labels: rowLabels, datasets };
+            const options = {
+                indexAxis: 'y',
+                responsive: false,
+                maintainAspectRatio: false,
+                layout: { padding: { top: 6, bottom: 6, left: 2, right: 16 } },
+                scales: {
+                    x: {
+                        min: xMin,
+                        max: xMax,
+                        title: {
+                            display: true,
+                            text: 'Δ% vs geometric mean on this subtest (0 = average)',
+                            color: BAR_CHART_TICK_COLOR,
+                            font: { size: 12 }
+                        },
+                        ticks: { color: BAR_CHART_TICK_COLOR },
+                        grid: { color: 'rgba(201,209,217,0.12)' }
+                    },
+                    y: {
+                        ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 10 } }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { color: BAR_CHART_TICK_COLOR, boxWidth: 12, padding: 10 }
+                    },
+                    datalabels: {
+                        display: 'auto',
+                        color: (ctx) => {
+                            const v = ctx.dataset.data[ctx.dataIndex];
+                            if (v == null || isNaN(v)) return 'transparent';
+                            return Math.abs(v) < 1.5 ? 'transparent' : '#fff';
+                        },
+                        formatter: (v) => (v == null || isNaN(v)) ? '' : ((v > 0 ? '+' : '') + Number(v).toFixed(0) + '%'),
+                        clip: true,
+                        font: { size: 9, weight: '600' }
+                    }
+                }
+            };
+
+            function create() {
+                const containerWidth = (typeof chartsContainer !== 'undefined' && chartsContainer.offsetWidth) ? chartsContainer.offsetWidth : 0;
+                const w = Math.max(wrap.offsetWidth || 0, parent.offsetWidth || 0, containerWidth, 320);
+                canvas.width = w;
+                canvas.height = estH;
+                canvas.style.width = w + 'px';
+                canvas.style.height = estH + 'px';
                 const ch = new Chart(canvas.getContext('2d'), { type: 'bar', data: chartData, options });
                 activeCharts.push(ch);
                 return ch;
@@ -2157,6 +2287,67 @@
                 return t || 'Result';
             }
 
+            /**
+             * One row per primary subtest: pcts[si] = % vs geometric mean on that row (HIB/LIB aware).
+             * Matches composite granularity so margins are visible when wins are small but losses are large.
+             */
+            function collectBenchmarkSubtestMarginRows(bGroup, systems) {
+                const primaryValueFromChart = (ch, sysName) => {
+                    const t = (ch.traces || []).find(tr => tr.name === sysName);
+                    if (!t) return null;
+                    const raw = Array.isArray(t.y) ? t.y[0] : t.y;
+                    return (raw != null && !isNaN(raw)) ? Number(raw) : null;
+                };
+                const rows = [];
+                const shortOptLabel = (config) => {
+                    const raw = (config.args_label != null && config.args_label !== '') ? String(config.args_label)
+                        : (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined)
+                            ? String(configLabelsMap[bGroup.benchmarkName][config.args])
+                            : (config.args != null && String(config.args).trim()) ? String(config.args) : '';
+                    const s = raw.length > 72 ? raw.slice(0, 69) + '…' : raw;
+                    return s || '(default)';
+                };
+                bGroup.configs.forEach(config => {
+                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                    const optPart = shortOptLabel(config);
+                    const multiOpt = bGroup.configs.length > 1;
+                    const multiMet = primaries.length > 1;
+
+                    const addRow = (ch, HIB, vals) => {
+                        const nums = vals.map(v => (v != null && !isNaN(v) && v > 0) ? Number(v) : null);
+                        const present = nums.filter(n => n != null);
+                        if (present.length < 2) return;
+                        const G = geometricMean(present);
+                        if (G == null || !isFinite(G) || G <= 0) return;
+                        const pcts = nums.map(v => {
+                            if (v == null) return null;
+                            return HIB ? (v / G - 1) * 100 : (G / v - 1) * 100;
+                        });
+                        const metricPart = ch ? primaryChartPanelTitle(ch) : 'Primary metric';
+                        const label = (multiOpt || multiMet) ? `${optPart} · ${metricPart}` : metricPart;
+                        rows.push({ label, pcts });
+                    };
+
+                    if (primaries.length > 1) {
+                        primaries.forEach(ch => {
+                            const HIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
+                            const vals = systems.map(s => primaryValueFromChart(ch, s));
+                            addRow(ch, HIB, vals);
+                        });
+                    } else if (primaries.length === 1) {
+                        const ch = primaries[0];
+                        const HIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
+                        const vals = systems.map(s => primaryValueFromChart(ch, s));
+                        addRow(ch, HIB, vals);
+                    } else {
+                        const HIB = isHigherIsBetter(bGroup.proportion);
+                        const vals = systems.map(s => config.valuesBySystem[s]);
+                        addRow(null, HIB, vals);
+                    }
+                });
+                return rows;
+            }
+
             function renderComparisonChart(chartData, container) {
                     if (!chartData.is_primary && !globalToggleState[chartData.metric]) return;
                     const chartDiv = document.createElement('div');
@@ -2359,6 +2550,13 @@
                     oneSystemNote.style.cssText = 'color:var(--text-secondary);font-size:0.8rem;margin-top:0.25rem;';
                     oneSystemNote.textContent = 'Add another system to compare wins and losses.';
                     aggSection.appendChild(oneSystemNote);
+                }
+
+                if (systems.length >= 2 && showSubtestMarginCharts) {
+                    const marginRows = collectBenchmarkSubtestMarginRows(bGroup, systems);
+                    if (marginRows.length) {
+                        createGroupedDivergingMarginChart(aggSection, marginRows, systems, systemLabels);
+                    }
                 }
 
                 if (bGroup.configs.length > 1) {
@@ -2642,13 +2840,14 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : showWinsLossCharts);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : showSubtestMarginCharts);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
                                 else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
+                                else if (key === 'showSubtestMarginCharts') showSubtestMarginCharts = val;
                                 renderCharts();
                             });
                             const span = document.createElement('span');
@@ -2661,6 +2860,7 @@
                         
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
+                        toggleRow.appendChild(mkToggle('Show subtest margin charts (±% vs geometric mean)', 'showSubtestMarginCharts'));
                         toggleRow.appendChild(mkToggle('Normalize scores across benchmarks (ratios to worst system)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
@@ -2683,6 +2883,7 @@
                             if (key === 'normalizeComposite') input.checked = normalizeComposite;
                             else if (key === 'showCompositeBar') input.checked = showCompositeBar;
                             else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
+                            else if (key === 'showSubtestMarginCharts') input.checked = showSubtestMarginCharts;
                         });
                     }
                     
