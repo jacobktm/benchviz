@@ -983,6 +983,14 @@
             if (n < 1 || m < 2) return null;
             const sysNames = systems.map((s, i) => systemDisplayNames[i] != null ? systemDisplayNames[i] : String(s));
 
+            /** Same palette index as composite / primary bar charts (colorOrderIds × defaultColors). */
+            const systemColorAt = (si) => {
+                const sysId = systems[si];
+                const idx = colorOrderIds.indexOf(String(sysId));
+                const colorIndex = idx >= 0 ? idx : si;
+                return defaultColors[colorIndex % defaultColors.length];
+            };
+
             let maxAbs = 3;
             if (m === 2) {
                 rows.forEach(r => {
@@ -1012,6 +1020,24 @@
             }
             parent.appendChild(cap);
 
+            const legendRow = document.createElement('div');
+            legendRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.85rem;margin-bottom:0.65rem;align-items:center;';
+            legendRow.setAttribute('aria-label', 'System colors');
+            systems.forEach((sysId, si) => {
+                const base = systemColorAt(si);
+                const item = document.createElement('span');
+                item.style.cssText = 'display:inline-flex;align-items:center;gap:0.4rem;font-size:0.82rem;font-weight:600;color:var(--text-primary);';
+                const sw = document.createElement('span');
+                sw.style.cssText = 'display:inline-block;width:14px;height:14px;border-radius:3px;flex-shrink:0;border:1px solid rgba(255,255,255,0.22);';
+                sw.style.background = base;
+                const lab = document.createElement('span');
+                lab.textContent = sysNames[si];
+                item.appendChild(sw);
+                item.appendChild(lab);
+                legendRow.appendChild(item);
+            });
+            parent.appendChild(legendRow);
+
             const meanDelta = m === 2
                 ? rows.map(r => r.deltaPct).filter(v => v != null && isFinite(v))
                 : rows.flatMap(r => (r.pcts || [])).filter(v => v != null && isFinite(v));
@@ -1033,14 +1059,28 @@
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
 
+            const c0 = systemColorAt(0);
+            const c1 = systemColorAt(1);
             const chartData = m === 2
                 ? {
                     labels: rowLabels,
                     datasets: [{
                         label: `${sysNames[0]} vs ${sysNames[1]}`,
                         data: rows.map(r => (r.deltaPct != null && isFinite(r.deltaPct) ? r.deltaPct : null)),
-                        backgroundColor: defaultColors[0] + 'dd',
-                        borderColor: defaultColors[0],
+                        backgroundColor: rows.map(r => {
+                            const v = r.deltaPct;
+                            if (v == null || !isFinite(v)) return c0 + '99';
+                            if (v > 0) return c0 + 'dd';
+                            if (v < 0) return c1 + 'dd';
+                            return 'rgba(128,128,128,0.4)';
+                        }),
+                        borderColor: rows.map(r => {
+                            const v = r.deltaPct;
+                            if (v == null || !isFinite(v)) return c0;
+                            if (v > 0) return c0;
+                            if (v < 0) return c1;
+                            return 'rgba(160,160,160,0.8)';
+                        }),
                         borderWidth: 1,
                         borderRadius: 3,
                         maxBarThickness: 18
@@ -1049,17 +1089,17 @@
                 : {
                     labels: rowLabels,
                     datasets: systems.map((sysId, si) => {
-                        const idx = colorOrderIds.indexOf(String(sysId));
-                        const colorIndex = idx >= 0 ? idx : si;
-                        const base = defaultColors[colorIndex % defaultColors.length];
+                        const base = systemColorAt(si);
                         return {
                             label: sysNames[si],
                             data: rows.map(r => (r.pcts && r.pcts[si] != null && isFinite(r.pcts[si])) ? r.pcts[si] : null),
                             borderColor: base,
-                            backgroundColor: base + '28',
-                            pointRadius: 2,
-                            pointHoverRadius: 3,
-                            borderWidth: 2,
+                            backgroundColor: base + '18',
+                            pointBackgroundColor: base,
+                            pointBorderColor: base,
+                            pointRadius: 3,
+                            pointHoverRadius: 4,
+                            borderWidth: 2.5,
                             fill: false
                         };
                     })
@@ -1087,7 +1127,7 @@
                         y: { ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 10 } } }
                     },
                     plugins: {
-                        legend: { display: true, position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR, boxWidth: 12, padding: 10 } },
+                        legend: { display: false },
                         datalabels: {
                             display: 'auto',
                             color: (ctx) => {
@@ -1123,7 +1163,7 @@
                         }
                     },
                     plugins: {
-                        legend: { display: true, position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR, boxWidth: 12, padding: 10 } },
+                        legend: { display: false },
                         datalabels: { display: false }
                     }
                 };
