@@ -972,115 +972,161 @@
         }
 
         /**
-         * Grouped horizontal bars: one row per subtest, one dataset per system.
-         * Values are signed % vs the geometric mean on that row (0 = average on that subtest).
+         * Relative subtest deltas:
+         * - 2 systems: Phoronix-style horizontal signed-delta bars.
+         * - 3+ systems: radial chart of signed deltas vs geometric-mean baseline.
          */
         function createGroupedDivergingMarginChart(parent, rows, systems, systemDisplayNames) {
             const rowLabels = rows.map(r => r.label);
             const n = rowLabels.length;
             const m = systems.length;
             if (n < 1 || m < 2) return null;
-
-            const datasets = systems.map((sysId, si) => {
-                const idx = colorOrderIds.indexOf(String(sysId));
-                const colorIndex = idx >= 0 ? idx : si;
-                const base = defaultColors[colorIndex % defaultColors.length];
-                return {
-                    label: systemDisplayNames[si] != null ? systemDisplayNames[si] : String(sysId),
-                    data: rows.map(r => (r.pcts[si] != null && isFinite(r.pcts[si]) ? r.pcts[si] : null)),
-                    backgroundColor: base + 'dd',
-                    borderColor: base,
-                    borderWidth: 1,
-                    borderRadius: 3,
-                    maxBarThickness: 20
-                };
-            });
+            const sysNames = systems.map((s, i) => systemDisplayNames[i] != null ? systemDisplayNames[i] : String(s));
 
             let maxAbs = 3;
-            rows.forEach(r => {
-                (r.pcts || []).forEach(p => {
+            if (m === 2) {
+                rows.forEach(r => {
+                    const p = r.deltaPct;
                     if (p != null && isFinite(p)) maxAbs = Math.max(maxAbs, Math.abs(p));
                 });
-            });
+            } else {
+                rows.forEach(r => {
+                    (r.pcts || []).forEach(p => {
+                        if (p != null && isFinite(p)) maxAbs = Math.max(maxAbs, Math.abs(p));
+                    });
+                });
+            }
             const pad = Math.max(maxAbs * 0.12, 2);
-            const xMin = -(maxAbs + pad);
-            const xMax = maxAbs + pad;
+            const xLim = maxAbs + pad;
 
             const titleEl = document.createElement('div');
             titleEl.style.cssText = 'font-size:0.9rem;font-weight:600;color:var(--text-secondary);margin-top:1rem;margin-bottom:0.35rem;';
-            titleEl.textContent = 'Subtest margins (vs geometric mean)';
+            titleEl.textContent = 'Subtest relative deltas';
             parent.appendChild(titleEl);
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
-            cap.textContent = 'Each row is one scored subtest (configuration / metric). Bars show percent above or below the geometric mean of systems on that row only (0% = average there—Phoronix-style “faster/slower than middle”). Right of center = stronger on that row, left = weaker; length shows how decisive the result was. This complements the composite, which can look “flat” when wins and losses differ in magnitude.';
+            if (m === 2) {
+                cap.textContent = 'Each row is one scored subtest. Bars are sorted by absolute delta (largest at top), and 0% rows are omitted. Right means ' + sysNames[0] + ' wins; left means ' + sysNames[1] + ' wins.';
+            } else {
+                cap.textContent = 'Each spoke is one scored subtest; values are signed delta (%) vs geometric-mean baseline for that subtest. Zero-delta rows are omitted and strongest deltas are shown first.';
+            }
             parent.appendChild(cap);
 
-            const meanParts = systems.map((sysId, si) => {
-                const vals = rows.map(r => r.pcts[si]).filter(v => v != null && isFinite(v));
-                if (!vals.length) return null;
-                const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
-                const name = systemDisplayNames[si] != null ? systemDisplayNames[si] : String(sysId);
-                return `${name}: ${mean >= 0 ? '+' : ''}${mean.toFixed(1)}%`;
-            }).filter(Boolean);
-            if (meanParts.length) {
+            const meanDelta = m === 2
+                ? rows.map(r => r.deltaPct).filter(v => v != null && isFinite(v))
+                : rows.flatMap(r => (r.pcts || [])).filter(v => v != null && isFinite(v));
+            if (meanDelta.length && m === 2) {
+                const avg = meanDelta.reduce((a, b) => a + b, 0) / meanDelta.length;
                 const meanEl = document.createElement('div');
                 meanEl.style.cssText = 'font-size:0.8rem;color:var(--text-primary);margin-bottom:0.6rem;font-weight:500;';
-                meanEl.textContent = 'Average Δ% across subtests on this benchmark: ' + meanParts.join(' · ');
+                meanEl.textContent = `Average delta across shown subtests: ${avg >= 0 ? '+' : ''}${avg.toFixed(1)}% (${sysNames[0]} vs ${sysNames[1]})`;
                 parent.appendChild(meanEl);
             }
 
             const wrap = document.createElement('div');
             wrap.style.width = '100%';
             wrap.style.marginBottom = '0.5rem';
-            const estH = Math.min(n * (m * 6 + 28) + 120, 4200);
+            const estH = m === 2 ? Math.min(n * 28 + 120, 2600) : 760;
             wrap.style.maxHeight = 'min(70vh, ' + estH + 'px)';
-            wrap.style.overflowY = 'auto';
+            wrap.style.overflowY = m === 2 ? 'auto' : 'hidden';
             const canvas = document.createElement('canvas');
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
 
-            const chartData = { labels: rowLabels, datasets };
-            const options = {
-                indexAxis: 'y',
-                responsive: false,
-                maintainAspectRatio: false,
-                layout: { padding: { top: 6, bottom: 6, left: 2, right: 16 } },
-                scales: {
-                    x: {
-                        min: xMin,
-                        max: xMax,
-                        title: {
-                            display: true,
-                            text: 'Δ% vs geometric mean on this subtest (0 = average)',
-                            color: BAR_CHART_TICK_COLOR,
-                            font: { size: 12 }
+            const chartData = m === 2
+                ? {
+                    labels: rowLabels,
+                    datasets: [{
+                        label: `${sysNames[0]} vs ${sysNames[1]}`,
+                        data: rows.map(r => (r.deltaPct != null && isFinite(r.deltaPct) ? r.deltaPct : null)),
+                        backgroundColor: defaultColors[0] + 'dd',
+                        borderColor: defaultColors[0],
+                        borderWidth: 1,
+                        borderRadius: 3,
+                        maxBarThickness: 18
+                    }]
+                }
+                : {
+                    labels: rowLabels,
+                    datasets: systems.map((sysId, si) => {
+                        const idx = colorOrderIds.indexOf(String(sysId));
+                        const colorIndex = idx >= 0 ? idx : si;
+                        const base = defaultColors[colorIndex % defaultColors.length];
+                        return {
+                            label: sysNames[si],
+                            data: rows.map(r => (r.pcts && r.pcts[si] != null && isFinite(r.pcts[si])) ? r.pcts[si] : null),
+                            borderColor: base,
+                            backgroundColor: base + '28',
+                            pointRadius: 2,
+                            pointHoverRadius: 3,
+                            borderWidth: 2,
+                            fill: false
+                        };
+                    })
+                };
+
+            const options = m === 2
+                ? {
+                    indexAxis: 'y',
+                    responsive: false,
+                    maintainAspectRatio: false,
+                    layout: { padding: { top: 6, bottom: 6, left: 2, right: 16 } },
+                    scales: {
+                        x: {
+                            min: -xLim,
+                            max: xLim,
+                            title: {
+                                display: true,
+                                text: `Δ% (${sysNames[0]} better → right, ${sysNames[1]} better ← left)`,
+                                color: BAR_CHART_TICK_COLOR,
+                                font: { size: 12 }
+                            },
+                            ticks: { color: BAR_CHART_TICK_COLOR },
+                            grid: { color: 'rgba(201,209,217,0.12)' }
                         },
-                        ticks: { color: BAR_CHART_TICK_COLOR },
-                        grid: { color: 'rgba(201,209,217,0.12)' }
+                        y: { ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 10 } } }
                     },
-                    y: {
-                        ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 10 } }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom',
-                        labels: { color: BAR_CHART_TICK_COLOR, boxWidth: 12, padding: 10 }
-                    },
-                    datalabels: {
-                        display: 'auto',
-                        color: (ctx) => {
-                            const v = ctx.dataset.data[ctx.dataIndex];
-                            if (v == null || isNaN(v)) return 'transparent';
-                            return Math.abs(v) < 1.5 ? 'transparent' : '#fff';
-                        },
-                        formatter: (v) => (v == null || isNaN(v)) ? '' : ((v > 0 ? '+' : '') + Number(v).toFixed(0) + '%'),
-                        clip: true,
-                        font: { size: 9, weight: '600' }
+                    plugins: {
+                        legend: { display: true, position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR, boxWidth: 12, padding: 10 } },
+                        datalabels: {
+                            display: 'auto',
+                            color: (ctx) => {
+                                const v = ctx.dataset.data[ctx.dataIndex];
+                                if (v == null || isNaN(v)) return 'transparent';
+                                return Math.abs(v) < 1.5 ? 'transparent' : '#fff';
+                            },
+                            formatter: (v) => (v == null || isNaN(v)) ? '' : ((v > 0 ? '+' : '') + Number(v).toFixed(0) + '%'),
+                            clip: true,
+                            font: { size: 9, weight: '600' }
+                        }
                     }
                 }
-            };
+                : {
+                    responsive: false,
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            min: -xLim,
+                            max: xLim,
+                            ticks: {
+                                color: BAR_CHART_TICK_COLOR,
+                                backdropColor: 'transparent',
+                                showLabelBackdrop: false,
+                                callback: (v) => `${v}%`
+                            },
+                            pointLabels: {
+                                color: BAR_CHART_TICK_COLOR,
+                                font: { size: 10 }
+                            },
+                            angleLines: { color: 'rgba(201,209,217,0.18)' },
+                            grid: { color: 'rgba(201,209,217,0.14)' }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: true, position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR, boxWidth: 12, padding: 10 } },
+                        datalabels: { display: false }
+                    }
+                };
 
             function create() {
                 const containerWidth = (typeof chartsContainer !== 'undefined' && chartsContainer.offsetWidth) ? chartsContainer.offsetWidth : 0;
@@ -1089,7 +1135,7 @@
                 canvas.height = estH;
                 canvas.style.width = w + 'px';
                 canvas.style.height = estH + 'px';
-                const ch = new Chart(canvas.getContext('2d'), { type: 'bar', data: chartData, options });
+                const ch = new Chart(canvas.getContext('2d'), { type: (m === 2 ? 'bar' : 'radar'), data: chartData, options });
                 activeCharts.push(ch);
                 return ch;
             }
@@ -2288,10 +2334,12 @@
             }
 
             /**
-             * One row per primary subtest: pcts[si] = % vs geometric mean on that row (HIB/LIB aware).
-             * Matches composite granularity so margins are visible when wins are small but losses are large.
+             * One row per primary subtest for two-system compares.
+             * deltaPct is signed percent difference from system[0] vs system[1]:
+             * positive => system[0] better, negative => system[1] better.
              */
             function collectBenchmarkSubtestMarginRows(bGroup, systems) {
+                if (!Array.isArray(systems) || systems.length < 2) return [];
                 const primaryValueFromChart = (ch, sysName) => {
                     const t = (ch.traces || []).find(tr => tr.name === sysName);
                     if (!t) return null;
@@ -2314,18 +2362,25 @@
                     const multiMet = primaries.length > 1;
 
                     const addRow = (ch, HIB, vals) => {
-                        const nums = vals.map(v => (v != null && !isNaN(v) && v > 0) ? Number(v) : null);
+                        const nums = vals.map(v => (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null);
                         const present = nums.filter(n => n != null);
                         if (present.length < 2) return;
                         const G = geometricMean(present);
                         if (G == null || !isFinite(G) || G <= 0) return;
                         const pcts = nums.map(v => {
                             if (v == null) return null;
-                            return HIB ? (v / G - 1) * 100 : (G / v - 1) * 100;
+                            return HIB ? ((v / G) - 1) * 100 : ((G / v) - 1) * 100;
                         });
+                        const a = nums[0];
+                        const b = nums[1];
+                        const deltaPct = (a != null && b != null)
+                            ? (HIB ? ((a / b) - 1) * 100 : ((b / a) - 1) * 100)
+                            : null;
+                        const nonZero = pcts.some(p => p != null && isFinite(p) && Math.abs(p) >= 1e-6);
+                        if (!nonZero) return;
                         const metricPart = ch ? primaryChartPanelTitle(ch) : 'Primary metric';
                         const label = (multiOpt || multiMet) ? `${optPart} · ${metricPart}` : metricPart;
-                        rows.push({ label, pcts });
+                        rows.push({ label, deltaPct, pcts });
                     };
 
                     if (primaries.length > 1) {
@@ -2345,6 +2400,16 @@
                         addRow(null, HIB, vals);
                     }
                 });
+                if (systems.length === 2) {
+                    rows.sort((a, b) => Math.abs((b.deltaPct || 0)) - Math.abs((a.deltaPct || 0)));
+                } else {
+                    const rowStrength = (r) => {
+                        const vals = (r.pcts || []).filter(v => v != null && isFinite(v));
+                        if (!vals.length) return 0;
+                        return Math.max(...vals.map(v => Math.abs(v)));
+                    };
+                    rows.sort((a, b) => rowStrength(b) - rowStrength(a));
+                }
                 return rows;
             }
 
@@ -2860,7 +2925,7 @@
                         
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
-                        toggleRow.appendChild(mkToggle('Show subtest margin charts (±% vs geometric mean)', 'showSubtestMarginCharts'));
+                        toggleRow.appendChild(mkToggle('Show subtest relative delta chart', 'showSubtestMarginCharts'));
                         toggleRow.appendChild(mkToggle('Normalize scores across benchmarks (ratios to worst system)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
