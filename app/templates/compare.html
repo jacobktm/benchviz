@@ -1428,6 +1428,7 @@
             let totalValid = 0;
             let decisive = 0;
             let sumLog = 0;
+            const rows = [];
             bGroup.configs.forEach(config => {
                 const a = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[0]]) : NaN;
                 const b = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[1]]) : NaN;
@@ -1435,12 +1436,22 @@
                 totalValid += 1;
                 const ratio01 = HIB ? (a / b) : (b / a); // sys0 vs sys1; >1 means sys0 ahead
                 if (!(ratio01 > 0) || !isFinite(ratio01)) return;
-                sumLog += Math.log(ratio01);
-                if (Math.abs(ratio01 - 1) > 1e-9) decisive += 1;
+                const logContribution = Math.log(ratio01);
+                sumLog += logContribution;
+                const isDecisive = Math.abs(ratio01 - 1) > 1e-9;
+                if (isDecisive) decisive += 1;
+                rows.push({
+                    args: (config && (config.args_label || config.args)) ? String(config.args_label || config.args) : '(default)',
+                    a,
+                    b,
+                    ratio01,
+                    logContribution,
+                    isDecisive,
+                });
             });
             if (!totalValid) return null;
             const gmRatio01 = Math.exp(sumLog / totalValid);
-            return { totalValid, decisive, gmRatio01 };
+            return { totalValid, decisive, gmRatio01, rows };
         }
 
         /**
@@ -2748,6 +2759,47 @@
                         const leader = pct >= 0 ? systemLabels[0] : systemLabels[1];
                         d.textContent = `Composite basis check: ${diag.totalValid} valid configs (${diag.decisive} decisive). Geometric-mean edge = ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% for ${leader}.`;
                         aggSection.appendChild(d);
+
+                        // Detailed math debug (collapsible): per-config contribution to geometric mean.
+                        const details = document.createElement('details');
+                        details.style.cssText = 'margin-top:0.35rem;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.35rem 0.5rem;';
+                        const summary = document.createElement('summary');
+                        summary.style.cssText = 'cursor:pointer;color:var(--text-secondary);font-size:0.76rem;';
+                        summary.textContent = 'Show composite math breakdown';
+                        details.appendChild(summary);
+
+                        const expl = document.createElement('div');
+                        expl.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.35rem;';
+                        expl.textContent = 'ratio = (sys0/sys1) for Higher-is-better metrics (or sys1/sys0 for Lower-is-better); geometric mean uses exp(avg(log(ratio))).';
+                        details.appendChild(expl);
+
+                        let runningLog = 0;
+                        let runningN = 0;
+                        const table = document.createElement('table');
+                        table.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.72rem;';
+                        const thead = document.createElement('thead');
+                        thead.innerHTML = '<tr style="border-bottom:1px solid rgba(255,255,255,0.12);"><th style="text-align:left;padding:0.2rem 0.3rem;">Config</th><th style="text-align:right;padding:0.2rem 0.3rem;">' + systemLabels[0] + '</th><th style="text-align:right;padding:0.2rem 0.3rem;">' + systemLabels[1] + '</th><th style="text-align:right;padding:0.2rem 0.3rem;">Ratio</th><th style="text-align:right;padding:0.2rem 0.3rem;">log(ratio)</th><th style="text-align:right;padding:0.2rem 0.3rem;">Running GM edge</th></tr>';
+                        table.appendChild(thead);
+                        const tbody = document.createElement('tbody');
+                        (diag.rows || []).forEach((r) => {
+                            runningN += 1;
+                            runningLog += r.logContribution;
+                            const runningRatio = Math.exp(runningLog / runningN);
+                            const runningEdge = (runningRatio - 1) * 100;
+                            const tr = document.createElement('tr');
+                            tr.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
+                            tr.innerHTML =
+                                '<td style="padding:0.2rem 0.3rem;max-width:22rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + String(r.args).replace(/"/g, '&quot;') + '">' + String(r.args) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + Number(r.a).toFixed(4) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + Number(r.b).toFixed(4) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + Number(r.ratio01).toFixed(6) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + Number(r.logContribution).toFixed(6) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + (runningEdge >= 0 ? '+' : '') + runningEdge.toFixed(3) + '%</td>';
+                            tbody.appendChild(tr);
+                        });
+                        table.appendChild(tbody);
+                        details.appendChild(table);
+                        aggSection.appendChild(details);
                     }
                 }
                 if (systems.length >= 2) {
