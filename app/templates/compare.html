@@ -2518,12 +2518,6 @@
              */
             function collectBenchmarkSubtestMarginRows(bGroup, systems) {
                 if (!Array.isArray(systems) || systems.length < 2) return [];
-                const primaryValueFromChart = (ch, sysName) => {
-                    const t = (ch.traces || []).find(tr => tr.name === sysName);
-                    if (!t) return null;
-                    const raw = Array.isArray(t.y) ? t.y[0] : t.y;
-                    return (raw != null && !isNaN(raw)) ? Number(raw) : null;
-                };
                 const rows = [];
                 const shortOptLabel = (config) => {
                     const raw = (config.args_label != null && config.args_label !== '') ? String(config.args_label)
@@ -2537,7 +2531,6 @@
                     const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
                     const optPart = shortOptLabel(config);
                     const multiOpt = bGroup.configs.length > 1;
-                    const multiMet = primaries.length > 1;
 
                     const addRow = (ch, HIB, vals) => {
                         const nums = vals.map(v => (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null);
@@ -2557,20 +2550,16 @@
                         const nonZero = pcts.some(p => p != null && isFinite(p) && Math.abs(p) >= 1e-6);
                         if (!nonZero) return;
                         const metricPart = ch ? primaryChartPanelTitle(ch) : 'Primary metric';
-                        const label = (multiOpt || multiMet) ? `${optPart} · ${metricPart}` : metricPart;
+                        const label = multiOpt ? `${optPart} · ${metricPart}` : metricPart;
                         rows.push({ label, deltaPct, pcts });
                     };
 
-                    if (primaries.length > 1) {
-                        primaries.forEach(ch => {
-                            const HIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
-                            const vals = systems.map(s => primaryValueFromChart(ch, s));
-                            addRow(ch, HIB, vals);
-                        });
-                    } else if (primaries.length === 1) {
-                        const ch = primaries[0];
-                        const HIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
-                        const vals = systems.map(s => primaryValueFromChart(ch, s));
+                    if (primaries.length >= 1) {
+                        // Delta chart follows the same single-per-config basis as wins/losses:
+                        // use valuesBySystem (first primary chosen by grouping).
+                        const ch = primaries[0] || null;
+                        const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
+                        const vals = systems.map(s => config.valuesBySystem[s]);
                         addRow(ch, HIB, vals);
                     } else {
                         const HIB = isHigherIsBetter(bGroup.proportion);
