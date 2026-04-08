@@ -1271,9 +1271,11 @@
             };
 
             bGroup.configs.forEach(config => {
-                const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
-                primaries.forEach(ch => noteScale(ch.scale || ch.metric));
-                if (!primaries.length) noteScale(bGroup.scale);
+                // Composite is based on grouped main primary (valuesBySystem), so scale label
+                // should also come from that single primary rather than all primary-marked charts.
+                const ch = ((config.group && config.group.charts) || []).find(c => c.is_primary);
+                if (ch) noteScale(ch.scale || ch.metric);
+                else noteScale(bGroup.scale);
             });
             if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
 
