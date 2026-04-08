@@ -1082,10 +1082,16 @@
                 ? rows.map(r => displayDelta2(r)).filter(v => v != null && isFinite(v))
                 : rows.flatMap(r => (r.pcts || [])).filter(v => v != null && isFinite(v));
             if (meanDelta.length && m === 2) {
-                const avg = meanDelta.reduce((a, b) => a + b, 0) / meanDelta.length;
+                const ratios = meanDelta
+                    .map(d => 1 + (Number(d) / 100))
+                    .filter(r => r > 0 && isFinite(r));
+                const gm = ratios.length
+                    ? Math.exp(ratios.reduce((a, r) => a + Math.log(r), 0) / ratios.length)
+                    : 1;
+                const gmDelta = (gm - 1) * 100;
                 const meanEl = document.createElement('div');
                 meanEl.style.cssText = 'font-size:0.8rem;color:var(--text-primary);margin-bottom:0.6rem;font-weight:500;';
-                meanEl.textContent = `Average delta across shown subtests: ${avg >= 0 ? '+' : ''}${avg.toFixed(1)}% (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
+                meanEl.textContent = `Geometric-mean delta across shown subtests: ${gmDelta >= 0 ? '+' : ''}${gmDelta.toFixed(1)}% (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
                 parent.appendChild(meanEl);
             }
 
