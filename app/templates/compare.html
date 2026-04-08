@@ -1359,15 +1359,29 @@
             });
 
             const HIB = groupHIB;
+            const TIE_REL_EPS = 1e-9;
             bGroup.configs.forEach(config => {
                 const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
                 const runWinLoss = (vals) => {
                     const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
                     if (!valid.length) return;
-                    const bestVal = HIB ? Math.max(...valid.map(x => x.v)) : Math.min(...valid.map(x => x.v));
-                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
-                    valid.filter(x => x.v === bestVal).forEach(x => { wins[x.i] = (wins[x.i] || 0) + 1; });
-                    valid.filter(x => x.v === worstVal).forEach(x => { losses[x.i] = (losses[x.i] || 0) + 1; });
+                    let best = valid[0];
+                    let worst = valid[0];
+                    valid.forEach(x => {
+                        if (HIB) {
+                            if (x.v > best.v) best = x;
+                            if (x.v < worst.v) worst = x;
+                        } else {
+                            if (x.v < best.v) best = x;
+                            if (x.v > worst.v) worst = x;
+                        }
+                    });
+                    const span = Math.abs(best.v - worst.v);
+                    const scale = Math.max(1, Math.abs(best.v), Math.abs(worst.v));
+                    // Do not count ties as both a win and a loss.
+                    if (span <= TIE_REL_EPS * scale) return;
+                    wins[best.i] = (wins[best.i] || 0) + 1;
+                    losses[worst.i] = (losses[worst.i] || 0) + 1;
                 };
                 if (primaries.length > 1) {
                     primaries.forEach(ch => {
