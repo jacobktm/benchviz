@@ -1421,6 +1421,28 @@
             return n.toFixed(2);
         }
 
+        /** Diagnostics for 2-system composite on the exact valuesBySystem path. */
+        function computeTwoSystemCompositeDiagnostics(bGroup, systems) {
+            if (!bGroup || !Array.isArray(systems) || systems.length !== 2) return null;
+            const HIB = isHigherIsBetter(bGroup.proportion);
+            let totalValid = 0;
+            let decisive = 0;
+            let sumLog = 0;
+            bGroup.configs.forEach(config => {
+                const a = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[0]]) : NaN;
+                const b = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[1]]) : NaN;
+                if (!(isFinite(a) && isFinite(b) && a > 0 && b > 0)) return;
+                totalValid += 1;
+                const ratio01 = HIB ? (a / b) : (b / a); // sys0 vs sys1; >1 means sys0 ahead
+                if (!(ratio01 > 0) || !isFinite(ratio01)) return;
+                sumLog += Math.log(ratio01);
+                if (Math.abs(ratio01 - 1) > 1e-9) decisive += 1;
+            });
+            if (!totalValid) return null;
+            const gmRatio01 = Math.exp(sumLog / totalValid);
+            return { totalValid, decisive, gmRatio01 };
+        }
+
         /**
          * Per-benchmark composite for Compare UI and wins/losses.
          * Base mode: spread-weighted per-test ratio composite (dimensionless, higher=better).
@@ -2717,6 +2739,17 @@
                     'aggregate',
                     sortedAgg.systemIds
                 );
+                if (systems.length === 2) {
+                    const diag = computeTwoSystemCompositeDiagnostics(bGroup, systems);
+                    if (diag) {
+                        const d = document.createElement('div');
+                        d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
+                        const pct = (diag.gmRatio01 - 1) * 100;
+                        const leader = pct >= 0 ? systemLabels[0] : systemLabels[1];
+                        d.textContent = `Composite basis check: ${diag.totalValid} valid configs (${diag.decisive} decisive). Geometric-mean edge = ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% for ${leader}.`;
+                        aggSection.appendChild(d);
+                    }
+                }
                 if (systems.length >= 2) {
                     const winsToggle = document.createElement('button');
                     winsToggle.type = 'button';
