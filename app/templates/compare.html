@@ -1361,7 +1361,6 @@
             const HIB = groupHIB;
             const TIE_REL_EPS = 1e-9;
             bGroup.configs.forEach(config => {
-                const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
                 const runWinLoss = (vals) => {
                     const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
                     if (!valid.length) return;
@@ -1383,15 +1382,10 @@
                     wins[best.i] = (wins[best.i] || 0) + 1;
                     losses[worst.i] = (losses[worst.i] || 0) + 1;
                 };
-                if (primaries.length > 1) {
-                    primaries.forEach(ch => {
-                        const vals = systems.map(s => primaryValueFromChart(ch, s));
-                        runWinLoss(vals);
-                    });
-                } else {
-                    const vals = systems.map(s => config.valuesBySystem[s]);
-                    runWinLoss(vals);
-                }
+                // Wins/losses count exactly one primary result per config (the same value used in valuesBySystem).
+                // This keeps totals aligned with the option/test count shown in compare.
+                const vals = systems.map(s => config.valuesBySystem[s]);
+                runWinLoss(vals);
             });
 
             return { aggValues, wins, losses, combinedScales };
