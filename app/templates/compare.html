@@ -1239,8 +1239,13 @@
         }
 
         /**
-         * Raw per-benchmark composite: geometric mean of scores across configs; per config,
-         * geometric mean of all primary metrics when multiple exist (else first primary / valuesBySystem).
+         * Base per-benchmark composite (used by both normal and normalized display modes):
+         * - For each config, convert primary metrics into "higher-is-better" ratios vs that
+         *   config's worst-performing system.
+         * - Multi-primary configs: combine metric ratios using a weighted geometric mean where
+         *   metric weight is proportional to inter-system spread (bigger gap => bigger weight).
+         * - Single-primary configs: use that metric ratio directly.
+         * - Benchmark composite: geometric mean across config composites.
          */
         function computeRawBenchmarkComposite(bGroup, systems) {
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
@@ -1272,22 +1277,78 @@
             });
             if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
 
+            const groupHIB = isHigherIsBetter(bGroup.proportion);
+            const weightedCompositeForPrimaries = (primaries) => {
+                const perMetric = [];
+                primaries.forEach(ch => {
+                    const chHIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
+                    // In multi-primary benchmarks, keep only metrics aligned with benchmark direction.
+                    if (chHIB !== groupHIB) return;
+                    const vals = systems.map(s => primaryValueFromChart(ch, s));
+                    const valid = vals.filter(v => v != null && !isNaN(v) && v > 0);
+                    if (!valid.length) return;
+                    const best = chHIB ? Math.max(...valid) : Math.min(...valid);
+                    const worst = chHIB ? Math.min(...valid) : Math.max(...valid);
+                    if (!(best > 0) || !(worst > 0)) return;
+                    const spreadRatio = chHIB ? (best / worst) : (worst / best);
+                    const weight = Math.max(0, spreadRatio - 1); // larger gap => larger influence
+                    const scores = vals.map(v => {
+                        if (v == null || isNaN(v) || v <= 0) return null;
+                        // Convert to "higher is better" score regardless of metric units.
+                        return chHIB ? (v / worst) : (worst / v);
+                    });
+                    perMetric.push({ scores, weight });
+                });
+                if (!perMetric.length) return systems.map(() => null);
+                const weightSum = perMetric.reduce((a, m) => a + m.weight, 0);
+                const uniformWeight = perMetric.length ? (1 / perMetric.length) : 0;
+                return systems.map((_, sIdx) => {
+                    let weightedLog = 0;
+                    let presentWeight = 0;
+                    perMetric.forEach(m => {
+                        const score = m.scores[sIdx];
+                        if (score == null || !isFinite(score) || score <= 0) return;
+                        const w = weightSum > 0 ? (m.weight / weightSum) : uniformWeight;
+                        weightedLog += w * Math.log(score);
+                        presentWeight += w;
+                    });
+                    if (presentWeight <= 0) return null;
+                    return Math.exp(weightedLog / presentWeight);
+                });
+            };
+
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
                 const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
-                systems.forEach(sys => {
-                    let comp = null;
-                    if (primaries.length > 1) {
-                        const vals = primaries
-                            .map(ch => primaryValueFromChart(ch, sys))
-                            .filter(v => v != null && !isNaN(v) && v > 0);
-                        comp = vals.length ? geometricMean(vals) : null;
+                if (primaries.length > 1) {
+                    const weightedScores = weightedCompositeForPrimaries(primaries);
+                    systems.forEach((sys, sIdx) => {
+                        config.compositeBySystem[sys] = weightedScores[sIdx];
+                    });
+                } else if (primaries.length === 1) {
+                    const ch = primaries[0];
+                    const chHIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
+                    const vals = systems.map(s => primaryValueFromChart(ch, s));
+                    const valid = vals.filter(v => v != null && !isNaN(v) && v > 0);
+                    if (!valid.length) {
+                        systems.forEach(sys => { config.compositeBySystem[sys] = null; });
                     } else {
-                        const v = config.valuesBySystem[sys];
-                        comp = (v != null && !isNaN(v)) ? Number(v) : null;
+                        const worst = chHIB ? Math.min(...valid) : Math.max(...valid);
+                        systems.forEach((sys, sIdx) => {
+                            const v = vals[sIdx];
+                            if (v == null || isNaN(v) || v <= 0 || !(worst > 0)) {
+                                config.compositeBySystem[sys] = null;
+                            } else {
+                                config.compositeBySystem[sys] = chHIB ? (v / worst) : (worst / v);
+                            }
+                        });
                     }
-                    config.compositeBySystem[sys] = comp;
-                });
+                } else {
+                    systems.forEach(sys => {
+                        const v = config.valuesBySystem[sys];
+                        config.compositeBySystem[sys] = (v != null && !isNaN(v)) ? Number(v) : null;
+                    });
+                }
             });
 
             const aggValues = systems.map(sys => {
@@ -1297,7 +1358,7 @@
                 return vals.length ? geometricMean(vals) : null;
             });
 
-            const HIB = isHigherIsBetter(bGroup.proportion);
+            const HIB = groupHIB;
             bGroup.configs.forEach(config => {
                 const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
                 const runWinLoss = (vals) => {
@@ -1407,9 +1468,9 @@
 
         /**
          * Per-benchmark composite for Compare UI and wins/losses.
-         * normalizeComposite: geom mean of per-test ratios vs slowest (fair mix of units); weakest = 1.0.
-         * Raw: geom mean of reported scores per config (can overweight large-unit metrics).
-         * Export / forGlobalAggregation: same ratio aggregate, no per-config fill.
+         * Base mode: spread-weighted per-test ratio composite (dimensionless, higher=better).
+         * normalizeComposite: display-only rescale of that same composite so weakest = 1.0.
+         * Export / forGlobalAggregation keeps ratio aggregate for cross-benchmark slides.
          */
         function computeCompositeScores(bGroup, systems, opts) {
             opts = opts || {};
@@ -1429,12 +1490,23 @@
             }
 
             if (normalizeComposite) {
-                const ratio = computeRatioGeomMeanCompositeAggValues(bGroup, systems, { fillConfigComposites: true });
+                const HIB = isHigherIsBetter(bGroup.proportion);
+                const valid = raw.aggValues.filter(v => v != null && !isNaN(v) && v > 0);
+                let aggValues = raw.aggValues;
+                if (valid.length) {
+                    if (HIB) {
+                        const m = Math.min(...valid);
+                        aggValues = raw.aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? v / m : null);
+                    } else {
+                        const mx = Math.max(...valid);
+                        aggValues = raw.aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? mx / v : null);
+                    }
+                }
                 return {
-                    aggValues: ratio.aggValues,
+                    aggValues,
                     wins: raw.wins,
                     losses: raw.losses,
-                    combinedScales: ratio.combinedScales,
+                    combinedScales: raw.combinedScales,
                 };
             }
 
@@ -2648,9 +2720,9 @@
                 subtitle.style.fontSize = '0.9rem';
                 subtitle.style.marginBottom = '1rem';
                 subtitle.style.textAlign = 'center';
-                // When normalized, scores are ratio composite (higher = better); when off, show raw metric direction.
+                // Normalized mode only rescales the same composite (ranking unchanged).
                 subtitle.textContent = normalizeComposite
-                    ? 'Higher is better (rank can differ from raw when units mix, e.g. throughput vs latency)'
+                    ? 'Higher is better (normalized view of same composite)'
                     : (isHigherIsBetter(bGroup.proportion) ? 'Higher is better' : (bGroup.proportion != null && String(bGroup.proportion).trim() !== '') ? 'Lower is better' : '');
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
@@ -2667,9 +2739,7 @@
                 // Always show per-benchmark composite bar (this is the original behavior).
                 const compositeLabel = (combinedScales && combinedScales.length > 1
                     ? `Composite score — ${combinedScales.join(', ')}`
-                    : 'Composite score (geometric mean)') + (normalizeComposite
-                        ? ' — per-test vs slowest, geom mean (weakest = 1.0)'
-                        : '');
+                    : 'Composite score (geometric mean)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
                 const aggVals = aggValues.map(v => v != null ? v : 0);
                 const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
                 const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
@@ -3020,7 +3090,7 @@
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Show subtest relative delta chart', 'showSubtestMarginCharts'));
-                        toggleRow.appendChild(mkToggle('Fair composite: geom mean of each test vs slowest (1.0 = tied for worst)', 'normalizeComposite'));
+                        toggleRow.appendChild(mkToggle('Normalize composite display: weakest = 1.0 (ranking unchanged)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
                         // Overall sensor toggles (for overall charts)
