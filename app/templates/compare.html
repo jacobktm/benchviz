@@ -1054,9 +1054,9 @@
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
-                cap.textContent = 'Each row is one pair-balanced group (variants like -S folded together via geometric mean per system, same as composite). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead.';
+                cap.textContent = 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite uses pair-balanced grouping; see “Composite basis check”.)';
             } else {
-                cap.textContent = 'Each spoke is one pair-balanced group; values are signed delta (%) vs geometric-mean baseline for that group. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
+                cap.textContent = 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
             }
             parent.appendChild(cap);
 
@@ -1091,7 +1091,7 @@
                 const gmDelta = (gm - 1) * 100;
                 const meanEl = document.createElement('div');
                 meanEl.style.cssText = 'font-size:0.8rem;color:var(--text-primary);margin-bottom:0.6rem;font-weight:500;';
-                meanEl.textContent = `Geometric-mean delta across shown pair-balanced groups: ${gmDelta >= 0 ? '+' : ''}${gmDelta.toFixed(1)}% (groups shown: ${meanDelta.length}) (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
+                meanEl.textContent = `Geometric-mean delta across shown subtests: ${gmDelta >= 0 ? '+' : ''}${gmDelta.toFixed(1)}% (rows shown: ${meanDelta.length}) (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
                 parent.appendChild(meanEl);
             }
 
@@ -1252,26 +1252,13 @@
         }
 
         /**
-         * Base per-benchmark composite (used by both normal and normalized display modes):
-         * - For each config, convert primary metrics into "higher-is-better" ratios vs that
-         *   config's worst-performing system.
-         * - Multi-primary configs: combine metric ratios using a weighted geometric mean where
-         *   metric weight is proportional to inter-system spread (bigger gap => bigger weight).
-         * - Single-primary configs: use that metric ratio directly.
-         * - Benchmark composite: geometric mean across config composites.
+         * Headline composite: raw primary values from valuesBySystem, pair-balanced:
+         * GM within each args group (ignore -S), then GM across groups (equal group weight).
          */
         function computeRawBenchmarkComposite(bGroup, systems) {
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
             const wins = systems.map(() => 0);
             const losses = systems.map(() => 0);
-
-            const primaryValueFromChart = (ch, sysName) => {
-                const t = (ch.traces || []).find(tr => tr.name === sysName);
-                if (!t) return null;
-                const raw = Array.isArray(t.y) ? t.y[0] : t.y;
-                const num = (raw != null && !isNaN(raw)) ? Number(raw) : null;
-                return num;
-            };
 
             let combinedScales = [];
             const seenScale = new Set();
@@ -1481,9 +1468,9 @@
 
         /**
          * Per-benchmark composite for Compare UI and wins/losses.
-         * Base mode: spread-weighted per-test ratio composite (dimensionless, higher=better).
-         * normalizeComposite: display-only rescale of that same composite so weakest = 1.0.
-         * Export / forGlobalAggregation keeps ratio aggregate for cross-benchmark slides.
+         * Raw headline: pair-balanced GM of valuesBySystem (see computeRawBenchmarkComposite).
+         * normalizeComposite: rescale so weakest = 1.0 (ranking unchanged).
+         * forGlobalAggregation: ratio-based aggregate for export / global summary.
          */
         function computeCompositeScores(bGroup, systems, opts) {
             opts = opts || {};
@@ -2528,24 +2515,23 @@
             }
 
             /**
-             * Subtest delta rows: pair-balanced groups (GM within group, same as composite).
-             * deltaPct for 2 systems: signed % system[0] vs system[1] (positive => [0] better for HIB).
+             * One row per config (subtest). Pair-balanced grouping applies only to the headline composite,
+             * not to this chart — see computeRawBenchmarkComposite.
              */
             function collectBenchmarkSubtestMarginRows(bGroup, systems) {
                 if (!Array.isArray(systems) || systems.length < 2) return [];
                 const rows = [];
-                const grouped = new Map();
-                bGroup.configs.forEach(config => {
-                    const k = compositeGroupKeyFromConfig(config);
-                    if (!grouped.has(k)) grouped.set(k, []);
-                    grouped.get(k).push(config);
-                });
-                const groupEntries = Array.from(grouped.entries());
-                const multiOpt = groupEntries.length > 1;
+                const shortOptLabel = (config) => {
+                    const raw = (config.args_label != null && config.args_label !== '') ? String(config.args_label)
+                        : (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined)
+                            ? String(configLabelsMap[bGroup.benchmarkName][config.args])
+                            : (config.args != null && String(config.args).trim()) ? String(config.args) : '';
+                    const s = raw.length > 72 ? raw.slice(0, 69) + '…' : raw;
+                    return s || '(default)';
+                };
 
-                const addRow = (ch, HIB, vals, optPart) => {
+                const addRow = (ch, HIB, vals, optPart, multiOpt) => {
                     const nums = vals.map(v => (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null);
-                    if (nums.some(n => n == null)) return;
                     const present = nums.filter(n => n != null);
                     if (present.length < 2) return;
                     const G = geometricMean(present);
@@ -2566,19 +2552,20 @@
                     rows.push({ label, deltaPct, pcts });
                 };
 
-                groupEntries.forEach(([groupKey, cfgs]) => {
-                    const first = cfgs[0];
-                    const primaries = (first.group && first.group.charts) ? first.group.charts.filter(ch => ch.is_primary) : [];
-                    const ch = primaries.length ? primaries[0] : null;
-                    const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
-                    const vals = systems.map(s => {
-                        const ok = cfgs.map(c => {
-                            const v = c.valuesBySystem[s];
-                            return (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null;
-                        }).filter(x => x != null);
-                        return ok.length ? geometricMean(ok) : null;
-                    });
-                    addRow(ch, HIB, vals, groupKey);
+                const multiOpt = bGroup.configs.length > 1;
+                bGroup.configs.forEach(config => {
+                    const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
+                    const optPart = shortOptLabel(config);
+                    if (primaries.length >= 1) {
+                        const ch = primaries[0] || null;
+                        const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
+                        const vals = systems.map(s => config.valuesBySystem[s]);
+                        addRow(ch, HIB, vals, optPart, multiOpt);
+                    } else {
+                        const HIB = isHigherIsBetter(bGroup.proportion);
+                        const vals = systems.map(s => config.valuesBySystem[s]);
+                        addRow(null, HIB, vals, optPart, multiOpt);
+                    }
                 });
                 if (systems.length === 2) {
                     rows.sort((a, b) => Math.abs((b.deltaPct || 0)) - Math.abs((a.deltaPct || 0)));
@@ -2777,9 +2764,16 @@
                     if (diag) {
                         const d = document.createElement('div');
                         d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
-                        const pct = (diag.gmRatio01 - 1) * 100;
-                        const leader = pct >= 0 ? systemLabels[0] : systemLabels[1];
-                        d.textContent = `Composite basis check: ${diag.totalValid} valid configs (${diag.decisive} decisive), ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups. Geometric-mean edge = ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% for ${leader}.`;
+                        const r = diag.gmRatio01;
+                        const pct01 = (r - 1) * 100;
+                        let basisMsg;
+                        if (pct01 >= 0) {
+                            basisMsg = `${systemLabels[0]} ahead by +${pct01.toFixed(2)}% vs ${systemLabels[1]} (pair-balanced ratio geometric mean).`;
+                        } else {
+                            const pct10 = (1 / r - 1) * 100;
+                            basisMsg = `${systemLabels[1]} ahead by +${pct10.toFixed(2)}% vs ${systemLabels[0]} (pair-balanced ratio geometric mean).`;
+                        }
+                        d.textContent = `Composite basis check: ${diag.totalValid} configs → ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups in headline composite. ${basisMsg} Bar = geom mean of raw scores per system across those groups (same %-gap ≈ ratio GM).`;
                         aggSection.appendChild(d);
 
                         // Detailed math debug (collapsible): per-config contribution to geometric mean.
