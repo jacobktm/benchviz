@@ -2095,33 +2095,52 @@
 
         function groupComparisonGroupsByBenchmark() {
             const byKey = new Map();
+            const primarySignature = (ch) => {
+                if (!ch) return '';
+                const metric = ch.metric != null ? String(ch.metric) : '';
+                const scale = ch.scale != null ? String(ch.scale) : '';
+                const proportion = ch.proportion != null ? String(ch.proportion) : '';
+                const title = ch.title != null ? String(ch.title) : '';
+                return [metric, scale, proportion, title].join('||');
+            };
             currentComparisonGroups.forEach(compGroup => {
                 const primaryCharts = (compGroup.charts || []).filter(c => c.is_primary);
-                if (!primaryCharts.length || !primaryCharts[0].traces || !primaryCharts[0].traces.length) return;
-                // Use the first primary result for wins/losses and composite (API returns primaries in definition order).
-                const primary = primaryCharts[0];
+                if (!primaryCharts.length) return;
                 const sep = ' — ';
                 const idx = compGroup.title.indexOf(sep);
                 const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
                 const args = compGroup.args !== undefined ? compGroup.args : (idx >= 0 ? compGroup.title.slice(idx + sep.length) : '');
                 const argsLabel = compGroup.args_label != null && compGroup.args_label !== '' ? compGroup.args_label : null;
+
+                let rec = byKey.get(benchmarkName);
+                if (!rec) {
+                    const primary0 = primaryCharts[0];
+                    rec = {
+                        benchmarkName,
+                        proportion: primary0.proportion,
+                        scale: primary0.scale || '',
+                        primarySig: primarySignature(primary0),
+                        configs: []
+                    };
+                    byKey.set(benchmarkName, rec);
+                }
+
+                // Keep one consistent "main primary" metric across all configs in this benchmark.
+                let primary = primaryCharts.find(ch => primarySignature(ch) === rec.primarySig) || primaryCharts[0];
+                if (!primary || !primary.traces || !primary.traces.length) return;
                 const valuesBySystem = {};
                 primary.traces.forEach(t => {
                     const v = Array.isArray(t.y) ? t.y[0] : t.y;
                     const num = (v != null && !isNaN(v)) ? Number(v) : null;
                     if (t.name != null) valuesBySystem[t.name] = num;
                 });
-                if (!byKey.has(benchmarkName)) {
-                    byKey.set(benchmarkName, {
-                        benchmarkName,
-                        proportion: primary.proportion,
-                        scale: primary.scale || '',
-                        configs: []
-                    });
-                }
-                byKey.get(benchmarkName).configs.push({ args, args_label: argsLabel, group: compGroup, valuesBySystem });
+                rec.configs.push({ args, args_label: argsLabel, group: compGroup, valuesBySystem });
             });
-            return Array.from(byKey.values());
+            return Array.from(byKey.values()).map(g => {
+                const out = Object.assign({}, g);
+                delete out.primarySig;
+                return out;
+            });
         }
 
         let expandedChartState = {};
