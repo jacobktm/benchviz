@@ -1091,7 +1091,7 @@
                 const gmDelta = (gm - 1) * 100;
                 const meanEl = document.createElement('div');
                 meanEl.style.cssText = 'font-size:0.8rem;color:var(--text-primary);margin-bottom:0.6rem;font-weight:500;';
-                meanEl.textContent = `Geometric-mean delta across shown subtests: ${gmDelta >= 0 ? '+' : ''}${gmDelta.toFixed(1)}% (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
+                meanEl.textContent = `Geometric-mean delta across shown subtests: ${gmDelta >= 0 ? '+' : ''}${gmDelta.toFixed(1)}% (rows shown: ${meanDelta.length}) (right = ${sysNames[dom2]} ahead vs ${sysNames[oth2]})`;
                 parent.appendChild(meanEl);
             }
 
@@ -1302,9 +1302,17 @@
                 });
             });
 
+            // Aggregate on a common config intersection so cross-system comparisons
+            // use the same set of tests for every system.
+            const validConfigMask = bGroup.configs.map(c =>
+                systems.every(sys => {
+                    const v = c.compositeBySystem[sys];
+                    return v != null && !isNaN(v) && Number(v) > 0;
+                })
+            );
             const aggValues = systems.map(sys => {
                 const vals = bGroup.configs
-                    .map(c => c.compositeBySystem[sys])
+                    .map((c, idx) => validConfigMask[idx] ? c.compositeBySystem[sys] : null)
                     .filter(v => v != null && !isNaN(v) && v > 0);
                 return vals.length ? geometricMean(vals) : null;
             });
