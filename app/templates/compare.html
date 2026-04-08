@@ -1281,21 +1281,15 @@
 
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
-                // Keep composite, wins/losses, and delta rows on exactly the same basis:
-                // one scored value per config from valuesBySystem (the grouped primary).
+                // Raw composite basis: one scored value per config from valuesBySystem
+                // (the grouped primary), using actual values (no ratio normalization).
                 const vals = systems.map(s => config.valuesBySystem[s]);
-                const valid = vals.filter(v => v != null && !isNaN(v) && v > 0);
-                if (!valid.length) {
-                    systems.forEach(sys => { config.compositeBySystem[sys] = null; });
-                    return;
-                }
-                const worst = groupHIB ? Math.min(...valid) : Math.max(...valid);
                 systems.forEach((sys, sIdx) => {
                     const v = vals[sIdx];
-                    if (v == null || isNaN(v) || v <= 0 || !(worst > 0)) {
+                    if (v == null || isNaN(v) || v <= 0) {
                         config.compositeBySystem[sys] = null;
                     } else {
-                        config.compositeBySystem[sys] = groupHIB ? (v / worst) : (worst / v);
+                        config.compositeBySystem[sys] = Number(v);
                     }
                 });
             });
@@ -1433,7 +1427,6 @@
             opts = opts || {};
             const forGlobalAggregation = opts.forGlobalAggregation === true;
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
-            const displayScale = opts.displayScale != null ? Number(opts.displayScale) : 100;
 
             const raw = computeRawBenchmarkComposite(bGroup, systems);
 
@@ -1468,14 +1461,7 @@
                 };
             }
 
-            // Non-normalized display: scaled index for readability (same ranking, no baseline normalization).
-            const scaledAgg = raw.aggValues.map(v => (v != null && !isNaN(v)) ? Number(v) * displayScale : null);
-            return {
-                aggValues: scaledAgg,
-                wins: raw.wins,
-                losses: raw.losses,
-                combinedScales: raw.combinedScales,
-            };
+            return raw;
         }
 
         /**
@@ -2677,7 +2663,7 @@
                 // Normalized mode only rescales the same composite (ranking unchanged).
                 subtitle.textContent = normalizeComposite
                     ? 'Higher is better (normalized view: weakest = 1.0)'
-                    : 'Higher is better (scaled index view)';
+                    : (isHigherIsBetter(bGroup.proportion) ? 'Higher is better' : 'Lower is better');
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -2685,7 +2671,9 @@
                     return firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
                 })();
                 const systemLabels = getSystemDisplayNames(systems);
+                const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
                 const { aggValues, wins, losses, combinedScales } = computeCompositeScores(bGroup, systems);
+                const finalAggValues = aggValues;
 
                 const aggSection = document.createElement('div');
                 aggSection.style.marginBottom = '1.5rem';
@@ -2693,9 +2681,9 @@
                 // Always show per-benchmark composite bar (this is the original behavior).
                 const compositeLabel = (combinedScales && combinedScales.length > 1
                     ? `Composite score — ${combinedScales.join(', ')}`
-                    : 'Composite score (geometric mean)') + (normalizeComposite ? ' — weakest system = 1.0' : ' — scaled index');
-                const aggVals = aggValues.map(v => v != null ? v : 0);
-                const aggHigher = true;
+                    : 'Composite score (geometric mean)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
+                const aggVals = finalAggValues.map(v => v != null ? v : 0);
+                const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
                 const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
                 createBarChart(
                     aggSection,
@@ -2736,7 +2724,6 @@
                 }
 
                 if (systems.length >= 2 && showSubtestMarginCharts) {
-                    const marginRows = collectBenchmarkSubtestMarginRows(bGroup, systems);
                     if (marginRows.length) {
                         createGroupedDivergingMarginChart(aggSection, marginRows, systems, systemLabels);
                     }
@@ -3044,7 +3031,7 @@
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Show subtest relative delta chart', 'showSubtestMarginCharts'));
-                        toggleRow.appendChild(mkToggle('Normalize composite display to weakest = 1.0 (otherwise show scaled index)', 'normalizeComposite'));
+                        toggleRow.appendChild(mkToggle('Normalize composite display to weakest = 1.0', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
                         // Overall sensor toggles (for overall charts)
