@@ -1278,77 +1278,26 @@
             if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
 
             const groupHIB = isHigherIsBetter(bGroup.proportion);
-            const weightedCompositeForPrimaries = (primaries) => {
-                const perMetric = [];
-                primaries.forEach(ch => {
-                    const chHIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
-                    // In multi-primary benchmarks, keep only metrics aligned with benchmark direction.
-                    if (chHIB !== groupHIB) return;
-                    const vals = systems.map(s => primaryValueFromChart(ch, s));
-                    const valid = vals.filter(v => v != null && !isNaN(v) && v > 0);
-                    if (!valid.length) return;
-                    const best = chHIB ? Math.max(...valid) : Math.min(...valid);
-                    const worst = chHIB ? Math.min(...valid) : Math.max(...valid);
-                    if (!(best > 0) || !(worst > 0)) return;
-                    const spreadRatio = chHIB ? (best / worst) : (worst / best);
-                    const weight = Math.max(0, spreadRatio - 1); // larger gap => larger influence
-                    const scores = vals.map(v => {
-                        if (v == null || isNaN(v) || v <= 0) return null;
-                        // Convert to "higher is better" score regardless of metric units.
-                        return chHIB ? (v / worst) : (worst / v);
-                    });
-                    perMetric.push({ scores, weight });
-                });
-                if (!perMetric.length) return systems.map(() => null);
-                const weightSum = perMetric.reduce((a, m) => a + m.weight, 0);
-                const uniformWeight = perMetric.length ? (1 / perMetric.length) : 0;
-                return systems.map((_, sIdx) => {
-                    let weightedLog = 0;
-                    let presentWeight = 0;
-                    perMetric.forEach(m => {
-                        const score = m.scores[sIdx];
-                        if (score == null || !isFinite(score) || score <= 0) return;
-                        const w = weightSum > 0 ? (m.weight / weightSum) : uniformWeight;
-                        weightedLog += w * Math.log(score);
-                        presentWeight += w;
-                    });
-                    if (presentWeight <= 0) return null;
-                    return Math.exp(weightedLog / presentWeight);
-                });
-            };
 
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
-                const primaries = (config.group.charts || []).filter(ch => ch.is_primary);
-                if (primaries.length > 1) {
-                    const weightedScores = weightedCompositeForPrimaries(primaries);
-                    systems.forEach((sys, sIdx) => {
-                        config.compositeBySystem[sys] = weightedScores[sIdx];
-                    });
-                } else if (primaries.length === 1) {
-                    const ch = primaries[0];
-                    const chHIB = isHigherIsBetter(ch.proportion ?? bGroup.proportion);
-                    const vals = systems.map(s => primaryValueFromChart(ch, s));
-                    const valid = vals.filter(v => v != null && !isNaN(v) && v > 0);
-                    if (!valid.length) {
-                        systems.forEach(sys => { config.compositeBySystem[sys] = null; });
-                    } else {
-                        const worst = chHIB ? Math.min(...valid) : Math.max(...valid);
-                        systems.forEach((sys, sIdx) => {
-                            const v = vals[sIdx];
-                            if (v == null || isNaN(v) || v <= 0 || !(worst > 0)) {
-                                config.compositeBySystem[sys] = null;
-                            } else {
-                                config.compositeBySystem[sys] = chHIB ? (v / worst) : (worst / v);
-                            }
-                        });
-                    }
-                } else {
-                    systems.forEach(sys => {
-                        const v = config.valuesBySystem[sys];
-                        config.compositeBySystem[sys] = (v != null && !isNaN(v)) ? Number(v) : null;
-                    });
+                // Keep composite, wins/losses, and delta rows on exactly the same basis:
+                // one scored value per config from valuesBySystem (the grouped primary).
+                const vals = systems.map(s => config.valuesBySystem[s]);
+                const valid = vals.filter(v => v != null && !isNaN(v) && v > 0);
+                if (!valid.length) {
+                    systems.forEach(sys => { config.compositeBySystem[sys] = null; });
+                    return;
                 }
+                const worst = groupHIB ? Math.min(...valid) : Math.max(...valid);
+                systems.forEach((sys, sIdx) => {
+                    const v = vals[sIdx];
+                    if (v == null || isNaN(v) || v <= 0 || !(worst > 0)) {
+                        config.compositeBySystem[sys] = null;
+                    } else {
+                        config.compositeBySystem[sys] = groupHIB ? (v / worst) : (worst / v);
+                    }
+                });
             });
 
             const aggValues = systems.map(sys => {
