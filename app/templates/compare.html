@@ -1244,6 +1244,13 @@
             return (proportion || '').toLowerCase().includes('higher');
         }
 
+        /** Pair-balanced grouping key for composite: treat `-S` as a variant, not a separate weight bucket. */
+        function compositeGroupKeyFromConfig(config) {
+            const raw = (config && config.args != null) ? String(config.args) : '';
+            const noS = raw.replace(/(?:^|\s)-S(?:\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
+            return noS || '(default)';
+        }
+
         /**
          * Base per-benchmark composite (used by both normal and normalized display modes):
          * - For each config, convert primary metrics into "higher-is-better" ratios vs that
@@ -1302,18 +1309,27 @@
                 });
             });
 
-            // Aggregate on a common config intersection so cross-system comparisons
-            // use the same set of tests for every system.
-            const validConfigMask = bGroup.configs.map(c =>
-                systems.every(sys => {
-                    const v = c.compositeBySystem[sys];
-                    return v != null && !isNaN(v) && Number(v) > 0;
-                })
-            );
-            const aggValues = systems.map(sys => {
-                const vals = bGroup.configs
-                    .map((c, idx) => validConfigMask[idx] ? c.compositeBySystem[sys] : null)
-                    .filter(v => v != null && !isNaN(v) && v > 0);
+            // Pair-balanced aggregation:
+            // 1) GM inside each args-group (e.g. with/without -S collapsed together)
+            // 2) GM across groups (equal group weight)
+            const grouped = new Map(); // key -> config[]
+            bGroup.configs.forEach(c => {
+                const k = compositeGroupKeyFromConfig(c);
+                if (!grouped.has(k)) grouped.set(k, []);
+                grouped.get(k).push(c);
+            });
+            const groups = Array.from(grouped.values());
+            const perGroupBySystem = groups.map(cfgs => systems.map(sys => {
+                const vals = cfgs
+                    .map(c => c.compositeBySystem[sys])
+                    .filter(v => v != null && !isNaN(v) && Number(v) > 0);
+                return vals.length ? geometricMean(vals) : null;
+            }));
+            const validGroupMask = perGroupBySystem.map(arr => arr.every(v => v != null && isFinite(v) && v > 0));
+            const aggValues = systems.map((_, sIdx) => {
+                const vals = perGroupBySystem
+                    .map((arr, gIdx) => validGroupMask[gIdx] ? arr[sIdx] : null)
+                    .filter(v => v != null && isFinite(v) && v > 0);
                 return vals.length ? geometricMean(vals) : null;
             });
 
@@ -1427,7 +1443,6 @@
             const HIB = isHigherIsBetter(bGroup.proportion);
             let totalValid = 0;
             let decisive = 0;
-            let sumLog = 0;
             const rows = [];
             bGroup.configs.forEach(config => {
                 const a = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[0]]) : NaN;
@@ -1437,11 +1452,11 @@
                 const ratio01 = HIB ? (a / b) : (b / a); // sys0 vs sys1; >1 means sys0 ahead
                 if (!(ratio01 > 0) || !isFinite(ratio01)) return;
                 const logContribution = Math.log(ratio01);
-                sumLog += logContribution;
                 const isDecisive = Math.abs(ratio01 - 1) > 1e-9;
                 if (isDecisive) decisive += 1;
                 rows.push({
                     args: (config && (config.args_label || config.args)) ? String(config.args_label || config.args) : '(default)',
+                    groupKey: compositeGroupKeyFromConfig(config),
                     a,
                     b,
                     ratio01,
@@ -1450,8 +1465,18 @@
                 });
             });
             if (!totalValid) return null;
-            const gmRatio01 = Math.exp(sumLog / totalValid);
-            return { totalValid, decisive, gmRatio01, rows };
+            const byGroup = new Map();
+            rows.forEach(r => {
+                if (!byGroup.has(r.groupKey)) byGroup.set(r.groupKey, []);
+                byGroup.get(r.groupKey).push(r.ratio01);
+            });
+            const groupRatios = Array.from(byGroup.entries()).map(([k, arr]) => ({
+                key: k,
+                ratio01: geometricMean(arr),
+                count: arr.length,
+            })).filter(x => x.ratio01 != null && isFinite(x.ratio01) && x.ratio01 > 0);
+            const gmRatio01 = groupRatios.length ? geometricMean(groupRatios.map(g => g.ratio01)) : null;
+            return { totalValid, decisive, gmRatio01, rows, groupRatios };
         }
 
         /**
@@ -2757,7 +2782,7 @@
                         d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
                         const pct = (diag.gmRatio01 - 1) * 100;
                         const leader = pct >= 0 ? systemLabels[0] : systemLabels[1];
-                        d.textContent = `Composite basis check: ${diag.totalValid} valid configs (${diag.decisive} decisive). Geometric-mean edge = ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% for ${leader}.`;
+                        d.textContent = `Composite basis check: ${diag.totalValid} valid configs (${diag.decisive} decisive), ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups. Geometric-mean edge = ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% for ${leader}.`;
                         aggSection.appendChild(d);
 
                         // Detailed math debug (collapsible): per-config contribution to geometric mean.
@@ -2770,7 +2795,7 @@
 
                         const expl = document.createElement('div');
                         expl.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.35rem;';
-                        expl.textContent = 'ratio = (sys0/sys1) for Higher-is-better metrics (or sys1/sys0 for Lower-is-better); geometric mean uses exp(avg(log(ratio))).';
+                        expl.textContent = 'ratio = (sys0/sys1) for Higher-is-better metrics (or sys1/sys0 for Lower-is-better). Composite is pair-balanced: GM within each args group (ignoring -S), then GM across groups.';
                         details.appendChild(expl);
 
                         let runningLog = 0;
@@ -2778,7 +2803,7 @@
                         const table = document.createElement('table');
                         table.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.72rem;';
                         const thead = document.createElement('thead');
-                        thead.innerHTML = '<tr style="border-bottom:1px solid rgba(255,255,255,0.12);"><th style="text-align:left;padding:0.2rem 0.3rem;">Config</th><th style="text-align:right;padding:0.2rem 0.3rem;">' + systemLabels[0] + '</th><th style="text-align:right;padding:0.2rem 0.3rem;">' + systemLabels[1] + '</th><th style="text-align:right;padding:0.2rem 0.3rem;">Ratio</th><th style="text-align:right;padding:0.2rem 0.3rem;">log(ratio)</th><th style="text-align:right;padding:0.2rem 0.3rem;">Running GM edge</th></tr>';
+                        thead.innerHTML = '<tr style="border-bottom:1px solid rgba(255,255,255,0.12);"><th style="text-align:left;padding:0.2rem 0.3rem;">Config</th><th style="text-align:right;padding:0.2rem 0.3rem;">' + systemLabels[0] + '</th><th style="text-align:right;padding:0.2rem 0.3rem;">' + systemLabels[1] + '</th><th style="text-align:right;padding:0.2rem 0.3rem;">Ratio</th><th style="text-align:right;padding:0.2rem 0.3rem;">log(ratio)</th><th style="text-align:right;padding:0.2rem 0.3rem;">Running row-GM edge</th></tr>';
                         table.appendChild(thead);
                         const tbody = document.createElement('tbody');
                         (diag.rows || []).forEach((r) => {
@@ -2799,6 +2824,30 @@
                         });
                         table.appendChild(tbody);
                         details.appendChild(table);
+
+                        const gTitle = document.createElement('div');
+                        gTitle.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.3rem;';
+                        gTitle.textContent = 'Pair-balanced group summary (this is the actual composite weighting):';
+                        details.appendChild(gTitle);
+                        const gTable = document.createElement('table');
+                        gTable.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.72rem;';
+                        const gHead = document.createElement('thead');
+                        gHead.innerHTML = '<tr style="border-bottom:1px solid rgba(255,255,255,0.12);"><th style="text-align:left;padding:0.2rem 0.3rem;">Group key</th><th style="text-align:right;padding:0.2rem 0.3rem;">Configs in group</th><th style="text-align:right;padding:0.2rem 0.3rem;">Group ratio GM</th><th style="text-align:right;padding:0.2rem 0.3rem;">Group edge</th></tr>';
+                        gTable.appendChild(gHead);
+                        const gBody = document.createElement('tbody');
+                        (diag.groupRatios || []).forEach(g => {
+                            const edge = (Number(g.ratio01) - 1) * 100;
+                            const tr = document.createElement('tr');
+                            tr.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
+                            tr.innerHTML =
+                                '<td style="padding:0.2rem 0.3rem;max-width:22rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + String(g.key).replace(/"/g, '&quot;') + '">' + String(g.key) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + Number(g.count).toFixed(0) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + Number(g.ratio01).toFixed(6) + '</td>' +
+                                '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + (edge >= 0 ? '+' : '') + edge.toFixed(3) + '%</td>';
+                            gBody.appendChild(tr);
+                        });
+                        gTable.appendChild(gBody);
+                        details.appendChild(gTable);
                         aggSection.appendChild(details);
                     }
                 }
