@@ -448,7 +448,6 @@
                     normalizeComposite,
                     showCompositeBar,
                     showWinsLossCharts,
-                    showSubtestMarginCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
                 },
@@ -490,7 +489,6 @@
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
                 showWinsLossCharts = !!opts.showWinsLossCharts;
-                showSubtestMarginCharts = opts.showSubtestMarginCharts !== false;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
                 }
@@ -869,8 +867,8 @@
         let showCompositeBar = false;
         let showWinsLossCharts = false;
         let showOverallSensor = {};  // metric name -> boolean, for overall sensor bar charts
-        /** Grouped Δ% vs geometric-mean chart per benchmark (shows win/loss margin). */
-        let showSubtestMarginCharts = true;
+        /** Per-benchmark open state for subtest-delta panels. key: benchmarkName */
+        let subtestDeltaOpenState = {};
 
         function destroyCharts() {
             activeCharts.forEach(ch => {
@@ -1059,6 +1057,25 @@
                 cap.textContent = 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
             }
             parent.appendChild(cap);
+
+            // For 3+ systems, radar is not very informative when there are <3 rows/options.
+            // Fall back to simple per-row bar views instead.
+            if (m > 2 && n < 3) {
+                rows.forEach((row, idx) => {
+                    const vals = systems.map((_, si) => (row.pcts && row.pcts[si] != null && isFinite(row.pcts[si])) ? Number(row.pcts[si]) : 0);
+                    const sorted = sortLabelsValuesSystemIdsBestFirst(sysNames, vals, systems, true);
+                    createBarChart(
+                        parent,
+                        sorted.labels,
+                        sorted.values,
+                        `Δ% vs geometric-mean baseline — ${row.label}`,
+                        (v) => (v == null || isNaN(v)) ? '' : ((v > 0 ? '+' : '') + Number(v).toFixed(1) + '%'),
+                        `subtest-small-n-fallback-${idx}`,
+                        sorted.systemIds
+                    );
+                });
+                return null;
+            }
 
             const legendRow = document.createElement('div');
             legendRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.85rem;margin-bottom:0.65rem;align-items:center;';
@@ -2871,10 +2888,35 @@
                     aggSection.appendChild(oneSystemNote);
                 }
 
-                if (systems.length >= 2 && showSubtestMarginCharts) {
-                    if (marginRows.length) {
-                        createGroupedDivergingMarginChart(aggSection, marginRows, systems, systemLabels);
-                    }
+                if (systems.length >= 2 && marginRows.length) {
+                    const deltaToggle = document.createElement('button');
+                    deltaToggle.type = 'button';
+                    deltaToggle.style.cssText = 'margin-top:0.5rem;margin-bottom:0.25rem;font-size:0.75rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.35);color:var(--text-secondary);padding:0.25rem 0.7rem;cursor:pointer;';
+                    const deltaHost = document.createElement('div');
+                    deltaHost.style.display = 'none';
+                    aggSection.appendChild(deltaToggle);
+                    aggSection.appendChild(deltaHost);
+                    const deltaOpen = !!subtestDeltaOpenState[bGroup.benchmarkName];
+                    const renderDelta = () => {
+                        deltaHost.innerHTML = '';
+                        if (deltaHost.style.display !== 'none') {
+                            createGroupedDivergingMarginChart(deltaHost, marginRows, systems, systemLabels);
+                        }
+                    };
+                    const syncDeltaToggle = () => {
+                        const open = deltaHost.style.display !== 'none';
+                        deltaToggle.textContent = open ? 'Hide subtest relative deltas' : 'Show subtest relative deltas';
+                    };
+                    deltaHost.style.display = deltaOpen ? 'block' : 'none';
+                    syncDeltaToggle();
+                    renderDelta();
+                    deltaToggle.addEventListener('click', () => {
+                        const open = deltaHost.style.display !== 'none';
+                        deltaHost.style.display = open ? 'none' : 'block';
+                        subtestDeltaOpenState[bGroup.benchmarkName] = !open;
+                        syncDeltaToggle();
+                        renderDelta();
+                    });
                 }
 
                 if (bGroup.configs.length > 1) {
@@ -3158,14 +3200,13 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : showSubtestMarginCharts);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : showWinsLossCharts);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
                                 else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
-                                else if (key === 'showSubtestMarginCharts') showSubtestMarginCharts = val;
                                 renderCharts();
                             });
                             const span = document.createElement('span');
@@ -3178,7 +3219,6 @@
                         
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
-                        toggleRow.appendChild(mkToggle('Show subtest relative delta chart', 'showSubtestMarginCharts'));
                         toggleRow.appendChild(mkToggle('Normalize composite display to weakest = 1.0', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
@@ -3201,7 +3241,6 @@
                             if (key === 'normalizeComposite') input.checked = normalizeComposite;
                             else if (key === 'showCompositeBar') input.checked = showCompositeBar;
                             else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
-                            else if (key === 'showSubtestMarginCharts') input.checked = showSubtestMarginCharts;
                         });
                     }
                     
