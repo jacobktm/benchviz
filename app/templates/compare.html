@@ -1064,6 +1064,16 @@
                 rows.forEach((row, idx) => {
                     const vals = systems.map((_, si) => (row.pcts && row.pcts[si] != null && isFinite(row.pcts[si])) ? Number(row.pcts[si]) : 0);
                     const sorted = sortLabelsValuesSystemIdsBestFirst(sysNames, vals, systems, true);
+                    const ranked = sorted.labels.map((lab, i) => ({ lab, v: sorted.values[i] })).filter(x => x.v != null && isFinite(x.v));
+                    if (ranked.length >= 2) {
+                        const lead = ranked[0];
+                        const runner = ranked[1];
+                        const gap = Number(lead.v) - Number(runner.v);
+                        const quick = document.createElement('div');
+                        quick.style.cssText = 'font-size:0.78rem;color:var(--text-primary);margin:0.2rem 0 0.35rem;font-weight:600;';
+                        quick.textContent = `At-a-glance: ${lead.lab} leads by ${gap >= 0 ? '+' : ''}${gap.toFixed(1)} pts vs ${runner.lab} on ${row.label}`;
+                        parent.appendChild(quick);
+                    }
                     createBarChart(
                         parent,
                         sorted.labels,
@@ -1647,6 +1657,9 @@
             }
 
             const panelPromises = [];
+            const benchmarkCount = benchSummaries.length;
+            const denseBenchmarks = benchmarkCount >= 12;
+            const veryDenseBenchmarks = benchmarkCount >= 20;
 
             // Per-benchmark grouped vertical bar chart
             if (opts.showBenchmarks && benchSummaries.length) {
@@ -1667,7 +1680,13 @@
                         indexAxis: 'x',
                         scales: {
                             x: {
-                                ticks: { color: BAR_CHART_TICK_COLOR },
+                                ticks: {
+                                    color: BAR_CHART_TICK_COLOR,
+                                    autoSkip: false,
+                                    maxRotation: denseBenchmarks ? 55 : 35,
+                                    minRotation: denseBenchmarks ? 55 : 20,
+                                    font: { size: veryDenseBenchmarks ? 8 : (denseBenchmarks ? 9 : 10) }
+                                },
                                 title: {
                                     display: true,
                                     text: 'Benchmarks',
@@ -1694,6 +1713,7 @@
                                 font: { size: 16, weight: '600' }
                             },
                             datalabels: {
+                                display: veryDenseBenchmarks ? false : 'auto',
                                 // Data here are already normalized so that the weakest
                                 // system is 1.0 and better systems > 1.0. Show percent
                                 // improvement over that weakest baseline.
@@ -1706,7 +1726,7 @@
                             }
                         }
                     }
-                }, { width: 900, height: 400 }));
+                }, { width: Math.max(1100, benchmarkCount * 56), height: denseBenchmarks ? 520 : 430 }));
             }
 
             // Overall composite horizontal bar
@@ -1951,19 +1971,20 @@
                     // Mixed mode: main benchmark chart on left, overall + pies on right, sensors stacked below
                     let cursorX = 40;
                     let cursorY = y;
+                    const benchmarkPanelWidth = Math.max(1120, Math.min(1720, slideWidth - 760));
+                    const benchmarkPanelHeight = benchmarkCount >= 12 ? 500 : 420;
+                    const rightX = cursorX + benchmarkPanelWidth + 40;
+                    const rightPanelWidth = Math.max(520, slideWidth - rightX - 40);
 
                     const benchmarkPanel = panels.shift();
                     if (benchmarkPanel) {
-                        const targetW = 1120;
-                        const targetH = 420;
                         ctx.drawImage(
                             benchmarkPanel.canvas,
                             0, 0, benchmarkPanel.canvas.width, benchmarkPanel.canvas.height,
-                            cursorX, cursorY, targetW, targetH
+                            cursorX, cursorY, benchmarkPanelWidth, benchmarkPanelHeight
                         );
                     }
 
-                    let rightX = 1200;
                     let rightY = cursorY;
 
                     // Overall composite (if present)
@@ -1973,7 +1994,7 @@
                             ctx.drawImage(
                                 compPanel.canvas,
                                 0, 0, compPanel.canvas.width, compPanel.canvas.height,
-                                rightX, rightY, 640, 260
+                                rightX, rightY, rightPanelWidth, 260
                             );
                             rightY += 270;
                         }
@@ -1983,7 +2004,7 @@
                     if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
                         const winsPanel = panels.shift();
                         const lossesPanel = panels.shift();
-                        const pieY = cursorY + 440;
+                        const pieY = cursorY + benchmarkPanelHeight + 20;
                         const pieSize = 260;
                         if (winsPanel) {
                             ctx.drawImage(
@@ -2001,7 +2022,7 @@
                         }
                         cursorY = pieY + pieSize + 20;
                     } else {
-                        cursorY = cursorY + 440;
+                        cursorY = cursorY + benchmarkPanelHeight + 20;
                     }
 
                     // Sensor panels stacked on the right beneath composite
