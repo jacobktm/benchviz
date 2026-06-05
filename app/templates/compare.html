@@ -1279,6 +1279,26 @@
             return (proportion || '').toLowerCase().includes('higher');
         }
 
+        /** Primary BAR chart used for valuesBySystem on this config row. */
+        function getConfigPrimaryChart(config, bGroup) {
+            const charts = (config.group && config.group.charts) || [];
+            const primaries = charts.filter(c => c.is_primary);
+            if (config.primaryChart) return config.primaryChart;
+            if (primaries.length) return primaries[0];
+            return null;
+        }
+
+        /** Per-subtest direction and scale (suites like Selenium mix ms/LIB and runs/min/HIB). */
+        function getConfigComparisonMeta(config, bGroup) {
+            const ch = getConfigPrimaryChart(config, bGroup);
+            const proportion = (ch && ch.proportion != null) ? ch.proportion : (config.proportion != null ? config.proportion : bGroup.proportion);
+            return {
+                proportion,
+                HIB: isHigherIsBetter(proportion),
+                scale: (ch && (ch.scale || ch.metric)) || config.scale || bGroup.scale || '',
+            };
+        }
+
         /** Pair-balanced grouping key for composite: treat `-S` as a variant, not a separate weight bucket. */
         function compositeGroupKeyFromConfig(config) {
             const raw = (config && config.args != null) ? String(config.args) : '';
@@ -1292,9 +1312,9 @@
             const losses = systems.map(() => 0);
             if (!systems.length) return { wins, losses };
 
-            const HIB = isHigherIsBetter(bGroup.proportion);
             const TIE_REL_EPS = 1e-9;
             bGroup.configs.forEach(config => {
+                const { HIB } = getConfigComparisonMeta(config, bGroup);
                 const vals = systems.map(s => config.valuesBySystem[s]);
                 const valid = vals.map((v, i) => ({ v: Number(v), i })).filter(x => !isNaN(x.v) && x.v > 0);
                 if (!valid.length) return;
@@ -1409,25 +1429,23 @@
                 }
             };
 
-            const HIB = isHigherIsBetter(bGroup.proportion);
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
+                const { HIB: cfgHIB, scale } = getConfigComparisonMeta(config, bGroup);
                 const vals = systems.map(s => {
                     const v = config.valuesBySystem[s];
                     return (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null;
                 });
                 const valid = vals.filter(v => v != null);
                 if (!valid.length) return;
-                const worst = HIB ? Math.min(...valid) : Math.max(...valid);
+                const worst = cfgHIB ? Math.min(...valid) : Math.max(...valid);
                 if (!(worst > 0)) return;
 
-                const ch = ((config.group && config.group.charts) || []).find(c => c.is_primary);
-                if (ch) noteScale(ch.scale || ch.metric);
-                else noteScale(bGroup.scale);
+                noteScale(scale);
 
                 systems.forEach((sys, sIdx) => {
                     const v = vals[sIdx];
-                    config.compositeBySystem[sys] = (v == null) ? null : (HIB ? (v / worst) : (worst / v));
+                    config.compositeBySystem[sys] = (v == null) ? null : (cfgHIB ? (v / worst) : (worst / v));
                 });
             });
             if (!combinedScales.length && bGroup.scale) combinedScales.push(bGroup.scale);
@@ -1467,11 +1485,11 @@
         /** Diagnostics for 2-system composite on the exact valuesBySystem path. */
         function computeTwoSystemCompositeDiagnostics(bGroup, systems) {
             if (!bGroup || !Array.isArray(systems) || systems.length !== 2) return null;
-            const HIB = isHigherIsBetter(bGroup.proportion);
             let totalValid = 0;
             let decisive = 0;
             const rows = [];
             bGroup.configs.forEach(config => {
+                const { HIB } = getConfigComparisonMeta(config, bGroup);
                 const a = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[0]]) : NaN;
                 const b = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[1]]) : NaN;
                 if (!(isFinite(a) && isFinite(b) && a > 0 && b > 0)) return;
@@ -2136,14 +2154,6 @@
 
         function groupComparisonGroupsByBenchmark() {
             const byKey = new Map();
-            const primarySignature = (ch) => {
-                if (!ch) return '';
-                const metric = ch.metric != null ? String(ch.metric) : '';
-                const scale = ch.scale != null ? String(ch.scale) : '';
-                const proportion = ch.proportion != null ? String(ch.proportion) : '';
-                const title = ch.title != null ? String(ch.title) : '';
-                return [metric, scale, proportion, title].join('||');
-            };
             currentComparisonGroups.forEach(compGroup => {
                 const primaryCharts = (compGroup.charts || []).filter(c => c.is_primary);
                 if (!primaryCharts.length) return;
@@ -2155,19 +2165,17 @@
 
                 let rec = byKey.get(benchmarkName);
                 if (!rec) {
-                    const primary0 = primaryCharts[0];
                     rec = {
                         benchmarkName,
-                        proportion: primary0.proportion,
-                        scale: primary0.scale || '',
-                        primarySig: primarySignature(primary0),
+                        proportion: null,
+                        scale: '',
                         configs: []
                     };
                     byKey.set(benchmarkName, rec);
                 }
 
-                // Keep one consistent "main primary" metric across all configs in this benchmark.
-                let primary = primaryCharts.find(ch => primarySignature(ch) === rec.primarySig) || primaryCharts[0];
+                // Each subtest/config uses its own primary metric (Selenium mixes ms/LIB and runs/min/HIB).
+                const primary = primaryCharts[0];
                 if (!primary || !primary.traces || !primary.traces.length) return;
                 const valuesBySystem = {};
                 primary.traces.forEach(t => {
@@ -2175,13 +2183,21 @@
                     const num = (v != null && !isNaN(v)) ? Number(v) : null;
                     if (t.name != null) valuesBySystem[t.name] = num;
                 });
-                rec.configs.push({ args, args_label: argsLabel, group: compGroup, valuesBySystem });
+                rec.configs.push({
+                    args,
+                    args_label: argsLabel,
+                    group: compGroup,
+                    valuesBySystem,
+                    primaryChart: primary,
+                    proportion: primary.proportion,
+                    scale: primary.scale || primary.metric || '',
+                });
+                if (!rec.proportion && primary.proportion != null) {
+                    rec.proportion = primary.proportion;
+                    rec.scale = primary.scale || primary.metric || '';
+                }
             });
-            return Array.from(byKey.values()).map(g => {
-                const out = Object.assign({}, g);
-                delete out.primarySig;
-                return out;
-            });
+            return Array.from(byKey.values());
         }
 
         let expandedChartState = {};
@@ -2709,7 +2725,7 @@
                 // Normalized mode only rescales the same composite (ranking unchanged).
                 subtitle.textContent = normalizeComposite
                     ? 'Higher is better (normalized view: weakest = 1.0)'
-                    : 'Higher is better — median of per-subtest relative scores (each subtest weighted equally)';
+                    : 'Higher is better — median of per-subtest relative scores (each subtest uses its own units/direction)';
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -2767,7 +2783,7 @@
 
                         const expl = document.createElement('div');
                         expl.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.35rem;';
-                        expl.textContent = 'Per subtest: ratio vs the worst system on that subtest (HIB: value/worst). Pair-balanced: GM within each args group (ignoring -S), then median across groups so one extreme outlier cannot decide the headline bar.';
+                        expl.textContent = 'Per subtest: ratio vs the worst system on that subtest, using each subtest\'s own direction (HIB: value/worst; LIB: worst/value). Pair-balanced: GM within each args group (ignoring -S), then median across groups.';
                         details.appendChild(expl);
 
                         let runningLog = 0;
