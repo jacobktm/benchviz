@@ -4,7 +4,8 @@ import re
 import json
 from lxml import etree
 from . import db
-from .models import System, Benchmark, BenchmarkResult
+from .models import System, BenchmarkResult
+from .benchmark_util import get_or_create_benchmark
 
 STRING_PROFILE_FIELDS = (
     'primary_system_name',
@@ -138,35 +139,19 @@ def parse_file(file_path, system_profile=None):
                 scale_l.startswith('perf')
             )
             
-            # Upsert Benchmark definition using the shared identifier string + distinct scale metrics
-            benchmark = Benchmark.query.filter_by(
+            # Upsert benchmark definition (unique on identifier/title/version/description/scale).
+            benchmark = get_or_create_benchmark(
                 identifier=current_identifier,
                 title=title,
                 app_version=app_version,
                 description=description,
                 scale=scale,
                 proportion=proportion,
-                display_format=display_format
-            ).first()
-            
-            if not benchmark:
-                benchmark = Benchmark(
-                    identifier=current_identifier,
-                    title=title,
-                    app_version=app_version,
-                    description=description,
-                    scale=scale,
-                    proportion=proportion,
-                    display_format=display_format,
-                    # BAR_GRAPH is usually the primary benchmark result, but Linux perf counters are
-                    # "sensor-like" metrics and shouldn't be treated as primary results.
-                    is_primary=(display_format == 'BAR_GRAPH' and not is_perf_counter)
-                )
-                db.session.add(benchmark)
-                db.session.flush()
-            else:
-                # Keep is_primary in sync if display_format ever changes.
-                benchmark.is_primary = (benchmark.display_format == 'BAR_GRAPH' and not is_perf_counter)
+                display_format=display_format,
+                # BAR_GRAPH is usually the primary benchmark result, but Linux perf counters are
+                # "sensor-like" metrics and shouldn't be treated as primary results.
+                is_primary=(display_format == 'BAR_GRAPH' and not is_perf_counter),
+            )
                 
             # Extract data. Data could be multiple Entries (e.g., if multiple systems were present in the XML)
             # But usually it's one Entry for the current system.

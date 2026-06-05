@@ -9,6 +9,7 @@ from app.models import (
     HardwareTheoreticalRank,
 )
 from app.parser import parse_benchmark_files, parse_file
+from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
 from app.analyzer import analyze_benchmarks
 from app.components import get_system_components
 from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
@@ -231,6 +232,10 @@ def get_system_search_tags(system):
 
 @app.route('/')
 def dashboard():
+    removed_orphans = delete_orphan_benchmarks()
+    if removed_orphans:
+        db.session.commit()
+
     systems_raw = System.query.all()
     
     # Group systems by the primary system family name and keep profile variations underneath.
@@ -261,6 +266,7 @@ def dashboard():
     primary_benchmarks = Benchmark.query.filter(
         Benchmark.display_format == 'BAR_GRAPH',
         Benchmark.is_primary.is_(True),
+        Benchmark.results.any(),
     ).all()
     
     dashboard_groups = {}
@@ -391,6 +397,7 @@ def upload_benchmarks():
             flash('No valid XML benchmark files were found in the upload.', 'error')
             
     except Exception as e:
+        db.session.rollback()
         flash(f'An error occurred during processing: {str(e)}', 'error')
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -538,9 +545,35 @@ def delete_system(id):
     system = System.query.get_or_404(id)
     system_name = system.identifier
     db.session.delete(system)
+    delete_orphan_benchmarks()
     db.session.commit()
     flash(f'System "{system_name}" successfully deleted.', 'success')
     return redirect(url_for('dashboard'))
+
+@app.route('/system/<int:system_id>/delete_benchmark', methods=['POST'])
+def delete_system_benchmark(system_id):
+    system = System.query.get_or_404(system_id)
+    title = clean_text(request.form.get('title'))
+    app_version = clean_text(request.form.get('app_version'))
+    identifier = clean_text(request.form.get('identifier'))
+
+    if not title:
+        flash('Missing benchmark title.', 'error')
+        return redirect(url_for('system_detail', id=system.id))
+
+    deleted = delete_system_benchmark_suite(
+        system.id,
+        title=title,
+        app_version=app_version or '',
+        identifier=identifier or '',
+    )
+    db.session.commit()
+
+    if deleted:
+        flash(f'Removed {deleted} result(s) for "{title}" from this system.', 'success')
+    else:
+        flash(f'No results found for "{title}" on this system.', 'error')
+    return redirect(url_for('system_detail', id=system.id))
 
 # Ordered list of (key, label) for "Compare by" dropdown; key must match get_system_components() keys.
 COMPARE_BY_OPTIONS = [

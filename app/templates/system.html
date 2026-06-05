@@ -202,7 +202,17 @@
             </summary>
             
             <div style="padding: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
-                <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">{{ group.description }}</p>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;">
+                    <p style="font-size: 0.9rem; color: var(--text-secondary); margin: 0; flex: 1 1 16rem;">{{ group.description }}</p>
+                    <form action="{{ url_for('delete_system_benchmark', system_id=system.id) }}" method="POST" style="flex: 0 0 auto;" onsubmit="return confirm('Remove all results for {{ group.title|e }} from this system? This cannot be undone.');">
+                        <input type="hidden" name="title" value="{{ group.title }}">
+                        <input type="hidden" name="app_version" value="{{ group.app_version or '' }}">
+                        <input type="hidden" name="identifier" value="{{ group.identifier or '' }}">
+                        <button type="submit" class="btn-primary-sm" style="background: rgba(255, 60, 60, 0.08); border-color: rgba(255, 60, 60, 0.25); color: #ff6b81;">
+                            Remove from system
+                        </button>
+                    </form>
+                </div>
                 {% if group.geometric_mean_across_configs is not none and group.geometric_mean_n_configs > 0 %}
                 <p style="font-size: 0.9rem; margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px; background: rgba(46, 213, 115, 0.08); border: 1px solid rgba(46, 213, 115, 0.2);">
                     <strong style="color: var(--text-primary);">Geometric mean across {{ group.geometric_mean_n_configs }} configuration{% if group.geometric_mean_n_configs != 1 %}s{% endif %}:</strong>
