@@ -1052,7 +1052,7 @@
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
-                cap.textContent = 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite uses pair-balanced grouping; see “Composite basis check”.)';
+                cap.textContent = 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = median of per-subtest relative scores; see “Composite basis check”.)';
             } else {
                 cap.textContent = 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
             }
@@ -1264,6 +1264,14 @@
             return Math.exp(logSum / valid.length);
         }
 
+        function medianPositive(arr) {
+            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0).sort((a, b) => a - b);
+            if (!valid.length) return null;
+            const mid = Math.floor(valid.length / 2);
+            if (valid.length % 2 === 1) return valid[mid];
+            return (valid[mid - 1] + valid[mid]) / 2;
+        }
+
         /** Interpret proportion: HIB / LIB or "Higher is Better" / "Lower is Better" (any casing). */
         function isHigherIsBetter(proportion) {
             const p = (proportion || '').trim().toUpperCase();
@@ -1278,14 +1286,46 @@
             return noS || '(default)';
         }
 
+        /** Count subtest wins/losses (one primary value per config; ties skipped). */
+        function computeBenchmarkWinsLosses(bGroup, systems) {
+            const wins = systems.map(() => 0);
+            const losses = systems.map(() => 0);
+            if (!systems.length) return { wins, losses };
+
+            const HIB = isHigherIsBetter(bGroup.proportion);
+            const TIE_REL_EPS = 1e-9;
+            bGroup.configs.forEach(config => {
+                const vals = systems.map(s => config.valuesBySystem[s]);
+                const valid = vals.map((v, i) => ({ v: Number(v), i })).filter(x => !isNaN(x.v) && x.v > 0);
+                if (!valid.length) return;
+                let best = valid[0];
+                let worst = valid[0];
+                valid.forEach(x => {
+                    if (HIB) {
+                        if (x.v > best.v) best = x;
+                        if (x.v < worst.v) worst = x;
+                    } else {
+                        if (x.v < best.v) best = x;
+                        if (x.v > worst.v) worst = x;
+                    }
+                });
+                const span = Math.abs(best.v - worst.v);
+                const scale = Math.max(1, Math.abs(best.v), Math.abs(worst.v));
+                if (span <= TIE_REL_EPS * scale) return;
+                wins[best.i] = (wins[best.i] || 0) + 1;
+                losses[worst.i] = (losses[worst.i] || 0) + 1;
+            });
+            return { wins, losses };
+        }
+
         /**
          * Headline composite: raw primary values from valuesBySystem, pair-balanced:
          * GM within each args group (ignore -S), then GM across groups (equal group weight).
+         * Kept for debug breakdown only — headline bars use computeFairBenchmarkComposite.
          */
         function computeRawBenchmarkComposite(bGroup, systems) {
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
-            const wins = systems.map(() => 0);
-            const losses = systems.map(() => 0);
+            const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
 
             let combinedScales = [];
             const seenScale = new Set();
@@ -1305,8 +1345,6 @@
                 else noteScale(bGroup.scale);
             });
             if (!combinedScales.length && bGroup.scale) combinedScales = [bGroup.scale];
-
-            const groupHIB = isHigherIsBetter(bGroup.proportion);
 
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
@@ -1347,50 +1385,20 @@
                 return vals.length ? geometricMean(vals) : null;
             });
 
-            const HIB = groupHIB;
-            const TIE_REL_EPS = 1e-9;
-            bGroup.configs.forEach(config => {
-                const runWinLoss = (vals) => {
-                    const valid = vals.map((v, i) => ({ v, i })).filter(x => x.v != null && !isNaN(x.v));
-                    if (!valid.length) return;
-                    let best = valid[0];
-                    let worst = valid[0];
-                    valid.forEach(x => {
-                        if (HIB) {
-                            if (x.v > best.v) best = x;
-                            if (x.v < worst.v) worst = x;
-                        } else {
-                            if (x.v < best.v) best = x;
-                            if (x.v > worst.v) worst = x;
-                        }
-                    });
-                    const span = Math.abs(best.v - worst.v);
-                    const scale = Math.max(1, Math.abs(best.v), Math.abs(worst.v));
-                    // Do not count ties as both a win and a loss.
-                    if (span <= TIE_REL_EPS * scale) return;
-                    wins[best.i] = (wins[best.i] || 0) + 1;
-                    losses[worst.i] = (losses[worst.i] || 0) + 1;
-                };
-                // Wins/losses count exactly one primary result per config (the same value used in valuesBySystem).
-                // This keeps totals aligned with the option/test count shown in compare.
-                const vals = systems.map(s => config.valuesBySystem[s]);
-                runWinLoss(vals);
-            });
-
             return { aggValues, wins, losses, combinedScales };
         }
 
         /**
-         * Cross-metric composite: geometric mean of per-primary ratios vs the worst system on that
-         * test (HIB: value/worst; LIB: worst/value). Each primary metric gets equal weight in the mean,
-         * so huge TPS and small latencies contribute fairly; not comparable to raw unit geom means.
-         * @param {object} opts - fillConfigComposites: if true, writes config.compositeBySystem as geom mean of ratios per config.
+         * Fair per-benchmark composite: each subtest contributes equally via ratio vs the worst
+         * system on that subtest (HIB: value/worst; LIB: worst/value). Pair-balanced `-S` variants
+         * are merged with a GM; across subtests we take the median so one huge outlier cannot
+         * steamroll consistent wins elsewhere.
          */
-        function computeRatioGeomMeanCompositeAggValues(bGroup, systems, opts) {
+        function computeFairBenchmarkComposite(bGroup, systems, opts) {
             opts = opts || {};
-            const fillConfigComposites = opts.fillConfigComposites === true;
+            const acrossGroupsFn = opts.acrossGroupsFn || medianPositive;
             if (!systems.length) return { aggValues: [], combinedScales: [] };
-            const allRatiosBySystem = systems.map(() => []);
+
             const combinedScales = [];
             const seenScales = new Set();
             const noteScale = (s) => {
@@ -1403,7 +1411,7 @@
 
             const HIB = isHigherIsBetter(bGroup.proportion);
             bGroup.configs.forEach(config => {
-                // Use only the grouped main primary value per config (valuesBySystem).
+                config.compositeBySystem = {};
                 const vals = systems.map(s => {
                     const v = config.valuesBySystem[s];
                     return (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null;
@@ -1419,32 +1427,37 @@
 
                 systems.forEach((sys, sIdx) => {
                     const v = vals[sIdx];
-                    if (v == null) return;
-                    const ratio = HIB ? (v / worst) : (worst / v);
-                    allRatiosBySystem[sIdx].push(ratio);
-                    if (fillConfigComposites) {
-                        if (!config.compositeBySystem) config.compositeBySystem = {};
-                        config.compositeBySystem[sys] = ratio;
-                    }
+                    config.compositeBySystem[sys] = (v == null) ? null : (HIB ? (v / worst) : (worst / v));
                 });
             });
             if (!combinedScales.length && bGroup.scale) combinedScales.push(bGroup.scale);
 
-            const fullCompositeRatio = systems.map((_, sIdx) => {
-                const arr = allRatiosBySystem[sIdx].filter(r => r > 0);
-                return arr.length ? geometricMean(arr) : null;
+            const grouped = new Map();
+            bGroup.configs.forEach(c => {
+                const k = compositeGroupKeyFromConfig(c);
+                if (!grouped.has(k)) grouped.set(k, []);
+                grouped.get(k).push(c);
             });
-            const validRatios = fullCompositeRatio.filter(r => r != null && !isNaN(r) && r > 0);
-            const minRatio = validRatios.length ? Math.min(...validRatios) : 1;
-            const aggValues = fullCompositeRatio.map(r => (r != null && r > 0) ? (r / minRatio) : null);
+            const groups = Array.from(grouped.values());
+            const perGroupBySystem = groups.map(cfgs => systems.map(sys => {
+                const vals = cfgs
+                    .map(c => c.compositeBySystem && c.compositeBySystem[sys])
+                    .filter(v => v != null && !isNaN(v) && Number(v) > 0);
+                return vals.length ? geometricMean(vals) : null;
+            }));
+            const aggValues = systems.map((_, sIdx) => {
+                const vals = perGroupBySystem
+                    .map(arr => arr[sIdx])
+                    .filter(v => v != null && isFinite(v) && v > 0);
+                return vals.length ? acrossGroupsFn(vals) : null;
+            });
             return { aggValues, combinedScales };
         }
 
-        /** Data labels on composite bars when values cluster near 1.0 */
-        function formatCompositeBarValue(v, normalized) {
+        /** Data labels on composite bars (unitless relative scores, typically near 1.0). */
+        function formatCompositeBarValue(v) {
             if (v == null || isNaN(v)) return '';
             const n = Number(v);
-            if (!normalized) return n.toFixed(2);
             const pctFromOne = Math.abs(n - 1) * 100;
             if (pctFromOne < 0.01) return n.toFixed(4);
             if (pctFromOne < 0.1) return n.toFixed(3);
@@ -1489,55 +1502,37 @@
                 ratio01: geometricMean(arr),
                 count: arr.length,
             })).filter(x => x.ratio01 != null && isFinite(x.ratio01) && x.ratio01 > 0);
-            const gmRatio01 = groupRatios.length ? geometricMean(groupRatios.map(g => g.ratio01)) : null;
+            const gmRatio01 = groupRatios.length ? medianPositive(groupRatios.map(g => g.ratio01)) : null;
             return { totalValid, decisive, gmRatio01, rows, groupRatios };
         }
 
         /**
          * Per-benchmark composite for Compare UI and wins/losses.
-         * Raw headline: pair-balanced GM of valuesBySystem (see computeRawBenchmarkComposite).
+         * Headline: median of per-subtest relative scores (pair-balanced); resists one outlier.
          * normalizeComposite: rescale so weakest = 1.0 (ranking unchanged).
-         * forGlobalAggregation: ratio-based aggregate for export / global summary.
          */
         function computeCompositeScores(bGroup, systems, opts) {
             opts = opts || {};
-            const forGlobalAggregation = opts.forGlobalAggregation === true;
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
 
-            const raw = computeRawBenchmarkComposite(bGroup, systems);
-
-            if (forGlobalAggregation) {
-                const ratio = computeRatioGeomMeanCompositeAggValues(bGroup, systems);
-                return {
-                    aggValues: ratio.aggValues,
-                    wins: raw.wins,
-                    losses: raw.losses,
-                    combinedScales: ratio.combinedScales,
-                };
-            }
+            const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
+            const fair = computeFairBenchmarkComposite(bGroup, systems, opts);
+            let aggValues = fair.aggValues;
 
             if (normalizeComposite) {
-                const HIB = isHigherIsBetter(bGroup.proportion);
-                const valid = raw.aggValues.filter(v => v != null && !isNaN(v) && v > 0);
-                let aggValues = raw.aggValues;
+                const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
                 if (valid.length) {
-                    if (HIB) {
-                        const m = Math.min(...valid);
-                        aggValues = raw.aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? v / m : null);
-                    } else {
-                        const mx = Math.max(...valid);
-                        aggValues = raw.aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? mx / v : null);
-                    }
+                    const m = Math.min(...valid);
+                    aggValues = aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? v / m : null);
                 }
-                return {
-                    aggValues,
-                    wins: raw.wins,
-                    losses: raw.losses,
-                    combinedScales: raw.combinedScales,
-                };
             }
 
-            return raw;
+            return {
+                aggValues,
+                wins,
+                losses,
+                combinedScales: fair.combinedScales,
+            };
         }
 
         /**
@@ -1590,7 +1585,7 @@
             const benchSummaries = [];
             if (opts.showBenchmarks) {
                 benchmarkGroups.forEach(bGroup => {
-                    const { aggValues } = computeCompositeScores(bGroup, traceNames, { forGlobalAggregation: true });
+                    const { aggValues } = computeCompositeScores(bGroup, traceNames);
                     const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
                     if (!valid.length) return;
                     const minR = Math.min(...valid);
@@ -2103,9 +2098,8 @@
 
         /**
          * Global summary across ALL benchmark groups.
-         * Builds one ratio per (benchmark, option/config) per system so the overall composite
-         * reflects who won more options—not one value per benchmark (which can tie when each
-         * system wins different benchmarks). Same HIB/LIB and primary metric as wins/losses.
+         * One fair composite per benchmark suite per system, then median across suites
+         * (resists one outlier benchmark dominating the overall bar).
          */
         function computeGlobalSummary(benchmarkGroups, systems) {
             if (!systems.length || !benchmarkGroups.length) {
@@ -2116,31 +2110,20 @@
             const globalLosses = systems.map(() => 0);
 
             benchmarkGroups.forEach(bGroup => {
-                const { wins, losses } = computeCompositeScores(bGroup, systems, { forGlobalAggregation: true });
+                const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
                 globalWins.forEach((_, i) => { globalWins[i] += (wins[i] || 0); });
                 globalLosses.forEach((_, i) => { globalLosses[i] += (losses[i] || 0); });
 
-                // Per-option ratios (one per config) so overall composite aligns with win/loss counts.
-                const HIB = isHigherIsBetter(bGroup.proportion);
-                bGroup.configs.forEach(config => {
-                    const vals = systems.map(s => config.valuesBySystem[s]);
-                    const valid = vals.map((v, i) => ({ v: Number(v), i })).filter(x => !isNaN(x.v) && x.v > 0);
-                    if (!valid.length) return;
-                    const worstVal = HIB ? Math.min(...valid.map(x => x.v)) : Math.max(...valid.map(x => x.v));
-                    if (worstVal <= 0) return;
-                    systems.forEach((sys, sIdx) => {
-                        const v = config.valuesBySystem[sys];
-                        const num = (v != null && !isNaN(v)) ? Number(v) : null;
-                        if (num == null || num <= 0) return;
-                        const ratio = HIB ? num / worstVal : worstVal / num;
-                        ratiosBySystem[sIdx].push(ratio);
-                    });
+                const { aggValues } = computeFairBenchmarkComposite(bGroup, systems);
+                systems.forEach((_, sIdx) => {
+                    const v = aggValues[sIdx];
+                    if (v != null && !isNaN(v) && v > 0) ratiosBySystem[sIdx].push(v);
                 });
             });
 
             let globalComposite = systems.map((_, idx) => {
                 const arr = ratiosBySystem[idx];
-                return arr.length ? geometricMean(arr) : null;
+                return arr.length ? medianPositive(arr) : null;
             });
 
             // Normalize so worst system = 1.0 (for when we display in normalized mode).
@@ -2514,8 +2497,7 @@
             }
 
             /**
-             * One row per config (subtest). Pair-balanced grouping applies only to the headline composite,
-             * not to this chart — see computeRawBenchmarkComposite.
+             * One row per config (subtest). Pair-balanced grouping applies only to the headline composite.
              */
             function collectBenchmarkSubtestMarginRows(bGroup, systems) {
                 if (!Array.isArray(systems) || systems.length < 2) return [];
@@ -2727,7 +2709,7 @@
                 // Normalized mode only rescales the same composite (ranking unchanged).
                 subtitle.textContent = normalizeComposite
                     ? 'Higher is better (normalized view: weakest = 1.0)'
-                    : (isHigherIsBetter(bGroup.proportion) ? 'Higher is better' : 'Lower is better');
+                    : 'Higher is better — median of per-subtest relative scores (each subtest weighted equally)';
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -2745,9 +2727,9 @@
                 // Always show per-benchmark composite bar (this is the original behavior).
                 const compositeLabel = (combinedScales && combinedScales.length > 1
                     ? `Composite score — ${combinedScales.join(', ')}`
-                    : 'Composite score (geometric mean)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
+                    : 'Composite score (median of subtest ratios)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
                 const aggVals = finalAggValues.map(v => v != null ? v : 0);
-                const aggHigher = normalizeComposite || isHigherIsBetter(bGroup.proportion);
+                const aggHigher = true;
                 const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
                 createBarChart(
                     aggSection,
@@ -2767,12 +2749,12 @@
                         const pct01 = (r - 1) * 100;
                         let basisMsg;
                         if (pct01 >= 0) {
-                            basisMsg = `${systemLabels[0]} ahead by +${pct01.toFixed(2)}% vs ${systemLabels[1]} (pair-balanced ratio geometric mean).`;
+                            basisMsg = `${systemLabels[0]} ahead by +${pct01.toFixed(2)}% vs ${systemLabels[1]} (median of pair-balanced subtest ratios).`;
                         } else {
                             const pct10 = (1 / r - 1) * 100;
-                            basisMsg = `${systemLabels[1]} ahead by +${pct10.toFixed(2)}% vs ${systemLabels[0]} (pair-balanced ratio geometric mean).`;
+                            basisMsg = `${systemLabels[1]} ahead by +${pct10.toFixed(2)}% vs ${systemLabels[0]} (median of pair-balanced subtest ratios).`;
                         }
-                        d.textContent = `Composite basis check: ${diag.totalValid} configs → ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups in headline composite. ${basisMsg} Bar = geom mean of raw scores per system across those groups (same %-gap ≈ ratio GM).`;
+                        d.textContent = `Composite basis check: ${diag.totalValid} configs → ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups. ${basisMsg} Bar = median relative score per system (1.0 on a subtest = tied with the slowest system on that subtest).`;
                         aggSection.appendChild(d);
 
                         // Detailed math debug (collapsible): per-config contribution to geometric mean.
@@ -2785,7 +2767,7 @@
 
                         const expl = document.createElement('div');
                         expl.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.35rem;';
-                        expl.textContent = 'ratio = (sys0/sys1) for Higher-is-better metrics (or sys1/sys0 for Lower-is-better). Composite is pair-balanced: GM within each args group (ignoring -S), then GM across groups.';
+                        expl.textContent = 'Per subtest: ratio vs the worst system on that subtest (HIB: value/worst). Pair-balanced: GM within each args group (ignoring -S), then median across groups so one extreme outlier cannot decide the headline bar.';
                         details.appendChild(expl);
 
                         let runningLog = 0;
@@ -2817,7 +2799,7 @@
 
                         const gTitle = document.createElement('div');
                         gTitle.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.3rem;';
-                        gTitle.textContent = 'Pair-balanced group summary (this is the actual composite weighting):';
+                        gTitle.textContent = 'Pair-balanced group summary (median of these group ratios = headline composite for sys0/sys1):';
                         details.appendChild(gTitle);
                         const gTable = document.createElement('table');
                         gTable.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.72rem;';
