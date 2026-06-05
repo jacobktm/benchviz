@@ -2391,13 +2391,7 @@
                 }
                 if (showWinsLossCharts && systems.length >= 2) {
                     const pieRow = document.createElement('div');
-                    pieRow.style.display = 'flex';
-                    pieRow.style.flexDirection = 'row';
-                    pieRow.style.flexWrap = 'wrap';
-                    pieRow.style.gap = '1.5rem';
-                    pieRow.style.marginTop = '0.5rem';
-                    pieRow.style.alignItems = 'flex-start';
-                    pieRow.style.justifyContent = 'center';
+                    pieRow.style.cssText = 'display:flex;flex-direction:row;flex-wrap:wrap;gap:2rem 5rem;margin-top:0.75rem;align-items:flex-start;justify-content:space-evenly;width:100%;';
                     globalSection.appendChild(pieRow);
                     addPieChart(pieRow, systemLabels, globalWins, 'Overall wins (best score per option)', systems);
                     addPieChart(pieRow, systemLabels, globalLosses, 'Overall losses (worst score per option)', systems);
@@ -2453,15 +2447,22 @@
 
             function addPieChart(parent, systemLabels, values, title, systemIds) {
                 const PIE_SIZE = 200;
+                const WRAP_WIDTH = 300;
                 const wrap = document.createElement('div');
-                wrap.style.marginBottom = '1rem';
-                wrap.style.width = PIE_SIZE + 'px';
-                wrap.style.flexShrink = '0';
-                wrap.style.display = 'flex';
-                wrap.style.flexDirection = 'column';
-                wrap.style.alignItems = 'center';
+                wrap.style.cssText = [
+                    'margin-bottom:1rem',
+                    'width:' + WRAP_WIDTH + 'px',
+                    'min-width:' + WRAP_WIDTH + 'px',
+                    'max-width:100%',
+                    'flex:0 1 ' + WRAP_WIDTH + 'px',
+                    'padding:0 1.25rem',
+                    'box-sizing:border-box',
+                    'display:flex',
+                    'flex-direction:column',
+                    'align-items:center',
+                ].join(';');
                 const titleEl = document.createElement('div');
-                titleEl.style.cssText = 'font-size:0.85rem;font-weight:600;color:' + BAR_CHART_TICK_COLOR + ';margin-bottom:0.35rem;text-align:center;white-space:nowrap;';
+                titleEl.style.cssText = 'font-size:0.85rem;font-weight:600;color:' + BAR_CHART_TICK_COLOR + ';margin-bottom:0.35rem;text-align:center;max-width:100%;line-height:1.35;';
                 titleEl.textContent = title;
                 wrap.appendChild(titleEl);
                 const canvas = document.createElement('canvas');
@@ -2483,9 +2484,18 @@
                     type: 'pie',
                     data: { labels: systemLabels, datasets: [{ data, backgroundColor: bgColors, borderColor: 'rgba(0,0,0,0.2)', borderWidth: 1 }] },
                     options: {
-                        layout: { padding: 8 },
+                        layout: { padding: 10 },
                         plugins: {
-                            legend: { display: true, position: 'bottom', labels: { color: BAR_CHART_TICK_COLOR, padding: 12 } },
+                            legend: {
+                                display: true,
+                                position: 'bottom',
+                                labels: {
+                                    color: BAR_CHART_TICK_COLOR,
+                                    padding: 16,
+                                    boxWidth: 14,
+                                    boxHeight: 14,
+                                },
+                            },
                             datalabels: {
                                 color: '#fff',
                                 font: { size: 12, weight: '600' },
@@ -2846,13 +2856,7 @@
                     winsToggle.style.cssText = 'margin-top:0.5rem;margin-bottom:0.25rem;font-size:0.75rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.35);color:var(--text-secondary);padding:0.25rem 0.7rem;cursor:pointer;';
                     aggSection.appendChild(winsToggle);
                     const pieRow = document.createElement('div');
-                    pieRow.style.display = 'none';
-                    pieRow.style.flexDirection = 'row';
-                    pieRow.style.flexWrap = 'wrap';
-                    pieRow.style.gap = '1.5rem';
-                    pieRow.style.marginTop = '0.5rem';
-                    pieRow.style.alignItems = 'flex-start';
-                    pieRow.style.justifyContent = 'center';
+                    pieRow.style.cssText = 'display:none;flex-direction:row;flex-wrap:wrap;gap:2rem 5rem;margin-top:0.75rem;align-items:flex-start;justify-content:space-evenly;width:100%;';
                     aggSection.appendChild(pieRow);
                     addPieChart(pieRow, systemLabels, wins, 'Wins (best score per option)', systems);
                     addPieChart(pieRow, systemLabels, losses, 'Losses (worst score per option)', systems);
