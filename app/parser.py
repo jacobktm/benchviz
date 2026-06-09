@@ -6,6 +6,7 @@ from lxml import etree
 from . import db
 from .models import System, BenchmarkResult
 from .benchmark_util import get_or_create_benchmark
+from .system_util import resolve_system_for_import
 
 STRING_PROFILE_FIELDS = (
     'primary_system_name',
@@ -23,6 +24,15 @@ BOOL_PROFILE_FIELDS = (
     'memory_fans',
     'nvme_fans',
 )
+
+_import_notes: list[str] = []
+
+
+def pop_import_notes() -> list[str]:
+    """Return and clear notes collected during the current import batch."""
+    notes = list(_import_notes)
+    _import_notes.clear()
+    return notes
 
 def apply_system_profile(system, system_profile):
     if not system_profile:
@@ -73,31 +83,21 @@ def parse_file(file_path, system_profile=None):
             return
 
         system_id = system_node.findtext('Identifier', default='')
+        main_hardware = system_node.findtext('Hardware', default='')
         
-        # 1. UPSERT SYSTEM
+        # 1. UPSERT SYSTEM (same identifier + different hardware → disambiguated name)
         system_lookup_map = {}
 
-        # Match by the benchmarked system identifier first. Manual profile metadata can be edited
-        # independently without creating a new system record for the same machine.
-        system = System.query.filter_by(identifier=system_id).first()
-
-        # If it doesn't exist, spin up a new instance directly tied to this configured identity
-        if not system:
-            system = System(
-                identifier=system_id,
-                hardware=system_node.findtext('Hardware', default=''),
-                software=system_node.findtext('Software', default=''),
-                user=system_node.findtext('User', default=''),
-                timestamp=system_node.findtext('TimeStamp', default=''),
-                primary_system_name=system_id
-            )
-            db.session.add(system)
-            db.session.flush() # get system.id
-        else:
-            system.hardware = system_node.findtext('Hardware', default=system.hardware or '')
-            system.software = system_node.findtext('Software', default=system.software or '')
-            system.user = system_node.findtext('User', default=system.user or '')
-            system.timestamp = system_node.findtext('TimeStamp', default=system.timestamp or '')
+        system, _, system_note = resolve_system_for_import(
+            system_id,
+            main_hardware,
+            system_node.findtext('Software', default=''),
+            system_node.findtext('User', default=''),
+            system_node.findtext('TimeStamp', default=''),
+        )
+        if system_note:
+            print(system_note)
+            _import_notes.append(system_note)
 
         apply_system_profile(system, system_profile)
 
@@ -163,22 +163,17 @@ def parse_file(file_path, system_profile=None):
                     if entry_identifier in system_lookup_map:
                         entry_system = system_lookup_map[entry_identifier]
                     else:
-                        # Match the entry back to an existing system identifier when possible.
-                        entry_system = System.query.filter_by(
-                            identifier=entry_identifier
-                        ).first()
-                        
-                        if not entry_system:
-                            entry_system = System(
-                                identifier=entry_identifier,
-                                hardware='',
-                                software='',
-                                user='',
-                                timestamp='',
-                                primary_system_name=entry_identifier
-                            )
-                            db.session.add(entry_system)
-                            db.session.flush()
+                        entry_system, _, entry_note = resolve_system_for_import(
+                            entry_identifier,
+                            '',
+                            '',
+                            '',
+                            '',
+                            fallback_hardware=main_hardware,
+                        )
+                        if entry_note:
+                            print(entry_note)
+                            _import_notes.append(entry_note)
                         apply_system_profile(entry_system, system_profile)
                         system_lookup_map[entry_identifier] = entry_system
                         

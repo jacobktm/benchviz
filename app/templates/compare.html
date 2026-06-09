@@ -1052,7 +1052,7 @@
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
-                cap.textContent = 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = median of per-subtest relative scores; see “Composite basis check”.)';
+                cap.textContent = 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = capped median blend across options; see “Composite basis check”.)';
             } else {
                 cap.textContent = 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
             }
@@ -1341,7 +1341,7 @@
         /**
          * Headline composite: raw primary values from valuesBySystem, pair-balanced:
          * GM within each args group (ignore -S), then GM across groups (equal group weight).
-         * Kept for debug breakdown only — headline bars use computeFairBenchmarkComposite.
+         * Kept for debug breakdown only — headline bars use blendOptionScores.
          */
         function computeRawBenchmarkComposite(bGroup, systems) {
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
@@ -1408,15 +1408,43 @@
             return { aggValues, wins, losses, combinedScales };
         }
 
+        /** Per-option cap: one huge win/loss can move composite at most ±50%. */
+        const COMPOSITE_OPTION_CAP_RATIO = 1.5;
+
         /**
-         * Fair per-benchmark composite: each subtest contributes equally via ratio vs the worst
-         * system on that subtest (HIB: value/worst; LIB: worst/value). Pair-balanced `-S` variants
-         * are merged with a GM; across subtests we take the median so one huge outlier cannot
-         * steamroll consistent wins elsewhere.
+         * Unitless score for one system on one option (≥1.0; 1.0 = tied for worst on that option).
+         * Respects HIB/LIB, then caps so a single outlier option cannot dominate blends.
          */
-        function computeFairBenchmarkComposite(bGroup, systems, opts) {
-            opts = opts || {};
-            const acrossGroupsFn = opts.acrossGroupsFn || medianPositive;
+        function relativeOptionScore(value, allValues, HIB) {
+            const valid = allValues.filter(v => v != null && !isNaN(v) && Number(v) > 0).map(Number);
+            if (!valid.length || value == null || isNaN(value) || Number(value) <= 0) return null;
+            const v = Number(value);
+            const worst = HIB ? Math.min(...valid) : Math.max(...valid);
+            if (!(worst > 0)) return null;
+            let score = HIB ? (v / worst) : (worst / v);
+            if (!isFinite(score) || score <= 0) return null;
+            if (score > COMPOSITE_OPTION_CAP_RATIO) score = COMPOSITE_OPTION_CAP_RATIO;
+            return score;
+        }
+
+        /** Head-to-head ratio for two systems on one option (>1 = sys0 ahead). Capped symmetrically. */
+        function headToHeadOptionRatio(a, b, HIB) {
+            if (!(isFinite(a) && isFinite(b) && a > 0 && b > 0)) return null;
+            let ratio = HIB ? (a / b) : (b / a);
+            if (!isFinite(ratio) || ratio <= 0) return null;
+            const cap = COMPOSITE_OPTION_CAP_RATIO;
+            if (ratio > cap) ratio = cap;
+            if (ratio < 1 / cap) ratio = 1 / cap;
+            return ratio;
+        }
+
+        /**
+         * Blend option-level scores for one benchmark suite.
+         * 1) Each option → capped relative score (mixed units / HIB+LIB safe)
+         * 2) Pair-balanced `-S` variants → median within group
+         * 3) Across groups → median (robust when one option is an outlier)
+         */
+        function blendOptionScores(bGroup, systems) {
             if (!systems.length) return { aggValues: [], combinedScales: [] };
 
             const combinedScales = [];
@@ -1432,20 +1460,10 @@
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
                 const { HIB: cfgHIB, scale } = getConfigComparisonMeta(config, bGroup);
-                const vals = systems.map(s => {
-                    const v = config.valuesBySystem[s];
-                    return (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null;
-                });
-                const valid = vals.filter(v => v != null);
-                if (!valid.length) return;
-                const worst = cfgHIB ? Math.min(...valid) : Math.max(...valid);
-                if (!(worst > 0)) return;
-
+                const vals = systems.map(s => config.valuesBySystem[s]);
                 noteScale(scale);
-
                 systems.forEach((sys, sIdx) => {
-                    const v = vals[sIdx];
-                    config.compositeBySystem[sys] = (v == null) ? null : (cfgHIB ? (v / worst) : (worst / v));
+                    config.compositeBySystem[sys] = relativeOptionScore(vals[sIdx], vals, cfgHIB);
                 });
             });
             if (!combinedScales.length && bGroup.scale) combinedScales.push(bGroup.scale);
@@ -1456,20 +1474,27 @@
                 if (!grouped.has(k)) grouped.set(k, []);
                 grouped.get(k).push(c);
             });
-            const groups = Array.from(grouped.values());
-            const perGroupBySystem = groups.map(cfgs => systems.map(sys => {
-                const vals = cfgs
+
+            const perGroupBySystem = Array.from(grouped.values()).map(cfgs => systems.map(sys => {
+                const scores = cfgs
                     .map(c => c.compositeBySystem && c.compositeBySystem[sys])
-                    .filter(v => v != null && !isNaN(v) && Number(v) > 0);
-                return vals.length ? geometricMean(vals) : null;
+                    .filter(v => v != null && isFinite(v) && v > 0);
+                return scores.length ? medianPositive(scores) : null;
             }));
+
             const aggValues = systems.map((_, sIdx) => {
-                const vals = perGroupBySystem
+                const scores = perGroupBySystem
                     .map(arr => arr[sIdx])
                     .filter(v => v != null && isFinite(v) && v > 0);
-                return vals.length ? acrossGroupsFn(vals) : null;
+                return scores.length ? medianPositive(scores) : null;
             });
+
             return { aggValues, combinedScales };
+        }
+
+        /** @deprecated alias */
+        function computeFairBenchmarkComposite(bGroup, systems) {
+            return blendOptionScores(bGroup, systems);
         }
 
         /** Data labels on composite bars (unitless relative scores, typically near 1.0). */
@@ -1494,8 +1519,8 @@
                 const b = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[1]]) : NaN;
                 if (!(isFinite(a) && isFinite(b) && a > 0 && b > 0)) return;
                 totalValid += 1;
-                const ratio01 = HIB ? (a / b) : (b / a); // sys0 vs sys1; >1 means sys0 ahead
-                if (!(ratio01 > 0) || !isFinite(ratio01)) return;
+                const ratio01 = headToHeadOptionRatio(a, b, HIB);
+                if (ratio01 == null) return;
                 const logContribution = Math.log(ratio01);
                 const isDecisive = Math.abs(ratio01 - 1) > 1e-9;
                 if (isDecisive) decisive += 1;
@@ -1526,7 +1551,7 @@
 
         /**
          * Per-benchmark composite for Compare UI and wins/losses.
-         * Headline: median of per-subtest relative scores (pair-balanced); resists one outlier.
+         * Headline: capped median blend across options (mixed units / HIB+LIB safe).
          * normalizeComposite: rescale so weakest = 1.0 (ranking unchanged).
          */
         function computeCompositeScores(bGroup, systems, opts) {
@@ -1534,7 +1559,7 @@
             if (!systems.length) return { aggValues: [], wins: [], losses: [], combinedScales: [] };
 
             const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
-            const fair = computeFairBenchmarkComposite(bGroup, systems, opts);
+            const fair = blendOptionScores(bGroup, systems);
             let aggValues = fair.aggValues;
 
             if (normalizeComposite) {
@@ -2132,7 +2157,7 @@
                 globalWins.forEach((_, i) => { globalWins[i] += (wins[i] || 0); });
                 globalLosses.forEach((_, i) => { globalLosses[i] += (losses[i] || 0); });
 
-                const { aggValues } = computeFairBenchmarkComposite(bGroup, systems);
+                const { aggValues } = blendOptionScores(bGroup, systems);
                 systems.forEach((_, sIdx) => {
                     const v = aggValues[sIdx];
                     if (v != null && !isNaN(v) && v > 0) ratiosBySystem[sIdx].push(v);
@@ -2735,7 +2760,7 @@
                 // Normalized mode only rescales the same composite (ranking unchanged).
                 subtitle.textContent = normalizeComposite
                     ? 'Higher is better (normalized view: weakest = 1.0)'
-                    : 'Higher is better — median of per-subtest relative scores (each subtest uses its own units/direction)';
+                    : 'Higher is better — capped median blend (each option normalized to its own units/direction; ±50% cap per option)';
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -2753,7 +2778,7 @@
                 // Always show per-benchmark composite bar (this is the original behavior).
                 const compositeLabel = (combinedScales && combinedScales.length > 1
                     ? `Composite score — ${combinedScales.join(', ')}`
-                    : 'Composite score (median of subtest ratios)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
+                    : 'Composite score (capped median blend)') + (normalizeComposite ? ' — weakest system = 1.0' : '');
                 const aggVals = finalAggValues.map(v => v != null ? v : 0);
                 const aggHigher = true;
                 const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
@@ -2775,12 +2800,12 @@
                         const pct01 = (r - 1) * 100;
                         let basisMsg;
                         if (pct01 >= 0) {
-                            basisMsg = `${systemLabels[0]} ahead by +${pct01.toFixed(2)}% vs ${systemLabels[1]} (median of pair-balanced subtest ratios).`;
+                            basisMsg = `${systemLabels[0]} ahead by +${pct01.toFixed(2)}% vs ${systemLabels[1]} (capped median of pair-balanced options).`;
                         } else {
                             const pct10 = (1 / r - 1) * 100;
-                            basisMsg = `${systemLabels[1]} ahead by +${pct10.toFixed(2)}% vs ${systemLabels[0]} (median of pair-balanced subtest ratios).`;
+                            basisMsg = `${systemLabels[1]} ahead by +${pct10.toFixed(2)}% vs ${systemLabels[0]} (capped median of pair-balanced options).`;
                         }
-                        d.textContent = `Composite basis check: ${diag.totalValid} configs → ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups. ${basisMsg} Bar = median relative score per system (1.0 on a subtest = tied with the slowest system on that subtest).`;
+                        d.textContent = `Composite basis check: ${diag.totalValid} configs → ${diag.groupRatios ? diag.groupRatios.length : 0} pair-balanced groups. ${basisMsg} Each option capped at ±${Math.round((COMPOSITE_OPTION_CAP_RATIO - 1) * 100)}% edge before blending.`;
                         aggSection.appendChild(d);
 
                         // Detailed math debug (collapsible): per-config contribution to geometric mean.
@@ -2793,7 +2818,7 @@
 
                         const expl = document.createElement('div');
                         expl.style.cssText = 'font-size:0.74rem;color:var(--text-secondary);margin:0.45rem 0 0.35rem;';
-                        expl.textContent = 'Per subtest: ratio vs the worst system on that subtest, using each subtest\'s own direction (HIB: value/worst; LIB: worst/value). Pair-balanced: GM within each args group (ignoring -S), then median across groups.';
+                        expl.textContent = 'Per option: score = value/worst (HIB) or worst/value (LIB), capped at ±50% edge. Pair-balanced: median within each args group (ignoring -S), then median across groups.';
                         details.appendChild(expl);
 
                         let runningLog = 0;

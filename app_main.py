@@ -8,7 +8,7 @@ from app.models import (
     SavedComparison,
     HardwareTheoreticalRank,
 )
-from app.parser import parse_benchmark_files, parse_file
+from app.parser import parse_benchmark_files, parse_file, pop_import_notes
 from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
 from app.analyzer import analyze_benchmarks
 from app.components import get_system_components
@@ -353,6 +353,7 @@ def upload_benchmarks():
     # Process files in a temporary directory
     temp_dir = tempfile.mkdtemp()
     extracted_xml_count = 0
+    pop_import_notes()
     
     try:
         for f in files:
@@ -391,6 +392,12 @@ def upload_benchmarks():
         
         if extracted_xml_count > 0:
             flash(f'Successfully ingested {extracted_xml_count} benchmark records.', 'success')
+            seen_notes = set()
+            for note in pop_import_notes():
+                if note in seen_notes:
+                    continue
+                seen_notes.add(note)
+                flash(note, 'success')
             shutil.rmtree(temp_dir, ignore_errors=True)
             return redirect(url_for('dashboard'))
         else:
