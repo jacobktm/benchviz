@@ -21,6 +21,14 @@ def geometric_mean(values: Sequence[float]) -> float | None:
     return math.prod(chunk_results)
 
 
+def harmonic_mean(values: Sequence[float]) -> float | None:
+    """PTS harmonic mean for rate-type results: H = n / Σ(1/vᵢ)."""
+    nums = [float(v) for v in values if v is not None and math.isfinite(float(v)) and float(v) > 0]
+    if not nums:
+        return None
+    return (1.0 / sum(1.0 / v for v in nums)) * len(nums)
+
+
 def result_to_percentile(value: float, percentiles: Sequence[float], hib: bool) -> int | None:
     """
     Map a result to an OpenBenchmarking population percentile (1–100).

@@ -91,6 +91,17 @@ def _copy_generated_json_files(src_root: Path, dest_root: Path) -> int:
     return count
 
 
+def _ob_median_from_percentiles(percentiles: list[Any]) -> float | None:
+    """OB population median (percentiles[50]) used as PTS reference baseline."""
+    if not percentiles or len(percentiles) < 51:
+        return None
+    try:
+        m = float(percentiles[50])
+    except (TypeError, ValueError):
+        return None
+    return m if m > 0 else None
+
+
 def build_ob_cache_index(cache_dir: Path | None = None, index_path: Path | None = None) -> dict[str, Any]:
     """Walk mirrored generated.json files and build hash -> percentile lookup index."""
     cache = Path(cache_dir or default_ob_cache_dir())
@@ -121,6 +132,7 @@ def build_ob_cache_index(cache_dir: Path | None = None, index_path: Path | None 
                     "hib": bool(row.get("hib", 1)),
                     "samples": int(row.get("samples") or 0),
                     "percentiles": row.get("percentiles") or [],
+                    "ob_median": _ob_median_from_percentiles(row.get("percentiles") or []),
                     "test_version": row.get("test_version") or "",
                     "app_version": row.get("app_version") or "",
                 }

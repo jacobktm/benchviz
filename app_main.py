@@ -1196,7 +1196,12 @@ def api_compare():
 
     comparison_groups = []
     from app.ob_cache_sync import load_ob_cache_index
-    from app.pts_compare import build_pts_context_for_compare_group, build_pts_global_summary
+    from app.pts_compare import (
+        build_pts_context_for_compare_group,
+        build_pts_global_harmonic_summary,
+        build_pts_global_summary,
+        build_pts_ob_global_summary,
+    )
 
     ob_index_cache = load_ob_cache_index()
 
@@ -1976,6 +1981,7 @@ def api_compare():
                         ch["pts"] = {
                             "comparison_hash": st.get("comparison_hash"),
                             "pts_relative": st.get("pts_relative"),
+                            "pts_ob_relative": st.get("pts_ob_relative"),
                             "ob_percentile": st.get("ob_percentile"),
                             "ob": st.get("ob"),
                         }
@@ -1999,6 +2005,14 @@ def api_compare():
     if comparison_groups and comparison_groups[0].get("system_details"):
         first_names = [s.get("short_name") for s in comparison_groups[0]["system_details"] if s.get("short_name")]
     pts_global = build_pts_global_summary(pts_contexts, first_names) if pts_contexts and first_names else None
+    pts_global_harmonic = (
+        build_pts_global_harmonic_summary(pts_contexts, first_names)
+        if pts_contexts and first_names else None
+    )
+    pts_global_ob = (
+        build_pts_ob_global_summary(pts_contexts, first_names)
+        if pts_contexts and first_names else None
+    )
 
     return {
         "comparison_groups": comparison_groups,
@@ -2008,6 +2022,8 @@ def api_compare():
             "ob_index_synced_at": (ob_index_cache or {}).get("synced_at"),
             "ob_entry_count": (ob_index_cache or {}).get("entry_count"),
             "global": pts_global,
+            "global_harmonic_by_scale": pts_global_harmonic,
+            "global_ob": pts_global_ob,
         },
     }
 

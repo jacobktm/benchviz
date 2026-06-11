@@ -6,8 +6,14 @@ import unittest
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ROOT)
 
-from app.pts_math import geometric_mean, result_to_percentile
-from app.pts_comparison import generate_comparison_hash, normalize_relative_values
+from app.pts_math import geometric_mean, harmonic_mean, result_to_percentile
+from app.pts_comparison import (
+    generate_comparison_hash,
+    is_harmonic_mean_scale,
+    normalize_relative_values,
+    pts_harmonic_mean_by_scale,
+    relative_vs_ob_median,
+)
 from app.pts_compare import build_pts_global_summary
 
 
@@ -36,11 +42,6 @@ class PtsComparisonHashTest(unittest.TestCase):
         self.assertEqual(p, 100)
 
 
-class PtsMathTest(unittest.TestCase):
-    def test_geometric_mean(self):
-        self.assertAlmostEqual(geometric_mean([1.0, 1.21]), 1.1, places=5)
-
-
 class PtsGlobalSummaryTest(unittest.TestCase):
     def test_global_geo_mean_from_raw_subtests(self):
         ctx = [{
@@ -61,6 +62,49 @@ class PtsGlobalSummaryTest(unittest.TestCase):
         summary = build_pts_global_summary(ctx, ["a", "b"])
         self.assertIsNone(summary["composite_raw"]["a"])
         self.assertIsNone(summary["composite_raw"]["b"])
+
+
+class PtsObRelativeTest(unittest.TestCase):
+    def test_relative_vs_ob_median_hib(self):
+        rel = relative_vs_ob_median({"a": 73490.0, "b": 85000.0}, hib=True, ob_median=73490.0)
+        self.assertAlmostEqual(rel["a"], 1.0)
+        self.assertAlmostEqual(rel["b"], 85000.0 / 73490.0, places=4)
+
+
+class PtsHarmonicMeanTest(unittest.TestCase):
+    def test_harmonic_mean_formula(self):
+        self.assertAlmostEqual(harmonic_mean([100.0, 200.0]), 133.333333, places=4)
+
+    def test_harmonic_scale_eligibility(self):
+        self.assertTrue(is_harmonic_mean_scale("FPS"))
+        self.assertTrue(is_harmonic_mean_scale("MB/s"))
+        self.assertFalse(is_harmonic_mean_scale("MIPS"))
+        self.assertFalse(is_harmonic_mean_scale("Seconds"))
+
+    def test_harmonic_by_scale_requires_four_subtests(self):
+        subtests = [
+            {"hib": True, "scale": "FPS", "values": {"a": 100.0, "b": 110.0}},
+        ] * 3
+        self.assertEqual(pts_harmonic_mean_by_scale(subtests, ["a", "b"]), {})
+
+        subtests = [
+            {"hib": True, "scale": "FPS", "values": {"a": 100.0, "b": 110.0}},
+        ] * 4
+        result = pts_harmonic_mean_by_scale(subtests, ["a", "b"])
+        self.assertIn("FPS", result)
+        self.assertAlmostEqual(result["FPS"]["relative"]["a"], 1.0)
+        self.assertGreater(result["FPS"]["relative"]["b"], 1.0)
+
+    def test_harmonic_skips_lib(self):
+        subtests = [
+            {"hib": False, "scale": "FPS", "values": {"a": 10.0, "b": 12.0}},
+        ] * 4
+        self.assertEqual(pts_harmonic_mean_by_scale(subtests, ["a", "b"]), {})
+
+
+class PtsMathTest(unittest.TestCase):
+    def test_geometric_mean(self):
+        self.assertAlmostEqual(geometric_mean([1.0, 1.21]), 1.1, places=5)
 
 
 if __name__ == "__main__":

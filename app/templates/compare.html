@@ -449,6 +449,8 @@
                 options: {
                     normalizeComposite,
                     showCompositeBar,
+                    showHarmonicMean,
+                    compareVsObMedian,
                     showWinsLossCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
@@ -490,6 +492,8 @@
                 const opts = data.options || {};
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
+                showHarmonicMean = !!opts.showHarmonicMean;
+                compareVsObMedian = !!opts.compareVsObMedian;
                 showWinsLossCharts = !!opts.showWinsLossCharts;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
@@ -867,6 +871,8 @@
         // Global options (all OFF by default, like Phoronix)
         let normalizeComposite = false;
         let showCompositeBar = false;
+        let showHarmonicMean = false;
+        let compareVsObMedian = false;
         let filterRelevantSensors = true;
         let filterNoisySensors = true;
         let showWinsLossCharts = false;
@@ -1268,6 +1274,25 @@
             return Math.exp(logSum / valid.length);
         }
 
+        function harmonicMean(arr) {
+            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
+            if (!valid.length) return null;
+            const sumInv = valid.reduce((acc, v) => acc + 1 / v, 0);
+            if (!sumInv) return null;
+            return (1 / sumInv) * valid.length;
+        }
+
+        const MIN_HARMONIC_SUBTESTS = 4;
+
+        /** PTS harmonic-mean scale filter (FPS, bps, IOPS, MB/s, etc.). */
+        function isHarmonicMeanScale(scale) {
+            const rs = (scale || '').trim();
+            if (!rs) return false;
+            const rsLower = rs.toLowerCase();
+            return rs.includes('/') || rsLower.includes(' per ') || rsLower.includes('fps')
+                || rsLower.includes('bps') || rsLower.includes('iops');
+        }
+
         function medianPositive(arr) {
             const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0).sort((a, b) => a - b);
             if (!valid.length) return null;
@@ -1639,10 +1664,22 @@
             return n.toFixed(1) + ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)';
         }
 
+        /** Whether scoring uses OpenBenchmarking population median (100 = OB median). */
+        function useObReferenceScoring() {
+            return !!(compareVsObMedian && currentPtsScoring && currentPtsScoring.ob_index_available);
+        }
+
         /** PTS viewer % column: relative multiplier × 100 (reference = 100). */
         function ptsRelativePercent(relative) {
             if (relative == null || isNaN(relative)) return null;
             return Number(relative) * 100;
+        }
+
+        function formatObRelativeLabel(pct) {
+            if (pct == null || isNaN(pct)) return '';
+            if (Math.abs(pct - 100) < 0.05) return '100 (OB median)';
+            const delta = pct - 100;
+            return pct.toFixed(1) + ' (' + (delta >= 0 ? '+' : '') + delta.toFixed(1) + '% vs median)';
         }
 
         function formatPtsRelativeLabel(pct) {
@@ -1700,6 +1737,172 @@
                 relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
             });
             return { raw, relative, referenceSystemId: refId, subtestCount: subtests.length };
+        }
+
+        /** Geo-mean of OB-relative subtest scores (1.0 = OB median per subtest). */
+        function computePtsGeoMeanObForBGroup(bGroup, systems) {
+            const subtests = collectPtsSubtestsForBGroup(bGroup).filter(st => (st.ob && st.ob.matched));
+            if (subtests.length < 2) return null;
+            const perSystem = systems.map(() => []);
+            subtests.forEach(st => {
+                const obRel = st.pts_ob_relative || {};
+                systems.forEach((sid, i) => {
+                    const rel = obRel[sid];
+                    if (rel == null || isNaN(rel) || Number(rel) <= 0) return;
+                    perSystem[i].push(Number(rel));
+                });
+            });
+            const relArr = perSystem.map(arr => (arr.length >= 2 ? geometricMean(arr) : null));
+            if (relArr.every(v => v == null)) return null;
+            const relative = {};
+            systems.forEach((sid, i) => { relative[sid] = relArr[i]; });
+            return {
+                relative,
+                referenceSystemId: '',
+                subtestCount: subtests.length,
+                obReference: true,
+            };
+        }
+
+        /** Harmonic mean of OB-relative rate subtest scores. */
+        function computePtsHarmonicMeanObForBGroup(bGroup, systems) {
+            const subtests = collectPtsSubtestsForBGroup(bGroup).filter(st => (st.ob && st.ob.matched));
+            const byScale = new Map();
+            const subtestCounts = new Map();
+            subtests.forEach(st => {
+                if (st.hib === false) return;
+                const scale = (st.scale || '').trim();
+                if (!isHarmonicMeanScale(scale)) return;
+                const obRel = st.pts_ob_relative || {};
+                if (!byScale.has(scale)) byScale.set(scale, systems.map(() => []));
+                const buckets = byScale.get(scale);
+                let contributed = false;
+                systems.forEach((sid, i) => {
+                    const rel = obRel[sid];
+                    if (rel == null || isNaN(rel) || Number(rel) <= 0) return;
+                    buckets[i].push(Number(rel));
+                    contributed = true;
+                });
+                if (contributed) subtestCounts.set(scale, (subtestCounts.get(scale) || 0) + 1);
+            });
+            const results = [];
+            byScale.forEach((buckets, scale) => {
+                const relArr = buckets.map(arr => (arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null));
+                const relative = {};
+                let any = false;
+                systems.forEach((sid, i) => {
+                    relative[sid] = relArr[i];
+                    if (relArr[i] != null) any = true;
+                });
+                if (!any) return;
+                results.push({
+                    scale,
+                    relative,
+                    referenceSystemId: '',
+                    subtestCount: subtestCounts.get(scale) || 0,
+                    obReference: true,
+                });
+            });
+            return results.sort((a, b) => a.scale.localeCompare(b.scale));
+        }
+
+        /**
+         * PTS generate_harmonic_mean_result() for one benchmark suite.
+         * HIB rate-like subtests only; ≥4 values per system per scale.
+         */
+        function computePtsHarmonicMeanForBGroup(bGroup, systems) {
+            const subtests = collectPtsSubtestsForBGroup(bGroup);
+            const byScale = new Map();
+            const subtestCounts = new Map();
+            subtests.forEach(st => {
+                if (st.hib === false) return;
+                const scale = (st.scale || '').trim();
+                if (!isHarmonicMeanScale(scale)) return;
+                const vals = st.values || {};
+                if (!byScale.has(scale)) byScale.set(scale, systems.map(() => []));
+                const buckets = byScale.get(scale);
+                let contributed = false;
+                systems.forEach((sid, i) => {
+                    const raw = vals[sid];
+                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                    buckets[i].push(Number(raw));
+                    contributed = true;
+                });
+                if (contributed) subtestCounts.set(scale, (subtestCounts.get(scale) || 0) + 1);
+            });
+
+            const results = [];
+            byScale.forEach((buckets, scale) => {
+                const rawArr = buckets.map(arr => (arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null));
+                const working = {};
+                systems.forEach((sid, i) => {
+                    if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
+                });
+                if (Object.keys(working).length < 2) return;
+                const divide = Math.min(...Object.values(working));
+                let refId = systems[0];
+                systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
+                const raw = {};
+                const relative = {};
+                systems.forEach((sid, i) => {
+                    raw[sid] = rawArr[i];
+                    relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
+                });
+                results.push({
+                    scale,
+                    raw,
+                    relative,
+                    referenceSystemId: refId,
+                    subtestCount: subtestCounts.get(scale) || 0,
+                });
+            });
+            return results.sort((a, b) => a.scale.localeCompare(b.scale));
+        }
+
+        /** Render a PTS geo-mean or harmonic-mean composite bar chart. */
+        function renderPtsCompositeBar(parent, systems, systemLabels, meanData, meanLabel) {
+            const scaleSuffix = meanData.scale ? `scale ${meanData.scale}; ` : '';
+            let compositeLabel;
+            let aggVals;
+            let aggFormatter;
+            if (meanData.obReference || useObReferenceScoring()) {
+                compositeLabel = `${meanLabel} vs OB median (100 = population median; ${scaleSuffix}${meanData.subtestCount} matched subtests)`;
+                aggVals = systems.map(sid => {
+                    const pct = ptsRelativePercent(meanData.relative[sid]);
+                    return pct != null ? pct : 100;
+                });
+                aggFormatter = formatObRelativeLabel;
+            } else if (normalizeComposite) {
+                const refId = meanData.referenceSystemId || systems[0];
+                const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
+                compositeLabel = `${meanLabel} — Relative Performance (${refLabel} = 100%; ${scaleSuffix}${meanData.subtestCount} subtests)`;
+                aggVals = systems.map(sid => {
+                    const pct = ptsRelativePercent(meanData.relative[sid]);
+                    return pct != null ? pct : 100;
+                });
+                aggFormatter = formatPtsRelativeLabel;
+            } else {
+                const refId = meanData.referenceSystemId || systems[0];
+                const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
+                compositeLabel = `${meanLabel} (${refLabel} = 100; ${scaleSuffix}${meanData.subtestCount} subtests)`;
+                const refRaw = meanData.raw && meanData.raw[refId];
+                aggVals = systems.map(sid => {
+                    const r = meanData.raw && meanData.raw[sid];
+                    if (r == null || !refRaw || refRaw <= 0) return 100;
+                    return (r / refRaw) * 100;
+                });
+                aggFormatter = formatPerformanceIndexLabel;
+            }
+            const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, true);
+            createBarChart(
+                parent,
+                sortedAgg.labels,
+                sortedAgg.values,
+                compositeLabel,
+                aggFormatter,
+                'pts-mean',
+                sortedAgg.systemIds
+            );
         }
 
         /** Diagnostics for 2-system composite on the exact valuesBySystem path. */
@@ -2624,7 +2827,7 @@
             }
 
             // Global summary across all benchmarks (Phoronix-style options)
-            if ((showCompositeBar || showWinsLossCharts) && benchmarkGroups.length) {
+            if ((showCompositeBar || showHarmonicMean || showWinsLossCharts) && benchmarkGroups.length) {
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
                 const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
@@ -2644,7 +2847,9 @@
                 }
                 const ptsScoringNote = document.createElement('div');
                 ptsScoringNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.35rem;';
-                ptsScoringNote.textContent = 'Composite scores use PTS math (geo-mean across subtests; reference = slowest system). Enable Normalize for relative performance matching the PTS results viewer.';
+                ptsScoringNote.textContent = useObReferenceScoring()
+                    ? 'Scores vs OpenBenchmarking population median (100 = OB median result). Matches PTS box-plot / percentile baseline when OB cache is synced.'
+                    : 'Composite scores use PTS math. Enable "Compare vs OpenBenchmarking median" for OB reference, or "Normalize" for slowest-system reference in this comparison.';
                 globalSection.appendChild(ptsScoringNote);
 
                 const { globalComposite, globalWins, globalLosses, referenceSystemId: globalRefId } = computeGlobalSummary(benchmarkGroups, systems);
@@ -2662,7 +2867,14 @@
                     let label;
                     let formatter;
 
-                    if (usePtsComposite && ptsGlobal && (ptsGlobal.composite_relative || ptsGlobal.composite_raw)) {
+                    if (useObReferenceScoring() && currentPtsScoring.global_ob && currentPtsScoring.global_ob.composite_ob_relative) {
+                        values = systems.map(sid => {
+                            const pct = ptsRelativePercent(currentPtsScoring.global_ob.composite_ob_relative[sid]);
+                            return pct != null ? pct : 100;
+                        });
+                        label = `Geometric mean vs OB median (100 = population median; ${currentPtsScoring.global_ob.subtest_count || '?'} matched subtests)`;
+                        formatter = formatObRelativeLabel;
+                    } else if (usePtsComposite && ptsGlobal && (ptsGlobal.composite_relative || ptsGlobal.composite_raw)) {
                         const ptsRefId = ptsGlobal.reference_system_id || '';
                         const ptsRefLabel = labelForReferenceSystem(ptsRefId, systemLabels, systems);
                         if (normalizeComposite && ptsGlobal.composite_relative) {
@@ -2716,6 +2928,23 @@
                         'overall-composite',
                         sortedOverall.systemIds
                     );
+                }
+                if (showHarmonicMean && usePtsComposite && currentPtsScoring && currentPtsScoring.global_harmonic_by_scale) {
+                    const hmByScale = currentPtsScoring.global_harmonic_by_scale;
+                    Object.keys(hmByScale).sort().forEach(scale => {
+                        const hm = hmByScale[scale];
+                        if (!hm) return;
+                        const barWrap = document.createElement('div');
+                        barWrap.style.marginBottom = '1rem';
+                        globalSection.appendChild(barWrap);
+                        renderPtsCompositeBar(
+                            barWrap,
+                            systems,
+                            systemLabels,
+                            { scale, raw: hm.raw, relative: hm.relative, referenceSystemId: hm.reference_system_id, subtestCount: hm.subtest_count },
+                            'Harmonic Mean'
+                        );
+                    });
                 }
                 if (showWinsLossCharts && systems.length >= 2) {
                     const pieRow = document.createElement('div');
@@ -2973,9 +3202,17 @@
                         directionEl.textContent = directionText;
                         chartDiv.appendChild(directionEl);
 
-                        // PTS normalize (nor): use server-side relative performance when available.
+                        // OB median reference, PTS normalize, or raw values.
+                        const ptsObRel = chartData.pts && chartData.pts.pts_ob_relative;
                         const ptsRel = chartData.pts && chartData.pts.pts_relative;
-                        if (normalizeComposite && chartData.is_primary && ptsRel) {
+                        const obMatched = chartData.pts && chartData.pts.ob && chartData.pts.ob.matched;
+                        if (useObReferenceScoring() && chartData.is_primary && obMatched && ptsObRel) {
+                            values = traceNames.map(name => {
+                                const rel = ptsObRel[name];
+                                const pct = ptsRelativePercent(rel);
+                                return pct != null ? pct : 0;
+                            });
+                        } else if (normalizeComposite && chartData.is_primary && ptsRel) {
                             values = traceNames.map(name => {
                                 const rel = ptsRel[name];
                                 const pct = ptsRelativePercent(rel);
@@ -2998,17 +3235,29 @@
 
                         const formatter = (value) => {
                             if (value == null || value === undefined || isNaN(value)) return '';
+                            if (useObReferenceScoring() && chartData.is_primary && obMatched && ptsObRel) {
+                                return formatObRelativeLabel(Number(value));
+                            }
                             if (normalizeComposite && chartData.is_primary && ptsRel) {
                                 return formatPtsRelativeLabel(Number(value));
                             }
                             return Number(value).toFixed(2);
                         };
-                        const xAxisLabel = (normalizeComposite && chartData.is_primary)
-                            ? (ptsRel
+                        let xAxisLabel;
+                        if (useObReferenceScoring() && chartData.is_primary && obMatched) {
+                            const med = chartData.pts.ob.median;
+                            const unit = chartData.pts.ob.unit || chartData.scale || '';
+                            xAxisLabel = med
+                                ? `% vs OB median (${Number(med).toLocaleString()} ${unit} = 100%)`
+                                : '% vs OpenBenchmarking population median (100 = median)';
+                        } else if (normalizeComposite && chartData.is_primary) {
+                            xAxisLabel = ptsRel
                                 ? 'Relative Performance (% vs slowest; PTS normalize)'
-                                : (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)'))
-                            : (chartData.scale ? `${chartData.scale} — ${directionText}` : directionText);
-                        const individualHigher = normalizeComposite || HIB;
+                                : (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)');
+                        } else {
+                            xAxisLabel = chartData.scale ? `${chartData.scale} — ${directionText}` : directionText;
+                        }
+                        const individualHigher = (useObReferenceScoring() && chartData.is_primary && obMatched) || normalizeComposite || HIB;
                         const sortedIndividual = sortLabelsValuesSystemIdsBestFirst(labels, values, traceNames, individualHigher);
                         createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual', sortedIndividual.systemIds);
                     } else if (chartData.display_format === 'LINE_GRAPH') {
@@ -3113,9 +3362,11 @@
                 subtitle.style.marginBottom = '1rem';
                 subtitle.style.textAlign = 'center';
                 // Normalized mode only rescales the same composite (ranking unchanged).
-                subtitle.textContent = normalizeComposite
-                    ? 'PTS normalize — relative performance vs slowest system (reference = 100%)'
-                    : 'Raw values — enable Normalize for PTS relative performance; geometric mean uses PTS geo-mean when ≥2 subtests';
+                subtitle.textContent = useObReferenceScoring()
+                    ? 'vs OpenBenchmarking population median (100 = typical OB result for each subtest)'
+                    : (normalizeComposite
+                        ? 'PTS normalize — relative performance vs slowest system in this comparison (reference = 100%)'
+                        : 'Raw values — enable OB median or Normalize for relative performance scoring');
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -3124,7 +3375,9 @@
                 })();
                 const systemLabels = getSystemDisplayNames(systems);
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
-                const ptsGeo = computePtsGeoMeanForBGroup(bGroup, systems);
+                const ptsGeo = useObReferenceScoring()
+                    ? (computePtsGeoMeanObForBGroup(bGroup, systems) || computePtsGeoMeanForBGroup(bGroup, systems))
+                    : computePtsGeoMeanForBGroup(bGroup, systems);
                 const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
                 const benchRefId = ptsGeo ? ptsGeo.referenceSystemId : computeCompositeScores(bGroup, systems).referenceSystemId;
                 const benchRefLabel = labelForReferenceSystem(benchRefId, systemLabels, systems);
@@ -3134,35 +3387,12 @@
                 groupWrapper.appendChild(aggSection);
 
                 if (ptsGeo) {
-                    let compositeLabel;
-                    let aggVals;
-                    let aggFormatter;
-                    if (normalizeComposite) {
-                        compositeLabel = `Geometric Mean — Relative Performance (${benchRefLabel} = 100%; ${ptsGeo.subtestCount} subtests)`;
-                        aggVals = systems.map(sid => {
-                            const pct = ptsRelativePercent(ptsGeo.relative[sid]);
-                            return pct != null ? pct : 100;
-                        });
-                        aggFormatter = formatPtsRelativeLabel;
-                    } else {
-                        compositeLabel = `Geometric Mean (${benchRefLabel} = 100; ${ptsGeo.subtestCount} subtests)`;
-                        const refRaw = ptsGeo.raw[benchRefId];
-                        aggVals = systems.map(sid => {
-                            const raw = ptsGeo.raw[sid];
-                            if (raw == null || !refRaw || refRaw <= 0) return 100;
-                            return (raw / refRaw) * 100;
-                        });
-                        aggFormatter = formatPerformanceIndexLabel;
-                    }
-                    const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, true);
-                    createBarChart(
+                    renderPtsCompositeBar(
                         aggSection,
-                        sortedAgg.labels,
-                        sortedAgg.values,
-                        compositeLabel,
-                        aggFormatter,
-                        'aggregate-pts',
-                        sortedAgg.systemIds
+                        systems,
+                        systemLabels,
+                        ptsGeo,
+                        'Geometric Mean'
                     );
                 } else {
                     const { aggValues, combinedScales } = computeCompositeScores(bGroup, systems);
@@ -3191,10 +3421,30 @@
                         sortedAgg.systemIds
                     );
                 }
+                if (showHarmonicMean) {
+                    const ptsHarmonic = useObReferenceScoring()
+                        ? computePtsHarmonicMeanObForBGroup(bGroup, systems)
+                        : computePtsHarmonicMeanForBGroup(bGroup, systems);
+                    ptsHarmonic.forEach(hm => {
+                        const hmSection = document.createElement('div');
+                        hmSection.style.marginBottom = '1.5rem';
+                        groupWrapper.appendChild(hmSection);
+                        renderPtsCompositeBar(hmSection, systems, systemLabels, hm, 'Harmonic Mean');
+                        if (systems.length === 2) {
+                            const d = document.createElement('div');
+                            d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
+                            const refLabel = labelForReferenceSystem(hm.referenceSystemId, systemLabels, systems);
+                            d.textContent = `PTS harmonic mean of ${hm.subtestCount} ${hm.scale} subtests (HIB rate metrics only). Reference: ${refLabel} (slowest). Requires ≥${MIN_HARMONIC_SUBTESTS} eligible subtests.`;
+                            hmSection.appendChild(d);
+                        }
+                    });
+                }
                 if (systems.length === 2 && ptsGeo) {
                     const d = document.createElement('div');
                     d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
-                    d.textContent = `PTS geometric mean of ${ptsGeo.subtestCount} subtests (LIB→HIB inverted per subtest). Reference: ${benchRefLabel} (slowest geo-mean composite).`;
+                    d.textContent = useObReferenceScoring() && ptsGeo.obReference
+                        ? `PTS geometric mean of ${ptsGeo.subtestCount} OB-matched subtests. Reference: OpenBenchmarking population median (100%).`
+                        : `PTS geometric mean of ${ptsGeo.subtestCount} subtests (LIB→HIB inverted per subtest). Reference: ${benchRefLabel} (slowest geo-mean composite).`;
                     aggSection.appendChild(d);
                 } else if (systems.length === 2) {
                     const diag = computeTwoSystemCompositeDiagnostics(bGroup, systems);
@@ -3598,6 +3848,9 @@
                     currentComparisonGroups = data.comparison_groups;
                     currentPtsScoring = data.pts || null;
                     usePtsComposite = !!(currentPtsScoring && currentPtsScoring.global);
+                    if (currentPtsScoring && currentPtsScoring.ob_index_available && !savedComparisonId) {
+                        compareVsObMedian = true;
+                    }
                     
                     chartControls.style.display = 'block';
                     chartTitle.textContent = "";
@@ -3624,12 +3877,14 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'compareVsObMedian' ? compareVsObMedian : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
+                                else if (key === 'showHarmonicMean') showHarmonicMean = val;
+                                else if (key === 'compareVsObMedian') compareVsObMedian = val;
                                 else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
                                 else if (key === 'filterRelevantSensors' || key === 'filterNoisySensors') {
                                     if (key === 'filterRelevantSensors') filterRelevantSensors = val;
@@ -3647,7 +3902,9 @@
                             return label;
                         };
                         
+                        toggleRow.appendChild(mkToggle('PTS: Compare vs OpenBenchmarking median', 'compareVsObMedian'));
                         toggleRow.appendChild(mkToggle('PTS: Show overall geometric mean', 'showCompositeBar'));
+                        toggleRow.appendChild(mkToggle('PTS: Show harmonic mean (rate metrics)', 'showHarmonicMean'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
                         toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
@@ -3672,6 +3929,8 @@
                             const key = input.dataset.modeKey;
                             if (key === 'normalizeComposite') input.checked = normalizeComposite;
                             else if (key === 'showCompositeBar') input.checked = showCompositeBar;
+                            else if (key === 'showHarmonicMean') input.checked = showHarmonicMean;
+                            else if (key === 'compareVsObMedian') input.checked = compareVsObMedian;
                             else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
                         });
                     }
