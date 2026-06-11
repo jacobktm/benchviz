@@ -450,6 +450,7 @@
                     normalizeComposite,
                     showCompositeBar,
                     showHarmonicMean,
+                    showWinsLossCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
                 },
@@ -491,6 +492,7 @@
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
                 showHarmonicMean = !!opts.showHarmonicMean;
+                showWinsLossCharts = !!opts.showWinsLossCharts;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
                 }
@@ -868,6 +870,7 @@
         let normalizeComposite = false;
         let showCompositeBar = false;
         let showHarmonicMean = false;
+        let showWinsLossCharts = false;
         let filterRelevantSensors = true;
         let filterNoisySensors = true;
         let showOverallSensor = {};  // metric name -> boolean, for overall sensor bar charts
@@ -921,8 +924,7 @@
             if (!n) return null;
             const height = barChartHeight(n);
             const wrap = document.createElement('div');
-            wrap.style.width = '100%';
-            wrap.style.marginBottom = '1rem';
+            wrap.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;box-sizing:border-box;margin-bottom:1rem;';
             const canvas = document.createElement('canvas');
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
@@ -956,11 +958,14 @@
                 plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: f, clip: true } }
             };
             function create() {
-                // When charts are created inside containers that were previously hidden,
-                // offsetWidth can report 0 and produce a visually short chart. Fall back
-                // to the compare area width (chartsContainer) and a sensible minimum.
-                const containerWidth = (typeof chartsContainer !== 'undefined' && chartsContainer.offsetWidth) ? chartsContainer.offsetWidth : 0;
-                const w = Math.max(wrap.offsetWidth || 0, parent.offsetWidth || 0, containerWidth, 300);
+                const containerWidth = (typeof chartsContainer !== 'undefined' && chartsContainer)
+                    ? (chartsContainer.clientWidth || chartsContainer.offsetWidth || 0) : 0;
+                const parentWidth = parent ? (parent.clientWidth || parent.offsetWidth || 0) : 0;
+                const cap = containerWidth || parentWidth;
+                const measured = wrap.clientWidth || wrap.offsetWidth || 0;
+                const w = cap > 0
+                    ? Math.min(Math.max(measured, 300), cap)
+                    : Math.max(measured, parentWidth, containerWidth, 300);
                 canvas.width = w;
                 canvas.height = height;
                 canvas.style.width = w + 'px';
@@ -2752,17 +2757,20 @@
             }
 
             // Global summary across all benchmarks
-            if ((showCompositeBar || showHarmonicMean) && benchmarkGroups.length) {
+            if ((showCompositeBar || showHarmonicMean || showWinsLossCharts) && benchmarkGroups.length) {
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
                 const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
                 const systemLabels = getSystemDisplayNames(systems);
                 const ptsGlobal = currentPtsScoring && currentPtsScoring.global;
+                const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
 
                 const globalCharts = document.createElement('div');
-                globalCharts.style.cssText = 'display:flex;flex-direction:column;gap:0.25rem;';
+                globalCharts.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;';
 
+                let hasCompositeCharts = false;
                 if (showCompositeBar && usePtsComposite && ptsGlobal && (ptsGlobal.composite_raw || ptsGlobal.composite_relative)) {
+                    hasCompositeCharts = true;
                     renderPtsCompositeBar(
                         globalCharts,
                         systems,
@@ -2781,6 +2789,7 @@
                     Object.keys(currentPtsScoring.global_harmonic_by_scale).sort().forEach(scale => {
                         const hm = currentPtsScoring.global_harmonic_by_scale[scale];
                         if (!hm) return;
+                        hasCompositeCharts = true;
                         renderPtsCompositeBar(
                             globalCharts,
                             systems,
@@ -2796,17 +2805,29 @@
                         );
                     });
                 }
-                if (globalCharts.hasChildNodes()) {
+
+                const hasPies = showWinsLossCharts && systems.length >= 2;
+                const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+                const sensorsToShow = overallSensors.filter(({ metric }) => showOverallSensor[metric]);
+
+                if (hasCompositeCharts || hasPies || sensorsToShow.length) {
                     const globalSection = document.createElement('div');
-                    globalSection.style.cssText = 'width:100%;margin-bottom:2rem;';
+                    globalSection.style.cssText = 'width:100%;max-width:100%;margin-bottom:2rem;padding:1rem 1.25rem;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);box-sizing:border-box;overflow:hidden;';
                     const globalTitle = document.createElement('h3');
                     globalTitle.textContent = 'Overall';
                     globalTitle.style.cssText = 'font-weight:600;color:var(--text-primary);margin:0 0 0.75rem;font-size:0.95rem;text-align:center;';
                     globalSection.appendChild(globalTitle);
-                    globalSection.appendChild(globalCharts);
 
-                    const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
-                    const sensorsToShow = overallSensors.filter(({ metric }) => showOverallSensor[metric]);
+                    if (hasCompositeCharts) {
+                        globalSection.appendChild(globalCharts);
+                    }
+                    if (hasPies) {
+                        const pieRow = document.createElement('div');
+                        pieRow.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;align-items:flex-start;gap:1.25rem 2rem;width:100%;max-width:100%;margin-top:0.75rem;box-sizing:border-box;';
+                        addPieChart(pieRow, systemLabels, globalWins, 'Overall wins (best score per option)', systems);
+                        addPieChart(pieRow, systemLabels, globalLosses, 'Overall losses (worst score per option)', systems);
+                        globalSection.appendChild(pieRow);
+                    }
                     if (sensorsToShow.length) {
                         const sensorHeading = document.createElement('div');
                         sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.25rem;margin-bottom:0.5rem;font-size:0.85rem;text-align:center;';
@@ -2814,7 +2835,7 @@
                         globalSection.appendChild(sensorHeading);
                         sensorsToShow.forEach(({ metric, scale, proportion, valuesBySystem }) => {
                             const wrap = document.createElement('div');
-                            wrap.style.marginBottom = '0.75rem';
+                            wrap.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;margin-bottom:0.75rem;';
                             globalSection.appendChild(wrap);
                             const HIB = isHigherIsBetter(proportion);
                             let values = systems.map((s, i) => valuesBySystem[i] != null ? valuesBySystem[i] : 0);
@@ -2838,16 +2859,15 @@
             }
 
             function addPieChart(parent, systemLabels, values, title, systemIds) {
-                const PIE_SIZE = 200;
-                const WRAP_WIDTH = 300;
+                const PIE_SIZE = 180;
+                const WRAP_WIDTH = 260;
                 const wrap = document.createElement('div');
                 wrap.style.cssText = [
-                    'margin-bottom:1rem',
+                    'margin-bottom:0.5rem',
                     'width:' + WRAP_WIDTH + 'px',
-                    'min-width:' + WRAP_WIDTH + 'px',
                     'max-width:100%',
-                    'flex:0 1 ' + WRAP_WIDTH + 'px',
-                    'padding:0 1.25rem',
+                    'flex:1 1 ' + WRAP_WIDTH + 'px',
+                    'padding:0 0.5rem',
                     'box-sizing:border-box',
                     'display:flex',
                     'flex-direction:column',
@@ -3608,13 +3628,14 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
                                 else if (key === 'showHarmonicMean') showHarmonicMean = val;
+                                else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
                                 else if (key === 'filterRelevantSensors' || key === 'filterNoisySensors') {
                                     if (key === 'filterRelevantSensors') filterRelevantSensors = val;
                                     else filterNoisySensors = val;
@@ -3633,6 +3654,7 @@
                         
                         toggleRow.appendChild(mkToggle('PTS: Show overall geometric mean', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('PTS: Show overall harmonic mean', 'showHarmonicMean'));
+                        toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
                         toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
                         toggleRow.appendChild(mkToggle('PTS: Normalize results', 'normalizeComposite'));
@@ -3657,6 +3679,7 @@
                             if (key === 'normalizeComposite') input.checked = normalizeComposite;
                             else if (key === 'showCompositeBar') input.checked = showCompositeBar;
                             else if (key === 'showHarmonicMean') input.checked = showHarmonicMean;
+                            else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
                         });
                     }
                     
