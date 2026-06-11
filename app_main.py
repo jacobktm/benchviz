@@ -4402,6 +4402,8 @@ def sync_openbenchmarking_cache_cmd(
         print("  pts clone:", default_pts_clone_dir())
         if clone_meta := meta.get("clone"):
             print("  clone action:", clone_meta.get("action"))
+            if clone_meta.get("fetch_error"):
+                print("  clone fetch note:", clone_meta.get("fetch_error"))
         if pts_meta := meta.get("pts_update"):
             print("  pts update ok:", pts_meta.get("ok", pts_meta.get("skipped")))
             if pts_meta.get("reason"):

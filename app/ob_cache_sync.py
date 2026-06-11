@@ -112,15 +112,38 @@ def _index_entry_cache_fresh(entry: dict[str, Any]) -> bool:
     return _is_cache_fresh(_cached_generated_json_path(str(test_profile)))
 
 
+def _git_cmd_detail(proc: subprocess.CompletedProcess[str]) -> str:
+    text = (proc.stderr or proc.stdout or "").strip()
+    if len(text) > 2000:
+        return text[-2000:]
+    return text
+
+
 def _run(cmd: list[str], cwd: Path | None = None, *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    proc = subprocess.run(
         cmd,
         cwd=cwd,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=timeout,
     )
+    if proc.returncode != 0:
+        detail = _git_cmd_detail(proc)
+        msg = f"Command {cmd!r} failed with exit status {proc.returncode}"
+        if detail:
+            msg += f": {detail}"
+        raise RuntimeError(msg)
+    return proc
+
+
+def _fresh_pts_clone(dest: Path, branch: str) -> None:
+    if dest.exists():
+        shutil.rmtree(dest)
+    _run([
+        "git", "clone", "--depth", "1", "--single-branch", "--branch", branch,
+        OB_CACHE_GITHUB, str(dest),
+    ])
 
 
 def ensure_pts_clone(
@@ -141,20 +164,20 @@ def ensure_pts_clone(
     }
 
     if (dest / ".git").is_dir():
-        _run(["git", "fetch", "--depth", "1", "origin", branch], cwd=dest)
-        _run(["git", "checkout", "FETCH_HEAD"], cwd=dest)
-        meta["action"] = "updated"
+        try:
+            _run(["git", "fetch", "origin", branch, "--depth", "1"], cwd=dest)
+            _run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=dest)
+            meta["action"] = "updated"
+        except RuntimeError as exc:
+            meta["fetch_error"] = str(exc)
+            _fresh_pts_clone(dest, branch)
+            meta["action"] = "recloned"
     elif dest.is_dir() and any(dest.iterdir()):
         raise FileExistsError(
             f"{dest} exists but is not a git checkout; remove it or set BENCHVIZ_PTS_CLONE_DIR"
         )
     else:
-        if dest.exists():
-            shutil.rmtree(dest)
-        _run([
-            "git", "clone", "--depth", "1", "--branch", branch,
-            OB_CACHE_GITHUB, str(dest),
-        ])
+        _fresh_pts_clone(dest, branch)
         meta["action"] = "cloned"
 
     meta["has_ob_cache"] = (dest / "ob-cache" / "test-profiles").is_dir()

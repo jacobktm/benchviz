@@ -136,11 +136,15 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
 
   echo
   echo "Seeding OpenBenchmarking cache (clone PTS, run phoronix-test-suite, build index)..."
-  sudo -u "${SERVICE_USER}" bash -c "
+  if ! sudo -u "${SERVICE_USER}" bash -c "
     cd \"${PROJECT_ROOT}\" &&
     export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
     \"${PROJECT_ROOT}/venv/bin/python\" -m flask sync-openbenchmarking-cache
-  "
+  "; then
+    echo "Warning: OpenBenchmarking cache seed failed (check git/network/php)."
+    echo "You can retry after setup with:"
+    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask sync-openbenchmarking-cache'"
+  fi
 
   echo
   echo "Installing periodic OpenBenchmarking cache sync timer (every 24h)..."

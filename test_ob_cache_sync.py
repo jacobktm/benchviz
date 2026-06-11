@@ -52,6 +52,20 @@ class EnsurePtsCloneTest(unittest.TestCase):
             meta = ensure_pts_clone(clone, branch="master")
             self.assertEqual(meta["action"], "updated")
             self.assertEqual(mock_run.call_count, 2)
+            self.assertEqual(mock_run.call_args_list[0][0][0][1], "fetch")
+            self.assertEqual(mock_run.call_args_list[1][0][0][1], "reset")
+
+    @mock.patch("app.ob_cache_sync._fresh_pts_clone")
+    @mock.patch("app.ob_cache_sync._run")
+    def test_reclones_when_fetch_fails(self, mock_run, mock_fresh):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = Path(tmp) / "pts"
+            clone.mkdir()
+            (clone / ".git").mkdir()
+            mock_run.side_effect = RuntimeError("fetch failed")
+            meta = ensure_pts_clone(clone, branch="master")
+            self.assertEqual(meta["action"], "recloned")
+            mock_fresh.assert_called_once_with(clone, "master")
 
     @mock.patch("app.ob_cache_sync._run")
     def test_clones_when_missing(self, mock_run):
