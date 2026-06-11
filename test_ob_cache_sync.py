@@ -21,7 +21,7 @@ from app.ob_cache_sync import (
     _pick_version_fallback_entry,
     _try_live_ob_lookup,
 )
-from app.pts_comparison import generate_comparison_hash, strip_test_profile_identifier, test_profile_family
+from app.pts_comparison import generate_comparison_hash, normalize_ob_unit, strip_test_profile_identifier, test_profile_family
 
 
 class ObCachePathTest(unittest.TestCase):
@@ -212,6 +212,54 @@ class ObCacheVersionFallbackTest(unittest.TestCase):
         self.assertIsNotNone(entry)
         self.assertEqual(entry.get("test_profile"), "pts/build-linux-kernel-1.16.0")
         self.assertEqual(entry.get("app_version"), "6.8")
+
+    def test_normalize_ob_unit_aliases(self):
+        self.assertEqual(normalize_ob_unit("Seconds"), "seconds")
+        self.assertEqual(normalize_ob_unit("sec"), "seconds")
+        self.assertEqual(normalize_ob_unit("MiB/s"), "mb/s")
+        self.assertEqual(normalize_ob_unit("MIPS"), "mips")
+
+    def test_fallback_with_unit_alias(self):
+        stored_hash = generate_comparison_hash(
+            "pts/example-1.0",
+            "",
+            "Test: Compression Rating",
+            "22.01",
+            "MIPS",
+        )
+        index = {
+            "entries": {
+                stored_hash: {
+                    "test_profile": "pts/example-1.0",
+                    "description": "Test: Compression Rating",
+                    "unit": "MIPS",
+                    "app_version": "22.01",
+                    "samples": 10,
+                    "percentiles": [0] * 51,
+                    "ob_median": 100.0,
+                },
+            },
+        }
+        ensure_fallback_buckets(index)
+        missing_hash = generate_comparison_hash(
+            "pts/example-1.0",
+            "",
+            "Test: Compression Rating",
+            "24.0",
+            "mips",
+        )
+        entry, source = lookup_ob_entry_with_fallback(
+            missing_hash,
+            index,
+            identifier="pts/example-1.0",
+            arguments="",
+            description="Test: Compression Rating",
+            app_version="24.0",
+            scale="mips",
+        )
+        self.assertEqual(source, "fallback")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.get("app_version"), "22.01")
 
     def test_no_fallback_when_description_differs(self):
         index = {

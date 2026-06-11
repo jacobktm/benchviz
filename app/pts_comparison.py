@@ -46,6 +46,29 @@ def test_profile_family(name: str | None) -> str:
     return re.sub(r"-\d[\d.]*$", "", s)
 
 
+def normalize_ob_unit(unit: str | None) -> str:
+    """Canonical OB unit string for fallback bucket matching (Seconds/sec/s → seconds)."""
+    u = (unit or "").strip()
+    if not u:
+        return ""
+    ul = u.lower()
+    if ul in ("seconds", "second", "sec", "s"):
+        return "seconds"
+    if ul in ("ms", "millisecond", "milliseconds"):
+        return "ms"
+    if ul in ("mb/s", "mib/s"):
+        return "mb/s"
+    if ul in ("gb/s", "gib/s"):
+        return "gb/s"
+    if ul in ("fps", "frames per second", "frame/s"):
+        return "fps"
+    if ul in ("mips",):
+        return "mips"
+    if ul in ("iops",):
+        return "iops"
+    return ul
+
+
 def parse_version_tuple(version: str | None) -> tuple[int, ...]:
     """Numeric prefix of an app/test version string for ordering (22.01 → (22, 1))."""
     version = (version or "").strip()

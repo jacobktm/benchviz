@@ -1391,9 +1391,93 @@
         }
 
         /** Stable scale bucket for same-unit detection within one benchmark suite. */
-        function homogeneousScaleKey(scale, bGroup) {
+        function canonicalSuiteScaleKey(scale, bGroup) {
             const resolved = (scale || (bGroup && bGroup.scale) || '').trim();
-            return normalizeHarmonicScaleKey(resolved) || resolved.toLowerCase() || '__none__';
+            if (!resolved) return '';
+            return normalizeHarmonicScaleKey(resolved)
+                || resolved.toLowerCase().replace(/\s+/g, ' ').trim();
+        }
+
+        /** @deprecated alias */
+        function homogeneousScaleKey(scale, bGroup) {
+            const k = canonicalSuiteScaleKey(scale, bGroup);
+            return k || '__none__';
+        }
+
+        /** Infer direction from unit when proportion is missing (time → LIB, throughput → HIB). */
+        function inferHibFromScaleKey(scaleKey) {
+            const k = (scaleKey || '').toLowerCase();
+            if (!k) return true;
+            if (k === 'seconds' || k === 'ms') return false;
+            if (k.includes('second') || k.includes('millisecond') || k.includes('time')) return false;
+            return true;
+        }
+
+        /**
+         * True when every scored subtest shares one canonical unit and direction.
+         * Mixed-scale suites (e.g. Selenium) return homogeneous: false.
+         */
+        function analyzeSuiteHomogeneity(bGroup, configs) {
+            if (!configs || configs.length < 2) {
+                return { homogeneous: false, commonHib: true, commonScaleDisplay: '', commonScaleKey: '' };
+            }
+            const scaleCounts = new Map();
+            let explicitHib = 0;
+            let explicitLib = 0;
+            let displayScale = (bGroup && bGroup.scale) || '';
+
+            configs.forEach(config => {
+                const scale = resolveResultScale(config, bGroup);
+                if (scale && !displayScale) displayScale = scale;
+                const sk = canonicalSuiteScaleKey(scale, bGroup);
+                scaleCounts.set(sk, (scaleCounts.get(sk) || 0) + 1);
+
+                const ch = getConfigPrimaryChart(config, bGroup);
+                const rawProp = (ch && ch.proportion != null && String(ch.proportion).trim() !== '')
+                    ? ch.proportion
+                    : (config.proportion != null && String(config.proportion).trim() !== ''
+                        ? config.proportion : null);
+                if (rawProp != null) {
+                    if (isHigherIsBetter(rawProp)) explicitHib += 1;
+                    else explicitLib += 1;
+                }
+            });
+
+            const nonEmptyScaleKeys = [...scaleCounts.keys()].filter(k => k !== '');
+            let commonScaleKey;
+            if (nonEmptyScaleKeys.length === 0) {
+                commonScaleKey = canonicalSuiteScaleKey(bGroup && bGroup.scale, bGroup) || '';
+            } else if (nonEmptyScaleKeys.length === 1) {
+                commonScaleKey = nonEmptyScaleKeys[0];
+            } else {
+                return { homogeneous: false, commonHib: true, commonScaleDisplay: '', commonScaleKey: '' };
+            }
+
+            if (explicitHib && explicitLib) {
+                return { homogeneous: false, commonHib: true, commonScaleDisplay: '', commonScaleKey: '' };
+            }
+
+            let commonHib;
+            if (explicitLib) commonHib = false;
+            else if (explicitHib) commonHib = true;
+            else if (bGroup && bGroup.proportion != null && String(bGroup.proportion).trim() !== '') {
+                commonHib = isHigherIsBetter(bGroup.proportion);
+            } else {
+                commonHib = inferHibFromScaleKey(commonScaleKey);
+            }
+
+            const commonScaleDisplay = normalizeHarmonicScaleKey(displayScale || (bGroup && bGroup.scale) || commonScaleKey)
+                || displayScale
+                || (bGroup && bGroup.scale)
+                || commonScaleKey
+                || 'result';
+
+            return { homogeneous: true, commonHib, commonScaleDisplay, commonScaleKey };
+        }
+
+        function configMatchesSuiteScale(config, bGroup, commonScaleKey) {
+            const sk = canonicalSuiteScaleKey(resolveResultScale(config, bGroup), bGroup);
+            return !sk || sk === commonScaleKey;
         }
 
         function configHasPositiveValueForSystem(config, systemId) {
@@ -1460,13 +1544,16 @@
         /** Per-subtest direction and scale (suites like Selenium mix ms/LIB and runs/min/HIB). */
         function getConfigComparisonMeta(config, bGroup) {
             const proportion = resolveConfigProportion(config, bGroup);
-            // Unspecified direction defaults to HIB (matches most PTS throughput tests).
-            const HIB = proportion != null ? isHigherIsBetter(proportion) : true;
-            return {
-                proportion,
-                HIB,
-                scale: resolveResultScale(config, bGroup),
-            };
+            const scale = resolveResultScale(config, bGroup);
+            let HIB;
+            if (proportion != null) {
+                HIB = isHigherIsBetter(proportion);
+            } else if (bGroup && bGroup.proportion != null && String(bGroup.proportion).trim() !== '') {
+                HIB = isHigherIsBetter(bGroup.proportion);
+            } else {
+                HIB = inferHibFromScaleKey(canonicalSuiteScaleKey(scale, bGroup));
+            }
+            return { proportion, HIB, scale };
         }
 
         /** Pair-balanced grouping key for composite: treat `-S` as a variant, not a separate weight bucket. */
@@ -1852,23 +1939,15 @@
          */
         function computePtsHomogeneousMeanForBGroup(bGroup, systems) {
             if (!systems.length || !(bGroup.configs || []).length) return null;
+            const configs = uniqueScoredConfigs(bGroup, systems);
+            const suite = analyzeSuiteHomogeneity(bGroup, configs);
+            if (!suite.homogeneous) return null;
+
             const perSystem = systems.map(() => []);
             let rowCount = 0;
-            let commonScale = null;
-            let commonScaleDisplay = '';
-            let commonHib = null;
-            let homogeneous = true;
 
-            uniqueScoredConfigs(bGroup, systems).forEach(config => {
-                const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
-                const scaleKey = homogeneousScaleKey(scale, bGroup);
-                if (commonScale === null) {
-                    commonScale = scaleKey;
-                    commonScaleDisplay = normalizeHarmonicScaleKey(scale) || (scale || bGroup.scale || '').trim() || 'result';
-                    commonHib = HIB;
-                } else if (scaleKey !== commonScale || HIB !== commonHib) {
-                    homogeneous = false;
-                }
+            configs.forEach(config => {
+                if (!configMatchesSuiteScale(config, bGroup, suite.commonScaleKey)) return;
                 let rowContributed = false;
                 systems.forEach((sid, i) => {
                     const raw = configValueForSystem(config, sid);
@@ -1879,19 +1958,19 @@
                 if (rowContributed) rowCount += 1;
             });
 
-            if (!homogeneous || rowCount < 2) return null;
+            if (rowCount < 2) return null;
 
-            const rawArr = perSystem.map(arr => (arr.length >= 2
+            const rawArr = perSystem.map(arr => (arr.length
                 ? arr.reduce((sum, v) => sum + v, 0) / arr.length
                 : null));
-            const fin = finalizeCompositeVsWorstSystem(systems, rawArr, { scoreHigherIsBetter: commonHib });
+            const fin = finalizeCompositeVsWorstSystem(systems, rawArr, { scoreHigherIsBetter: suite.commonHib });
             if (!fin) return null;
             return {
                 ...fin,
                 subtestCount: rowCount,
-                scale: commonScaleDisplay,
+                scale: suite.commonScaleDisplay,
                 homogeneousMean: true,
-                HIB: commonHib,
+                HIB: suite.commonHib,
                 libInverted: false,
             };
         }
@@ -1930,7 +2009,9 @@
 
         /** PTS generate_geometric_mean_result() for one benchmark suite (mixed scales). */
         function computePtsGeoMeanForBGroup(bGroup, systems) {
-            const entries = uniqueScoredConfigs(bGroup, systems).map(config => ({ config, bGroup }));
+            const configs = uniqueScoredConfigs(bGroup, systems);
+            if (analyzeSuiteHomogeneity(bGroup, configs).homogeneous) return null;
+            const entries = configs.map(config => ({ config, bGroup }));
             return buildPtsGeoMeanResult(entries, systems);
         }
 
@@ -2035,7 +2116,9 @@
          * system per scale; raw values (no inversion). Uses all scored config rows.
          */
         function computePtsHarmonicMeanForBGroup(bGroup, systems) {
-            const entries = uniqueScoredConfigs(bGroup, systems).map(config => ({ config, bGroup }));
+            const configs = uniqueScoredConfigs(bGroup, systems);
+            if (analyzeSuiteHomogeneity(bGroup, configs).homogeneous) return [];
+            const entries = configs.map(config => ({ config, bGroup }));
             return buildPtsHarmonicMeanResults(entries, systems);
         }
 
@@ -2111,16 +2194,20 @@
             });
 
             byKey.forEach(rec => {
+                const scaleCounts = new Map();
+                const propCounts = new Map();
                 (rec.configs || []).forEach(config => {
-                    if (rec.proportion == null) {
-                        const p = resolveConfigProportion(config, rec);
-                        if (p != null) rec.proportion = p;
-                    }
-                    if (!rec.scale) {
-                        const s = resolveResultScale(config, rec);
-                        if (s) rec.scale = s;
-                    }
+                    const s = resolveResultScale(config, rec);
+                    if (s) scaleCounts.set(s, (scaleCounts.get(s) || 0) + 1);
+                    const p = resolveConfigProportion(config, rec);
+                    if (p != null) propCounts.set(p, (propCounts.get(p) || 0) + 1);
                 });
+                if (!rec.scale && scaleCounts.size) {
+                    rec.scale = [...scaleCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+                }
+                if (rec.proportion == null && propCounts.size) {
+                    rec.proportion = [...propCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+                }
             });
 
             const benchmarkGroups = Array.from(byKey.values());
@@ -3319,20 +3406,23 @@
                             if (chartData.pts && chartData.pts.ob && chartData.pts.ob.matched) {
                                 const obNote = document.createElement('div');
                                 obNote.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;';
+                                const ob = chartData.pts.ob;
+                                const fallbackHint = ob.fallback
+                                    ? ` Reference from ${ob.test_profile || 'older OB profile'}${ob.fallback_app_version ? ' (app ' + ob.fallback_app_version + ')' : ''}.`
+                                    : '';
                                 const parts = (chartData.traces || []).map(t => {
                                     const pct = chartData.pts.ob_percentile && chartData.pts.ob_percentile[t.name];
-                                    const rel = chartData.pts.pts_ob_relative && chartData.pts.pts_ob_relative[t.name];
                                     const lbl = t.name != null ? String(t.name) : '';
                                     if (pct != null) {
-                                        const relTxt = rel != null ? `, ${formatCompositeBarValue(Number(rel), true)} vs OB median` : '';
-                                        return `${lbl}: ${pct}th percentile OB${relTxt}`;
+                                        return `${lbl}: ${pct}th percentile`;
                                     }
                                     return null;
                                 }).filter(Boolean);
-                                const samples = chartData.pts.ob.samples;
-                                obNote.textContent = parts.length
-                                    ? `PTS/OB (${samples || '?'} samples): ${parts.join(' · ')}`
-                                    : `PTS/OB matched (${samples || '?'} public samples)`;
+                                const samples = ob.samples;
+                                const body = parts.length
+                                    ? `PTS/OB context (${samples || '?'} public samples): ${parts.join(' · ')}.`
+                                    : `PTS/OB matched (${samples || '?'} public samples).`;
+                                obNote.textContent = body + fallbackHint;
                                 chartDiv.appendChild(obNote);
                             }
                         }
@@ -3940,15 +4030,16 @@
                 chartControls.insertBefore(el, chartControls.firstChild);
             }
             if (!pts || !pts.ob_index_available) {
-                el.textContent = 'Composite bars (Average / Geometric / Harmonic) are vs the worst system in this comparison (reference = 1.0). Individual subtest charts show raw values.'
-                    + (normalizeComposite ? ' Head-to-head normalize is ON for individual charts.' : '');
+                el.textContent = 'Individual charts show raw values. Composite bars are vs the worst system in this comparison.'
+                + ' OB percentiles use cached generated.json when available, falling back to older profile versions with matching options.'
+                + (normalizeComposite ? ' Head-to-head normalize is ON for individual charts.' : '');
                 return;
             }
             const count = pts.ob_entry_count != null ? pts.ob_entry_count : '?';
             const synced = pts.ob_index_synced_at ? String(pts.ob_index_synced_at).slice(0, 10) : 'unknown';
-            el.textContent = `Composite bars are vs the worst system in this comparison (reference = 1.0). Individual charts show raw values`
-                + (normalizeComposite ? '; head-to-head normalize is ON for individual charts.' : '.')
-                + ` PTS/OB percentile notes use ${count} public samples (${synced}).`;
+            el.textContent = `Individual charts show raw values; composite bars are vs the worst system (reference = 1.0).`
+                + ` OB lookups use local generated.json with version fallback when options match (${count} indexed entries, ${synced}).`
+                + (normalizeComposite ? ' Head-to-head normalize is ON for individual charts.' : '');
         }
 
         generateBtn.addEventListener('click', async () => {

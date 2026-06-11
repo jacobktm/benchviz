@@ -16,6 +16,7 @@ from typing import Any
 from .pts_comparison import (
     generate_comparison_hash,
     hash_identifier_from_test_profile,
+    normalize_ob_unit,
     parse_version_tuple,
     strip_test_profile_identifier,
     test_profile_family,
@@ -484,21 +485,62 @@ def _sort_profile_versions_desc(versions: list[str]) -> list[str]:
     return sorted(unique, key=parse_version_tuple, reverse=True)
 
 
-def list_test_profiles_for_identifier(identifier: str | None) -> list[str]:
-    """Qualified test profiles (newest first) for a benchmark identifier."""
-    parsed = _repo_test_name_from_identifier(identifier)
-    if not parsed:
+def list_disk_test_profiles_for_family(family: str, cache_dir: Path | None = None) -> list[str]:
+    """Qualified profiles present under ob-cache for a benchmark family (newest first)."""
+    fam = (family or "").strip().replace("\\", "/")
+    if not fam:
         return []
-    repo, test_name = parsed
-    versions: list[str] = []
-    for idx_path in _pts_repo_index_paths():
-        try:
-            data = json.loads(idx_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    cache = Path(cache_dir or default_ob_cache_dir())
+    profiles_root = cache / "test-profiles"
+    if not profiles_root.is_dir():
+        return []
+
+    parts = fam.split("/")
+    if len(parts) != 2:
+        return []
+    repo, name = parts
+    parent = profiles_root / repo
+    if not parent.is_dir():
+        return []
+
+    prefix = f"{name}-"
+    found: list[str] = []
+    for d in parent.iterdir():
+        if not d.is_dir() or not d.name.startswith(prefix):
             continue
-        test = (data.get("tests") or {}).get(test_name) or {}
-        versions.extend(test.get("versions") or [])
-    return [f"{repo}/{test_name}-{v}" for v in _sort_profile_versions_desc(versions)]
+        if (d / "generated.json").is_file():
+            found.append(f"{repo}/{d.name}")
+    return sorted(found, key=_test_profile_version_tuple, reverse=True)
+
+
+def list_test_profiles_for_identifier(identifier: str | None, cache_dir: Path | None = None) -> list[str]:
+    """Qualified test profiles (newest first): PTS index plus any mirrored on disk."""
+    parsed = _repo_test_name_from_identifier(identifier)
+    profiles: list[str] = []
+    if parsed:
+        repo, test_name = parsed
+        versions: list[str] = []
+        for idx_path in _pts_repo_index_paths():
+            try:
+                data = json.loads(idx_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            test = (data.get("tests") or {}).get(test_name) or {}
+            versions.extend(test.get("versions") or [])
+        profiles.extend(f"{repo}/{test_name}-{v}" for v in _sort_profile_versions_desc(versions))
+
+    tp = strip_test_profile_identifier(identifier)
+    family = test_profile_family(tp) if tp else ""
+    if family:
+        profiles.extend(list_disk_test_profiles_for_family(family, cache_dir))
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in profiles:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return sorted(unique, key=_test_profile_version_tuple, reverse=True)
 
 
 def run_pts_fetch_test_profile(test_profile: str) -> dict[str, Any]:
@@ -815,7 +857,7 @@ def load_ob_cache_index(index_path: Path | None = None) -> dict[str, Any] | None
 
 
 def _fallback_bucket_key(test_profile: str, description: str, unit: str) -> str:
-    return f"{test_profile_family(test_profile)}\0{description}\0{unit}"
+    return f"{test_profile_family(test_profile)}\0{(description or '').strip()}\0{normalize_ob_unit(unit)}"
 
 
 def ensure_fallback_buckets(index: dict[str, Any]) -> dict[str, list[str]]:
@@ -848,9 +890,11 @@ def _verify_fallback_entry_match(
     scale: str,
 ) -> bool:
     """True when entry matches options; hash is checked using the source profile id."""
-    if (entry.get("description") or "") != description:
+    if (entry.get("description") or "").strip() != (description or "").strip():
         return False
-    if (entry.get("unit") or "") != scale:
+    req_unit = normalize_ob_unit(scale)
+    ent_unit = normalize_ob_unit(entry.get("unit") or "")
+    if req_unit and ent_unit and req_unit != ent_unit:
         return False
     test_identifier = hash_identifier_from_test_profile(entry.get("test_profile") or "")
     if not test_identifier:
@@ -860,8 +904,58 @@ def _verify_fallback_entry_match(
         arguments,
         description,
         entry.get("app_version") or "",
-        scale,
+        entry.get("unit") or scale or "",
     ) == stored_hash
+
+
+def _collect_version_fallback_candidates(
+    index: dict[str, Any],
+    *,
+    identifier: str | None,
+    arguments: str,
+    description: str,
+    scale: str,
+) -> tuple[list[tuple[dict[str, Any], str]], int]:
+    """All index entries in this profile family with matching description, unit, and args."""
+    tp = strip_test_profile_identifier(identifier)
+    family = test_profile_family(tp) if tp else ""
+    if not family or not (description or "").strip():
+        return [], 0
+
+    ingested = _ingest_cached_profiles_for_identifier(index, identifier)
+    ensure_fallback_buckets(index)
+
+    desc = (description or "").strip()
+    req_unit = normalize_ob_unit(scale)
+    candidates: list[tuple[dict[str, Any], str]] = []
+    entries = index.get("entries") or {}
+
+    bucket_key = _fallback_bucket_key(family, desc, scale)
+    for stored_hash in (index.get("fallback_buckets") or {}).get(bucket_key) or []:
+        row = entries.get(stored_hash)
+        if isinstance(row, dict) and _verify_fallback_entry_match(
+            row, stored_hash, arguments=arguments or "", description=desc, scale=scale
+        ):
+            candidates.append((row, stored_hash))
+
+    if not candidates:
+        for stored_hash, row in entries.items():
+            if not isinstance(row, dict):
+                continue
+            if test_profile_family(row.get("test_profile") or "") != family:
+                continue
+            if (row.get("description") or "").strip() != desc:
+                continue
+            if req_unit:
+                ent_unit = normalize_ob_unit(row.get("unit") or "")
+                if ent_unit and ent_unit != req_unit:
+                    continue
+            if _verify_fallback_entry_match(
+                row, stored_hash, arguments=arguments or "", description=desc, scale=scale
+            ):
+                candidates.append((row, stored_hash))
+
+    return candidates, ingested
 
 
 def _pick_version_fallback_entry(
@@ -930,38 +1024,20 @@ def lookup_ob_entry_with_fallback(
     tp = strip_test_profile_identifier(identifier)
     if not tp:
         tp = (title or "").strip()
-    if not tp or not desc or not unit:
+    if not tp or not desc:
         if ent is not None:
             return ent, "local"
         return None, ""
 
-    ingested = _ingest_cached_profiles_for_identifier(idx, identifier)
+    candidates, ingested = _collect_version_fallback_candidates(
+        idx,
+        identifier=identifier,
+        arguments=arguments or "",
+        description=desc,
+        scale=unit,
+    )
     if ingested:
         _persist_index_if_updated(idx, updated=True)
-    ensure_fallback_buckets(idx)
-
-    bucket_key = _fallback_bucket_key(
-        test_profile_family(tp) or tp,
-        desc,
-        unit,
-    )
-    buckets = idx.get("fallback_buckets") or {}
-    hash_keys = buckets.get(bucket_key) or []
-
-    candidates: list[tuple[dict[str, Any], str]] = []
-    entries = idx.get("entries") or {}
-    for stored_hash in hash_keys:
-        row = entries.get(stored_hash)
-        if not isinstance(row, dict):
-            continue
-        if _verify_fallback_entry_match(
-            row,
-            stored_hash,
-            arguments=arguments or "",
-            description=desc,
-            scale=unit,
-        ):
-            candidates.append((row, stored_hash))
 
     picked = _pick_version_fallback_entry(candidates, app_version or "")
     if picked is not None:
