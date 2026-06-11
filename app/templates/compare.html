@@ -1385,7 +1385,34 @@
             if (rsLower.includes('iops')) return 'IOPS';
             if (rsLower.includes('bps')) return 'bps';
             if (rsLower.includes('run') && (rs.includes('/') || rsLower.includes(' per '))) return 'runs/min';
+            if (rsLower === 'seconds' || rsLower === 'second' || rsLower === 'sec' || rsLower === 's') return 'Seconds';
+            if (rsLower === 'ms' || rsLower.includes('millisecond')) return 'ms';
             return rs;
+        }
+
+        /** Stable scale bucket for same-unit detection within one benchmark suite. */
+        function homogeneousScaleKey(scale, bGroup) {
+            const resolved = (scale || (bGroup && bGroup.scale) || '').trim();
+            return normalizeHarmonicScaleKey(resolved) || resolved.toLowerCase() || '__none__';
+        }
+
+        function configHasPositiveValueForSystem(config, systemId) {
+            const v = configValueForSystem(config, systemId);
+            return v != null && !isNaN(v) && Number(v) > 0;
+        }
+
+        /** Unique scored primary rows (dedupe pooling duplicates; one row per args × metric). */
+        function uniqueScoredConfigs(bGroup, systems) {
+            const seen = new Set();
+            const out = [];
+            (bGroup.configs || []).forEach(config => {
+                if (!systems.some(sid => configHasPositiveValueForSystem(config, sid))) return;
+                const k = scoredOptionGroupKey(config);
+                if (seen.has(k)) return;
+                seen.add(k);
+                out.push(config);
+            });
+            return out;
         }
 
         function resolveResultScale(config, bGroup) {
@@ -1422,13 +1449,22 @@
             return null;
         }
 
+        function resolveConfigProportion(config, bGroup) {
+            const ch = getConfigPrimaryChart(config, bGroup);
+            if (ch && ch.proportion != null && String(ch.proportion).trim() !== '') return ch.proportion;
+            if (config.proportion != null && String(config.proportion).trim() !== '') return config.proportion;
+            if (bGroup && bGroup.proportion != null && String(bGroup.proportion).trim() !== '') return bGroup.proportion;
+            return null;
+        }
+
         /** Per-subtest direction and scale (suites like Selenium mix ms/LIB and runs/min/HIB). */
         function getConfigComparisonMeta(config, bGroup) {
-            const ch = getConfigPrimaryChart(config, bGroup);
-            const proportion = (ch && ch.proportion != null) ? ch.proportion : (config.proportion != null ? config.proportion : bGroup.proportion);
+            const proportion = resolveConfigProportion(config, bGroup);
+            // Unspecified direction defaults to HIB (matches most PTS throughput tests).
+            const HIB = proportion != null ? isHigherIsBetter(proportion) : true;
             return {
                 proportion,
-                HIB: isHigherIsBetter(proportion),
+                HIB,
                 scale: resolveResultScale(config, bGroup),
             };
         }
@@ -1568,6 +1604,53 @@
         }
 
         /**
+         * Scale per-system composite means vs the worst performer in this comparison.
+         * @param {boolean} scoreHigherIsBetter - true when larger composite raw = better (geo/harm HIB space)
+         */
+        function finalizeCompositeVsWorstSystem(systems, rawArr, opts) {
+            opts = opts || {};
+            const scoreHigherIsBetter = opts.scoreHigherIsBetter !== false;
+            const raw = {};
+            const working = {};
+            systems.forEach((sid, i) => {
+                const v = rawArr[i];
+                if (v != null && isFinite(v) && v > 0) {
+                    raw[sid] = v;
+                    working[sid] = v;
+                }
+            });
+            if (Object.keys(working).length < 2) return null;
+
+            let refId = systems.find(sid => working[sid] != null) || systems[0];
+            let refRaw = working[refId];
+            systems.forEach(sid => {
+                const v = working[sid];
+                if (v == null) return;
+                const refIsWorse = scoreHigherIsBetter
+                    ? (refRaw == null || v < refRaw)
+                    : (refRaw == null || v > refRaw);
+                if (refIsWorse) {
+                    refRaw = v;
+                    refId = sid;
+                }
+            });
+
+            const relative = {};
+            systems.forEach((sid, i) => {
+                const v = rawArr[i];
+                if (v == null || refRaw == null || refRaw <= 0 || v <= 0) {
+                    relative[sid] = null;
+                } else if (scoreHigherIsBetter) {
+                    relative[sid] = v / refRaw;
+                } else {
+                    relative[sid] = refRaw / v;
+                }
+            });
+
+            return { raw, relative, headToHead: true, referenceSystemId: refId };
+        }
+
+        /**
          * Reference system for a benchmark class: lowest geo-mean subtest performance
          * across all primary metrics in the class (compression + decompression, etc.).
          */
@@ -1661,13 +1744,9 @@
                 const refVal = configValueForSystem(config, refSys);
                 noteScale(scale);
                 systems.forEach((sys) => {
-                    if (normalizeComposite) {
-                        config.compositeBySystem[sys] = relativeOptionScoreVsReference(
-                            configValueForSystem(config, sys), refVal, vals, cfgHIB,
-                        );
-                    } else {
-                        config.compositeBySystem[sys] = configObRelativeForSystem(config, sys);
-                    }
+                    config.compositeBySystem[sys] = relativeOptionScoreVsReference(
+                        configValueForSystem(config, sys), refVal, vals, cfgHIB,
+                    );
                 });
             });
             if (!combinedScales.length && bGroup.scale) combinedScales.push(bGroup.scale);
@@ -1779,36 +1858,24 @@
             let commonScaleDisplay = '';
             let commonHib = null;
             let homogeneous = true;
-            let obRowCount = 0;
 
-            bGroup.configs.forEach(config => {
+            uniqueScoredConfigs(bGroup, systems).forEach(config => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
-                const scaleKey = normalizeHarmonicScaleKey(scale) || (scale || '').trim().toLowerCase() || '__none__';
+                const scaleKey = homogeneousScaleKey(scale, bGroup);
                 if (commonScale === null) {
                     commonScale = scaleKey;
-                    commonScaleDisplay = normalizeHarmonicScaleKey(scale) || (scale || '').trim() || 'result';
+                    commonScaleDisplay = normalizeHarmonicScaleKey(scale) || (scale || bGroup.scale || '').trim() || 'result';
                     commonHib = HIB;
                 } else if (scaleKey !== commonScale || HIB !== commonHib) {
                     homogeneous = false;
                 }
                 let rowContributed = false;
-                const useObRow = !normalizeComposite && configHasObRelativeForAllSystems(config, systems);
-                if (useObRow) {
-                    systems.forEach((sid, i) => {
-                        const obRel = configObRelativeForSystem(config, sid);
-                        if (obRel == null) return;
-                        perSystem[i].push(obRel);
-                        rowContributed = true;
-                    });
-                    if (rowContributed) obRowCount += 1;
-                } else {
-                    systems.forEach((sid, i) => {
-                        const raw = configValueForSystem(config, sid);
-                        if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
-                        perSystem[i].push(Number(raw));
-                        rowContributed = true;
-                    });
-                }
+                systems.forEach((sid, i) => {
+                    const raw = configValueForSystem(config, sid);
+                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                    perSystem[i].push(Number(raw));
+                    rowContributed = true;
+                });
                 if (rowContributed) rowCount += 1;
             });
 
@@ -1817,77 +1884,10 @@
             const rawArr = perSystem.map(arr => (arr.length >= 2
                 ? arr.reduce((sum, v) => sum + v, 0) / arr.length
                 : null));
-            const working = {};
-            systems.forEach((sid, i) => {
-                if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
-            });
-            if (Object.keys(working).length < 2) return null;
-
-            const raw = {};
-            const relative = {};
-            const allOb = !normalizeComposite && obRowCount === rowCount;
-            if (allOb) {
-                systems.forEach((sid, i) => {
-                    raw[sid] = rawArr[i];
-                    relative[sid] = rawArr[i];
-                });
-                return {
-                    raw,
-                    relative,
-                    obBaseline: true,
-                    referenceSystemId: '',
-                    subtestCount: rowCount,
-                    scale: commonScaleDisplay,
-                    homogeneousMean: true,
-                    HIB: commonHib,
-                    libInverted: false,
-                };
-            }
-            if (normalizeComposite) {
-                let refId = systems[0];
-                let refRaw = rawArr[systems.indexOf(refId)];
-                systems.forEach((sid, i) => {
-                    const v = rawArr[i];
-                    if (v == null) return;
-                    if (commonHib) {
-                        if (refRaw == null || v < refRaw) {
-                            refRaw = v;
-                            refId = sid;
-                        }
-                    } else if (refRaw == null || v > refRaw) {
-                        refRaw = v;
-                        refId = sid;
-                    }
-                });
-                systems.forEach((sid, i) => {
-                    raw[sid] = rawArr[i];
-                    const v = rawArr[i];
-                    if (v == null || refRaw == null || refRaw <= 0 || v <= 0) {
-                        relative[sid] = null;
-                    } else {
-                        relative[sid] = commonHib ? v / refRaw : refRaw / v;
-                    }
-                });
-                return {
-                    raw,
-                    relative,
-                    headToHead: true,
-                    referenceSystemId: refId,
-                    subtestCount: rowCount,
-                    scale: commonScaleDisplay,
-                    homogeneousMean: true,
-                    HIB: commonHib,
-                    libInverted: false,
-                };
-            }
-            systems.forEach((sid, i) => {
-                raw[sid] = rawArr[i];
-                relative[sid] = rawArr[i];
-            });
+            const fin = finalizeCompositeVsWorstSystem(systems, rawArr, { scoreHigherIsBetter: commonHib });
+            if (!fin) return null;
             return {
-                raw,
-                relative,
-                referenceSystemId: '',
+                ...fin,
                 subtestCount: rowCount,
                 scale: commonScaleDisplay,
                 homogeneousMean: true,
@@ -1900,88 +1900,27 @@
             if (!systems.length || !configEntries.length) return null;
             const perSystem = systems.map(() => []);
             let rowCount = 0;
-            let obRowCount = 0;
             let libRows = 0;
             const nativeScales = new Set();
             configEntries.forEach(({ config, bGroup }) => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
                 if (scale) nativeScales.add(scale);
                 if (!HIB) libRows += 1;
-                const useObRow = !normalizeComposite && configHasObRelativeForAllSystems(config, systems);
                 let rowContributed = false;
-                if (useObRow) {
-                    systems.forEach((sid, i) => {
-                        const obRel = configObRelativeForSystem(config, sid);
-                        if (obRel == null) return;
-                        perSystem[i].push(obRel);
-                        rowContributed = true;
-                    });
-                    if (rowContributed) obRowCount += 1;
-                } else {
-                    systems.forEach((sid, i) => {
-                        const raw = configValueForSystem(config, sid);
-                        if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
-                        perSystem[i].push(HIB ? Number(raw) : (1 / Number(raw)) * 100);
-                        rowContributed = true;
-                    });
-                }
+                systems.forEach((sid, i) => {
+                    const raw = configValueForSystem(config, sid);
+                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                    perSystem[i].push(HIB ? Number(raw) : (1 / Number(raw)) * 100);
+                    rowContributed = true;
+                });
                 if (rowContributed) rowCount += 1;
             });
             if (rowCount < 2) return null;
             const rawArr = perSystem.map(arr => (arr.length >= 2 ? geometricMean(arr) : null));
-            const working = {};
-            systems.forEach((sid, i) => {
-                if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
-            });
-            if (Object.keys(working).length < 2) return null;
-            const raw = {};
-            const relative = {};
-            const allOb = !normalizeComposite && obRowCount === rowCount;
-            if (allOb) {
-                systems.forEach((sid, i) => {
-                    raw[sid] = rawArr[i];
-                    relative[sid] = rawArr[i];
-                });
-                return {
-                    raw,
-                    relative,
-                    obBaseline: true,
-                    referenceSystemId: '',
-                    subtestCount: rowCount,
-                    scale: 'Geometric Mean',
-                    libInverted: libRows > 0,
-                    nativeScales: Array.from(nativeScales),
-                };
-            }
-            if (normalizeComposite) {
-                const divide = Math.min(...Object.values(working));
-                let refId = systems[0];
-                systems.forEach(sid => {
-                    if (working[sid] === divide) refId = sid;
-                });
-                systems.forEach((sid, i) => {
-                    raw[sid] = rawArr[i];
-                    relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
-                });
-                return {
-                    raw,
-                    relative,
-                    headToHead: true,
-                    referenceSystemId: refId,
-                    subtestCount: rowCount,
-                    scale: 'Geometric Mean',
-                    libInverted: libRows > 0,
-                    nativeScales: Array.from(nativeScales),
-                };
-            }
-            systems.forEach((sid, i) => {
-                raw[sid] = rawArr[i];
-                relative[sid] = rawArr[i];
-            });
+            const fin = finalizeCompositeVsWorstSystem(systems, rawArr, { scoreHigherIsBetter: true });
+            if (!fin) return null;
             return {
-                raw,
-                relative,
-                referenceSystemId: '',
+                ...fin,
                 subtestCount: rowCount,
                 scale: 'Geometric Mean',
                 libInverted: libRows > 0,
@@ -1991,11 +1930,11 @@
 
         /** PTS generate_geometric_mean_result() for one benchmark suite (mixed scales). */
         function computePtsGeoMeanForBGroup(bGroup, systems) {
-            const entries = (bGroup.configs || []).map(config => ({ config, bGroup }));
+            const entries = uniqueScoredConfigs(bGroup, systems).map(config => ({ config, bGroup }));
             return buildPtsGeoMeanResult(entries, systems);
         }
 
-        /** Harmonic mean of per-subtest HIB scores; OB-relative by default, head-to-head when normalize is on. */
+        /** Harmonic mean of per-subtest HIB scores; scaled vs worst system in comparison. */
         function createCrossUnitHarmonicAccumulator(systems) {
             const perSystem = systems.map(() => []);
             let subtestCount = 0;
@@ -2005,17 +1944,9 @@
                 add(config, bGroup) {
                     const { HIB } = getConfigComparisonMeta(config, bGroup);
                     if (!HIB) return false;
-                    if (normalizeComposite) {
-                        const vals = systems.map(sid => configValueForSystem(config, sid));
-                        if (!vals.every(v => v != null && !isNaN(v) && v > 0)) return false;
-                        const worst = Math.min(...vals);
-                        vals.forEach((v, i) => perSystem[i].push(v / worst));
-                    } else {
-                        if (!configHasObRelativeForAllSystems(config, systems)) return false;
-                        systems.forEach((sid, i) => {
-                            perSystem[i].push(configObRelativeForSystem(config, sid));
-                        });
-                    }
+                    const vals = systems.map(sid => configValueForSystem(config, sid));
+                    if (!vals.every(v => v != null && !isNaN(v) && v > 0)) return false;
+                    vals.forEach((v, i) => perSystem[i].push(Number(v)));
                     subtestCount += 1;
                     const bmName = (bGroup && bGroup.benchmarkName) || '';
                     if (bmName) benchmarkSources.add(bmName);
@@ -2024,43 +1955,12 @@
                 finalize() {
                     if (subtestCount < MIN_HARMONIC_SUBTESTS || benchmarkSources.size < 2) return null;
                     const rawArr = perSystem.map(arr => (arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null));
-                    const working = {};
-                    systems.forEach((sid, i) => {
-                        if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
-                    });
-                    if (Object.keys(working).length < 2) return null;
-                    const raw = {};
-                    const relative = {};
-                    if (normalizeComposite) {
-                        const divide = Math.min(...Object.values(working));
-                        let refId = systems[0];
-                        systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
-                        systems.forEach((sid, i) => {
-                            raw[sid] = rawArr[i];
-                            relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
-                        });
-                        return {
-                            scale: 'All HIB Subtests',
-                            crossScale: true,
-                            headToHead: true,
-                            raw,
-                            relative,
-                            referenceSystemId: refId,
-                            subtestCount,
-                            benchmarkCount: benchmarkSources.size,
-                        };
-                    }
-                    systems.forEach((sid, i) => {
-                        raw[sid] = rawArr[i];
-                        relative[sid] = rawArr[i];
-                    });
+                    const fin = finalizeCompositeVsWorstSystem(systems, rawArr, { scoreHigherIsBetter: true });
+                    if (!fin) return null;
                     return {
+                        ...fin,
                         scale: 'All HIB Subtests',
                         crossScale: true,
-                        obBaseline: true,
-                        raw,
-                        relative,
-                        referenceSystemId: '',
                         subtestCount,
                         benchmarkCount: benchmarkSources.size,
                     };
@@ -2072,14 +1972,12 @@
         function createHarmonicMeanAccumulator(systems) {
             const byScale = new Map();
             const subtestCounts = new Map();
-            const obSubtestCounts = new Map();
             const benchmarkSources = new Map();
 
             function ensureScale(scaleKey) {
                 if (!byScale.has(scaleKey)) {
                     byScale.set(scaleKey, systems.map(() => []));
                     benchmarkSources.set(scaleKey, new Set());
-                    obSubtestCounts.set(scaleKey, 0);
                 }
             }
 
@@ -2092,24 +1990,15 @@
                     if (!scaleKey) return false;
                     ensureScale(scaleKey);
                     const buckets = byScale.get(scaleKey);
-                    const useOb = !normalizeComposite && configHasObRelativeForAllSystems(config, systems);
                     let contributed = false;
                     systems.forEach((sid, i) => {
-                        if (useOb) {
-                            const obRel = configObRelativeForSystem(config, sid);
-                            if (obRel == null) return;
-                            buckets[i].push(obRel);
-                            contributed = true;
-                        } else {
-                            const raw = configValueForSystem(config, sid);
-                            if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
-                            buckets[i].push(Number(raw));
-                            contributed = true;
-                        }
+                        const raw = configValueForSystem(config, sid);
+                        if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                        buckets[i].push(Number(raw));
+                        contributed = true;
                     });
                     if (contributed) {
                         subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
-                        if (useOb) obSubtestCounts.set(scaleKey, (obSubtestCounts.get(scaleKey) || 0) + 1);
                         const bmName = (bGroup && bGroup.benchmarkName) || '';
                         if (bmName) benchmarkSources.get(scaleKey).add(bmName);
                     }
@@ -2119,60 +2008,14 @@
                     const results = [];
                     byScale.forEach((buckets, scale) => {
                         const rawArr = buckets.map(arr => (arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null));
-                        const working = {};
-                        systems.forEach((sid, i) => {
-                            if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
+                        const fin = finalizeCompositeVsWorstSystem(systems, rawArr, { scoreHigherIsBetter: true });
+                        if (!fin) return;
+                        results.push({
+                            ...fin,
+                            scale,
+                            subtestCount: subtestCounts.get(scale) || 0,
+                            benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
                         });
-                        if (Object.keys(working).length < 2) return;
-                        const subtestCount = subtestCounts.get(scale) || 0;
-                        const allOb = !normalizeComposite && obSubtestCounts.get(scale) === subtestCount;
-                        const raw = {};
-                        const relative = {};
-                        if (normalizeComposite) {
-                            const divide = Math.min(...Object.values(working));
-                            let refId = systems[0];
-                            systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
-                            systems.forEach((sid, i) => {
-                                raw[sid] = rawArr[i];
-                                relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
-                            });
-                            results.push({
-                                scale,
-                                raw,
-                                relative,
-                                headToHead: true,
-                                referenceSystemId: refId,
-                                subtestCount,
-                                benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
-                            });
-                        } else if (allOb) {
-                            systems.forEach((sid, i) => {
-                                raw[sid] = rawArr[i];
-                                relative[sid] = rawArr[i];
-                            });
-                            results.push({
-                                scale,
-                                raw,
-                                relative,
-                                obBaseline: true,
-                                referenceSystemId: '',
-                                subtestCount,
-                                benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
-                            });
-                        } else {
-                            systems.forEach((sid, i) => {
-                                raw[sid] = rawArr[i];
-                                relative[sid] = rawArr[i];
-                            });
-                            results.push({
-                                scale,
-                                raw,
-                                relative,
-                                referenceSystemId: '',
-                                subtestCount,
-                                benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
-                            });
-                        }
                     });
                     return results.sort((a, b) => a.scale.localeCompare(b.scale));
                 },
@@ -2192,7 +2035,7 @@
          * system per scale; raw values (no inversion). Uses all scored config rows.
          */
         function computePtsHarmonicMeanForBGroup(bGroup, systems) {
-            const entries = (bGroup.configs || []).map(config => ({ config, bGroup }));
+            const entries = uniqueScoredConfigs(bGroup, systems).map(config => ({ config, bGroup }));
             return buildPtsHarmonicMeanResults(entries, systems);
         }
 
@@ -2259,9 +2102,23 @@
                     geoEntries.push({ config, bGroup: rec });
                     if (harmonicAcc) harmonicAcc.add(config, rec);
                     if (crossHarmonicAcc) crossHarmonicAcc.add(config, rec);
-                    if (!rec.proportion && primary.proportion != null) {
+                    if (primary.proportion != null && String(primary.proportion).trim() !== '' && rec.proportion == null) {
                         rec.proportion = primary.proportion;
-                        rec.scale = (primary.scale || '').trim();
+                    }
+                    const primaryScale = (primary.scale || '').trim();
+                    if (primaryScale && !rec.scale) rec.scale = primaryScale;
+                });
+            });
+
+            byKey.forEach(rec => {
+                (rec.configs || []).forEach(config => {
+                    if (rec.proportion == null) {
+                        const p = resolveConfigProportion(config, rec);
+                        if (p != null) rec.proportion = p;
+                    }
+                    if (!rec.scale) {
+                        const s = resolveResultScale(config, rec);
+                        if (s) rec.scale = s;
                     }
                 });
             });
@@ -2314,104 +2171,36 @@
             const isHarmonic = meanLabel.toLowerCase().includes('harmonic');
             const scaleName = meanData.scale || (isGeometric ? 'Geometric Mean' : isHarmonic ? 'Harmonic Mean' : '');
             const scalePart = scaleName ? ` (${scaleName})` : '';
-            const headToHead = !!normalizeComposite;
-            const obBaseline = !!meanData.obBaseline || (!headToHead && (meanData.crossScale || isGeometric || meanData.homogeneousMean));
+            const headToHead = !!(meanData.headToHead || meanData.referenceSystemId);
             const refId = meanData.referenceSystemId || systems[0];
             const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
+            const bmPart = meanData.benchmarkCount > 1
+                ? `${meanData.subtestCount} tests from ${meanData.benchmarkCount} benchmarks`
+                : `${meanData.subtestCount} subtests`;
             let compositeLabel;
-            let aggVals;
-            let aggFormatter;
-            if (obBaseline) {
-                const bmPart = meanData.benchmarkCount > 1
-                    ? `${meanData.subtestCount} tests from ${meanData.benchmarkCount} benchmarks`
-                    : `${meanData.subtestCount} subtests`;
-                if (isHarmonic && meanData.crossScale) {
-                    compositeLabel = `Harmonic Mean Of All HIB Subtests (${bmPart}; OB median = 1.0 per test)`;
-                } else if (meanData.homogeneousMean) {
-                    const scaleHint = scaleName ? `, ${scaleName}` : '';
-                    compositeLabel = `Average — Relative Performance (OB median = 1.0; ${meanData.subtestCount} subtests${scaleHint})`;
-                } else if (isGeometric) {
-                    compositeLabel = `Geometric Mean Of All Test Results (${bmPart}; OB median = 1.0 per subtest)`;
-                } else {
-                    compositeLabel = `${meanLabel}${scalePart} — Relative Performance (OB median = 1.0; ${meanData.subtestCount} subtests)`;
-                }
-                aggVals = systems.map(sid => {
-                    const rel = meanData.relative && meanData.relative[sid];
-                    return rel != null ? rel : 1;
-                });
-                aggFormatter = formatPtsRelativeLabel;
-            } else if (headToHead) {
-                if (meanData.homogeneousMean) {
-                    const scaleHint = scaleName ? `, ${scaleName}` : '';
-                    compositeLabel = `Average — Head-to-Head (${refLabel} = 1.0; ${meanData.subtestCount} subtests${scaleHint})`;
-                } else if (isHarmonic && meanData.crossScale) {
-                    const bmPart = meanData.benchmarkCount > 1
-                        ? `${meanData.subtestCount} tests from ${meanData.benchmarkCount} benchmarks`
-                        : `${meanData.subtestCount} tests`;
-                    compositeLabel = `Harmonic Mean Of All HIB Subtests (${bmPart}; ${refLabel} = 1.0, head-to-head)`;
-                } else {
-                    compositeLabel = `${meanLabel}${scalePart} — Head-to-Head (${refLabel} = 1.0; ${meanData.subtestCount} subtests)`;
-                }
-                aggVals = systems.map(sid => {
-                    const rel = meanData.relative && meanData.relative[sid];
-                    return rel != null ? rel : 1;
-                });
-                aggFormatter = formatPtsRelativeLabel;
-            } else if (meanData.homogeneousMean) {
-                const dir = meanData.HIB ? 'Higher is better' : 'Lower is better';
-                const scaleDisp = scaleName || 'result';
-                compositeLabel = `Average of ${meanData.subtestCount} subtests — ${scaleDisp}, ${dir}`;
-                aggVals = systems.map(sid => {
-                    const r = meanData.raw && meanData.raw[sid];
-                    return r != null ? r : 0;
-                });
-                aggFormatter = formatPtsRawMeanLabel;
+            if (meanData.homogeneousMean) {
+                const scaleHint = scaleName ? `, ${scaleName}` : '';
+                compositeLabel = `Average — vs ${refLabel} (${bmPart}${scaleHint}; reference = 1.0)`;
             } else if (isHarmonic && meanData.crossScale) {
-                const bmPart = meanData.benchmarkCount > 1
-                    ? `${meanData.subtestCount} tests from ${meanData.benchmarkCount} benchmarks`
-                    : `${meanData.subtestCount} tests`;
-                compositeLabel = `Harmonic Mean Of All HIB Subtests (${bmPart}; ${refLabel} = 1.0, per-test ratios)`;
-                aggVals = systems.map(sid => {
-                    const rel = meanData.relative && meanData.relative[sid];
-                    return rel != null ? rel : 1;
-                });
-                aggFormatter = formatPtsRelativeLabel;
-            } else if (isHarmonic && scaleName && scaleName !== 'Harmonic Mean') {
-                const bmPart = meanData.benchmarkCount > 1
-                    ? `${meanData.subtestCount} tests from ${meanData.benchmarkCount} benchmarks`
-                    : `${meanData.subtestCount} tests`;
-                compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${bmPart}; reference: ${refLabel})`;
-                aggVals = systems.map(sid => {
-                    const r = meanData.raw && meanData.raw[sid];
-                    return r != null ? r : 0;
-                });
-                aggFormatter = formatPtsRawMeanLabel;
+                compositeLabel = `Harmonic Mean Of All HIB Subtests (${bmPart}; ${refLabel} = 1.0)`;
             } else if (isGeometric && meanData.libInverted) {
                 const units = (meanData.nativeScales && meanData.nativeScales.length)
-                    ? meanData.nativeScales.join(', ') : 'time metrics';
-                compositeLabel = `Geometric Mean Of All Test Results (${meanData.subtestCount} subtests from ${units}; reference: ${refLabel})`;
-                aggVals = systems.map(sid => {
-                    const r = meanData.raw && meanData.raw[sid];
-                    return r != null ? r : 0;
-                });
-                aggFormatter = formatPtsRawMeanLabel;
+                    ? meanData.nativeScales.join(', ') : 'mixed metrics';
+                compositeLabel = `Geometric Mean (${bmPart} from ${units}; ${refLabel} = 1.0)`;
             } else if (isGeometric) {
                 const geoSubject = (scaleName === 'Geometric Mean' || !scaleName) ? 'All Test Results' : scaleName;
-                compositeLabel = `Geometric Mean Of ${geoSubject} (${meanData.subtestCount} subtests; reference: ${refLabel})`;
-                aggVals = systems.map(sid => {
-                    const r = meanData.raw && meanData.raw[sid];
-                    return r != null ? r : 0;
-                });
-                aggFormatter = formatPtsRawMeanLabel;
+                compositeLabel = `Geometric Mean Of ${geoSubject} (${bmPart}; ${refLabel} = 1.0)`;
+            } else if (isHarmonic && scaleName && scaleName !== 'Harmonic Mean') {
+                compositeLabel = `Harmonic Mean Of ${scaleName} (${bmPart}; ${refLabel} = 1.0)`;
             } else {
-                compositeLabel = `${meanLabel}${scalePart} (${meanData.subtestCount} subtests)`;
-                aggVals = systems.map(sid => {
-                    const r = meanData.raw && meanData.raw[sid];
-                    return r != null ? r : 0;
-                });
-                aggFormatter = formatPtsRawMeanLabel;
+                compositeLabel = `${meanLabel}${scalePart} (${bmPart}; ${refLabel} = 1.0)`;
             }
-            const sortHigherIsBetter = obBaseline || headToHead
+            const aggVals = systems.map(sid => {
+                const rel = meanData.relative && meanData.relative[sid];
+                return rel != null ? rel : (headToHead ? 1 : 0);
+            });
+            const aggFormatter = headToHead ? formatPtsRelativeLabel : formatPtsRawMeanLabel;
+            const sortHigherIsBetter = headToHead
                 || !!meanData.crossScale
                 || !!meanData.libInverted
                 || isHarmonic
@@ -2474,7 +2263,7 @@
         /**
          * Per-benchmark composite for Compare UI and wins/losses.
          * Headline: capped median blend across options (mixed units / HIB+LIB safe).
-         * normalizeComposite: head-to-head vs slowest in comparison (default uses OB median).
+         * Scores are vs the reference (worst overall) system, then re-normalized so worst = 1.0.
          */
         function computeCompositeScores(bGroup, systems, opts) {
             opts = opts || {};
@@ -2484,12 +2273,10 @@
             const fair = blendOptionScores(bGroup, systems, opts.referenceSystemId);
             let aggValues = fair.aggValues;
 
-            if (normalizeComposite) {
-                const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
-                if (valid.length) {
-                    const m = Math.min(...valid);
-                    aggValues = aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? v / m : null);
-                }
+            const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
+            if (valid.length) {
+                const m = Math.min(...valid);
+                aggValues = aggValues.map(v => (v != null && !isNaN(v) && v > 0) ? v / m : null);
             }
 
             return {
@@ -2556,18 +2343,11 @@
                     const systems = traceNames;
                     const ptsGeo = computePtsSuiteMeanForBGroup(bGroup, systems);
                     let ratios;
-                    if (ptsGeo) {
-                        if (normalizeComposite || ptsGeo.obBaseline || ptsGeo.headToHead) {
-                            ratios = systems.map(sid => {
-                                const rel = ptsGeo.relative[sid];
-                                return rel != null ? rel : 1;
-                            });
-                        } else {
-                            ratios = systems.map(sid => {
-                                const raw = ptsGeo.raw[sid];
-                                return raw != null && raw > 0 ? raw : 0;
-                            });
-                        }
+                    if (ptsGeo && ptsGeo.relative) {
+                        ratios = systems.map(sid => {
+                            const rel = ptsGeo.relative[sid];
+                            return rel != null ? rel : 1;
+                        });
                     } else {
                         const { aggValues } = computeCompositeScores(bGroup, traceNames);
                         const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
@@ -2583,23 +2363,14 @@
             }
 
             let globalRatios;
-            if (overallGeometric) {
-                if (normalizeComposite || overallGeometric.obBaseline || overallGeometric.headToHead) {
-                    globalRatios = traceNames.map(sid => {
-                        const rel = overallGeometric.relative[sid];
-                        return rel != null ? rel : 1;
-                    });
-                } else {
-                    globalRatios = traceNames.map(sid => {
-                        const raw = overallGeometric.raw[sid];
-                        return raw != null && raw > 0 ? raw : 0;
-                    });
-                }
+            if (overallGeometric && overallGeometric.relative) {
+                globalRatios = traceNames.map(sid => {
+                    const rel = overallGeometric.relative[sid];
+                    return rel != null ? rel : 1;
+                });
             } else {
                 const { globalComposite } = computeGlobalSummary(benchmarkGroups, traceNames);
-                const validGlobal = globalComposite.filter(v => v != null && !isNaN(v) && v > 0);
-                const minGlobal = validGlobal.length ? Math.min(...validGlobal) : 1;
-                globalRatios = globalComposite.map(v => (v != null && v > 0) ? v / minGlobal : 0);
+                globalRatios = globalComposite.map(v => (v != null && v > 0) ? v : 0);
             }
             const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, traceNames);
 
@@ -2750,7 +2521,7 @@
                                 ticks: { color: BAR_CHART_TICK_COLOR },
                                 title: {
                                     display: true,
-                                    text: normalizeComposite ? 'Relative performance (reference = 1.0)' : 'Index (reference = 1.0)',
+                                    text: 'Relative performance (worst system = 1.0)',
                                     color: BAR_CHART_TICK_COLOR
                                 }
                             },
@@ -3130,12 +2901,7 @@
                     const vals = systems.map(s => configValueForSystem(config, s));
                     const refVal = configValueForSystem(config, globalRefId);
                     systems.forEach((sys, sIdx) => {
-                        let sc;
-                        if (normalizeComposite) {
-                            sc = relativeOptionScoreVsReference(vals[sIdx], refVal, vals, HIB);
-                        } else {
-                            sc = configObRelativeForSystem(config, sys);
-                        }
+                        const sc = relativeOptionScoreVsReference(vals[sIdx], refVal, vals, HIB);
                         if (sc != null && !isNaN(sc) && sc > 0) ratiosBySystem[sIdx].push(sc);
                     });
                 });
@@ -3146,11 +2912,9 @@
                 return arr.length ? geometricMean(arr) : null;
             });
 
-            if (normalizeComposite) {
-                const validGlobal = globalComposite.filter(v => v != null && !isNaN(v) && v > 0);
-                const minGlobal = validGlobal.length ? Math.min(...validGlobal) : 1;
-                globalComposite = globalComposite.map(v => (v != null && v > 0) ? v / minGlobal : v);
-            }
+            const validGlobal = globalComposite.filter(v => v != null && !isNaN(v) && v > 0);
+            const minGlobal = validGlobal.length ? Math.min(...validGlobal) : 1;
+            globalComposite = globalComposite.map(v => (v != null && v > 0) ? v / minGlobal : v);
 
             return { globalComposite, globalWins, globalLosses, referenceSystemId: globalRefId };
         }
@@ -3587,10 +3351,8 @@
                         directionEl.textContent = directionText;
                         chartDiv.appendChild(directionEl);
 
-                        // Default: OB-relative when matched; head-to-head when normalize is on; else raw.
-                        const ptsObRel = chartData.pts && chartData.pts.pts_ob_relative;
+                        // Head-to-head normalize only when explicitly enabled; individual charts stay raw.
                         const ptsRel = chartData.pts && chartData.pts.pts_relative;
-                        const obMatched = chartData.pts && chartData.pts.ob && chartData.pts.ob.matched;
                         if (normalizeComposite && chartData.is_primary) {
                             if (ptsRel) {
                                 values = traceNames.map(name => {
@@ -3611,16 +3373,11 @@
                                     });
                                 }
                             }
-                        } else if (chartData.is_primary && obMatched && ptsObRel) {
-                            values = traceNames.map(name => {
-                                const rel = ptsObRel[name];
-                                return rel != null ? rel : 1;
-                            });
                         }
 
                         const formatter = (value) => {
                             if (value == null || value === undefined || isNaN(value)) return '';
-                            if ((normalizeComposite || (chartData.is_primary && obMatched && ptsObRel)) && chartData.is_primary) {
+                            if (normalizeComposite && chartData.is_primary) {
                                 return formatPtsRelativeLabel(Number(value));
                             }
                             return Number(value).toFixed(2);
@@ -3630,12 +3387,10 @@
                             xAxisLabel = ptsRel
                                 ? 'Head-to-head (slowest in comparison = 1.0)'
                                 : (chartData.scale ? `${chartData.scale} (head-to-head; worst = 1.0)` : 'Head-to-head (worst = 1.0)');
-                        } else if (chartData.is_primary && obMatched && ptsObRel) {
-                            xAxisLabel = 'Relative Performance (OB median = 1.0)';
                         } else {
                             xAxisLabel = chartData.scale ? `${chartData.scale} — ${directionText}` : directionText;
                         }
-                        const individualHigher = normalizeComposite || (chartData.is_primary && obMatched && ptsObRel) || HIB;
+                        const individualHigher = (normalizeComposite && chartData.is_primary) || HIB;
                         const sortedIndividual = sortLabelsValuesSystemIdsBestFirst(labels, values, traceNames, individualHigher);
                         createBarChart(chartDiv, sortedIndividual.labels, sortedIndividual.values, xAxisLabel, formatter, 'individual', sortedIndividual.systemIds);
                     } else if (chartData.display_format === 'LINE_GRAPH') {
@@ -3780,8 +3535,9 @@
                 const systems = pageSystems;
                 const systemLabels = getSystemDisplayNames(systems);
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
-                const subtestCount = (bGroup.configs || []).length;
-                const hasSuiteComposite = subtestCount >= 2;
+                const scoredConfigs = uniqueScoredConfigs(bGroup, systems);
+                const scoredSubtestCount = scoredConfigs.length;
+                const hasSuiteComposite = scoredSubtestCount >= 2;
                 const ptsHomogeneous = hasSuiteComposite ? computePtsHomogeneousMeanForBGroup(bGroup, systems) : null;
                 const ptsGeoFallback = (hasSuiteComposite && !ptsHomogeneous)
                     ? computePtsGeoMeanForBGroup(bGroup, systems) : null;
@@ -3955,7 +3711,7 @@
                     groupWrapper.appendChild(aggSection);
                 }
 
-                if (bGroup.configs.length > 1) {
+                if (hasSuiteComposite) {
                     // Discover sensors attached to this benchmark (for per-benchmark toggles).
                     const benchmarkSensors = [];
                     // Collect sensors across ALL configs in this benchmark group.
@@ -4046,10 +3802,11 @@
                         expandContent.style.display = 'block';
                         expandHeading.textContent = '▲ Individual options';
                     }
-                } else if (bGroup.configs.length === 1) {
-                    // Single config: no suite composite (needs ≥2 subtests). Show the primary
-                    // result directly; multiple primaries (e.g. 7-Zip) use expandable rows.
-                    const g0 = bGroup.configs[0].group;
+                } else {
+                    // Single scored subtest: no suite composite. Show the primary result
+                    // directly; multiple primaries in one profile (e.g. 7-Zip) use expandable rows.
+                    const soleConfig = scoredConfigs[0] || bGroup.configs[0];
+                    const g0 = soleConfig && soleConfig.group;
                     const firstGroupCharts = (g0 && g0.charts) || [];
                     const primaryChartsCount = firstGroupCharts.filter(c => c.is_primary).length;
                     const skipPrimaryDup = primaryChartsCount <= 1;
@@ -4151,9 +3908,12 @@
                             expandHeading.textContent = '▲ Individual metrics';
                         }
                     } else {
-                        const onlyPrimary = firstGroupCharts.find(c => c.is_primary);
+                        const onlyPrimary = (soleConfig && soleConfig.primaryChart)
+                            || firstGroupCharts.find(c => c.is_primary);
                         if (onlyPrimary) {
                             renderComparisonChart(onlyPrimary, detailSection);
+                        } else if (soleConfig) {
+                            renderConfigOptionCharts(soleConfig, detailSection, soleConfig.option_key || '');
                         }
                         finishSensorBlock(detailSection, onlyPrimary && onlyPrimary.option_key ? onlyPrimary.option_key : '');
                     }
@@ -4180,16 +3940,15 @@
                 chartControls.insertBefore(el, chartControls.firstChild);
             }
             if (!pts || !pts.ob_index_available) {
-                el.textContent = 'PTS/OB reference unavailable — sync ob-cache (generated.json) and rebuild ob_cache_index.json on this server. Scores show raw values unless Head-to-head normalize is on.';
+                el.textContent = 'Composite bars (Average / Geometric / Harmonic) are vs the worst system in this comparison (reference = 1.0). Individual subtest charts show raw values.'
+                    + (normalizeComposite ? ' Head-to-head normalize is ON for individual charts.' : '');
                 return;
             }
             const count = pts.ob_entry_count != null ? pts.ob_entry_count : '?';
             const synced = pts.ob_index_synced_at ? String(pts.ob_index_synced_at).slice(0, 10) : 'unknown';
-            if (normalizeComposite) {
-                el.textContent = `PTS/OB index loaded (${count} entries, ${synced}). Head-to-head normalize is ON — scores are vs the slowest system in this comparison, not OB median.`;
-            } else {
-                el.textContent = `PTS/OB index loaded (${count} entries, ${synced}). Default baseline is OpenBenchmarking population median (1.0 = typical public result). Enable Head-to-head normalize to compare systems directly.`;
-            }
+            el.textContent = `Composite bars are vs the worst system in this comparison (reference = 1.0). Individual charts show raw values`
+                + (normalizeComposite ? '; head-to-head normalize is ON for individual charts.' : '.')
+                + ` PTS/OB percentile notes use ${count} public samples (${synced}).`;
         }
 
         generateBtn.addEventListener('click', async () => {
@@ -4295,7 +4054,7 @@
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
                         toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
-                        toggleRow.appendChild(mkToggle('PTS: Head-to-head normalize', 'normalizeComposite'));
+                        toggleRow.appendChild(mkToggle('Head-to-head normalize (individual charts only)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
                         // Overall sensor toggles (for overall charts)
