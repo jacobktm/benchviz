@@ -12,9 +12,11 @@ from app.pts_comparison import (
     is_harmonic_mean_scale,
     normalize_harmonic_scale_key,
     normalize_relative_values,
+    ob_p1_from_entry,
     pts_harmonic_mean_by_scale,
     pts_harmonic_mean_cross_scale,
     pts_geometric_mean_ob_composite,
+    relative_vs_ob_baseline,
     relative_vs_ob_median,
 )
 from app.pts_compare import build_pts_global_harmonic_summary, build_pts_global_summary
@@ -101,6 +103,20 @@ class PtsObRelativeTest(unittest.TestCase):
         rel = relative_vs_ob_median({"a": 73490.0, "b": 85000.0}, hib=True, ob_median=73490.0)
         self.assertAlmostEqual(rel["a"], 1.0)
         self.assertAlmostEqual(rel["b"], 85000.0 / 73490.0, places=4)
+
+    def test_ob_p1_from_entry(self):
+        entry = {"ob_p1": 5000.0, "percentiles": [5000.0] + list(range(100, 1100, 10))}
+        self.assertAlmostEqual(ob_p1_from_entry(entry), 5000.0)
+
+    def test_relative_vs_ob_p1_hib(self):
+        rel = relative_vs_ob_baseline({"a": 10000.0, "b": 5000.0}, hib=True, baseline=5000.0)
+        self.assertAlmostEqual(rel["a"], 2.0)
+        self.assertAlmostEqual(rel["b"], 1.0)
+
+    def test_relative_vs_ob_p1_lib(self):
+        rel = relative_vs_ob_baseline({"a": 10.0, "b": 20.0}, hib=False, baseline=10.0)
+        self.assertAlmostEqual(rel["a"], 1.0)
+        self.assertAlmostEqual(rel["b"], 0.5)
 
 
 class PtsHarmonicMeanTest(unittest.TestCase):

@@ -134,39 +134,55 @@ def lib_to_hib_value(value: float) -> float:
 
 def ob_median_from_entry(ob_entry: dict[str, Any] | None) -> float | None:
     """Population median from an OB cache entry (percentiles[50])."""
-    if not ob_entry:
+    return ob_percentile_value_from_entry(ob_entry, 50)
+
+
+def ob_p1_from_entry(ob_entry: dict[str, Any] | None) -> float | None:
+    """Population 1st-percentile reference from an OB cache entry (percentiles[1])."""
+    return ob_percentile_value_from_entry(ob_entry, 1)
+
+
+def ob_percentile_value_from_entry(
+    ob_entry: dict[str, Any] | None,
+    percentile_index: int,
+) -> float | None:
+    """Value at a given OB population percentile rank (same indexing as percentiles[50] median)."""
+    if not ob_entry or percentile_index < 0:
         return None
-    cached = ob_entry.get("ob_median")
+    cache_key = f"ob_p{percentile_index}" if percentile_index != 50 else "ob_median"
+    if percentile_index == 1:
+        cache_key = "ob_p1"
+    cached = ob_entry.get(cache_key)
     if cached is not None:
         try:
-            m = float(cached)
-            return m if m > 0 else None
+            v = float(cached)
+            return v if v > 0 and math.isfinite(v) else None
         except (TypeError, ValueError):
             pass
     percentiles = ob_entry.get("percentiles") or []
-    if len(percentiles) < 51:
+    if len(percentiles) <= percentile_index:
         return None
     try:
-        m = float(percentiles[50])
+        v = float(percentiles[percentile_index])
     except (TypeError, ValueError):
         return None
-    return m if m > 0 and math.isfinite(m) else None
+    return v if v > 0 and math.isfinite(v) else None
 
 
-def relative_vs_ob_median(
+def relative_vs_ob_baseline(
     values_by_system: dict[str, float | None],
     *,
     hib: bool,
-    ob_median: float | None,
+    baseline: float | None,
 ) -> dict[str, float | None]:
     """
-    Relative performance vs OpenBenchmarking population median.
+    Relative performance vs an OpenBenchmarking population reference value.
 
-    Returns multipliers where 1.0 = OB median result (PTS box-plot baseline).
+    Returns multipliers where 1.0 = OB reference result for that subtest.
     """
-    if ob_median is None or ob_median <= 0:
+    if baseline is None or baseline <= 0:
         return {k: None for k in values_by_system}
-    ref = float(ob_median)
+    ref = float(baseline)
     out: dict[str, float | None] = {}
     for sys_id, raw in values_by_system.items():
         if raw is None:
@@ -182,6 +198,20 @@ def relative_vs_ob_median(
             continue
         out[sys_id] = round(v / ref, 6) if hib else round(ref / v, 6)
     return out
+
+
+def relative_vs_ob_median(
+    values_by_system: dict[str, float | None],
+    *,
+    hib: bool,
+    ob_median: float | None,
+) -> dict[str, float | None]:
+    """
+    Relative performance vs OpenBenchmarking population median.
+
+    Returns multipliers where 1.0 = OB median result (PTS box-plot baseline).
+    """
+    return relative_vs_ob_baseline(values_by_system, hib=hib, baseline=ob_median)
 
 
 def normalize_relative_values(

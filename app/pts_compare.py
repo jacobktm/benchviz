@@ -11,11 +11,13 @@ from .pts_comparison import (
     lib_to_hib_value,
     normalize_relative_values,
     ob_median_from_entry,
+    ob_p1_from_entry,
     ob_percentiles_for_systems,
     pts_geometric_mean_composite,
     pts_geometric_mean_ob_composite,
     pts_harmonic_mean_by_scale,
     pts_harmonic_mean_cross_scale,
+    relative_vs_ob_baseline,
     relative_vs_ob_median,
     strip_test_profile_identifier,
 )
@@ -99,8 +101,10 @@ def build_pts_context_for_compare_group(
             allow_live=compare_ob_live_fetch_enabled(),
         )
         ob_median = ob_median_from_entry(ob_entry)
+        ob_p1 = ob_p1_from_entry(ob_entry)
         relative = normalize_relative_values(values, hib=hib)
         ob_relative = relative_vs_ob_median(values, hib=hib, ob_median=ob_median)
+        ob_p1_relative = relative_vs_ob_baseline(values, hib=hib, baseline=ob_p1)
         percentiles = ob_percentiles_for_systems(values, ob_entry)
 
         per_subtest.append({
@@ -119,10 +123,12 @@ def build_pts_context_for_compare_group(
                 "unit": (ob_entry or {}).get("unit"),
                 "test_profile": (ob_entry or {}).get("test_profile"),
                 "median": ob_median,
+                "p1": ob_p1,
             },
             "values": values,
             "pts_relative": relative,
             "pts_ob_relative": ob_relative,
+            "pts_ob_p1_relative": ob_p1_relative,
             "ob_percentile": percentiles,
         })
         subtest_value_maps.append(values)

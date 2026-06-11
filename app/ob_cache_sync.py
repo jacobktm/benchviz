@@ -415,13 +415,22 @@ def _copy_generated_json_files(src_root: Path, dest_root: Path) -> int:
 
 def _ob_median_from_percentiles(percentiles: list[Any]) -> float | None:
     """OB population median (percentiles[50]) used as PTS reference baseline."""
-    if not percentiles or len(percentiles) < 51:
+    return _ob_percentile_from_list(percentiles, 50)
+
+
+def _ob_p1_from_percentiles(percentiles: list[Any]) -> float | None:
+    """OB population 1st-percentile reference (percentiles[1])."""
+    return _ob_percentile_from_list(percentiles, 1)
+
+
+def _ob_percentile_from_list(percentiles: list[Any], index: int) -> float | None:
+    if not percentiles or len(percentiles) <= index:
         return None
     try:
-        m = float(percentiles[50])
+        v = float(percentiles[index])
     except (TypeError, ValueError):
         return None
-    return m if m > 0 else None
+    return v if v > 0 else None
 
 
 def _entry_from_overview_row(test_profile: str, comp_hash: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -433,6 +442,7 @@ def _entry_from_overview_row(test_profile: str, comp_hash: str, row: dict[str, A
         "samples": int(row.get("samples") or 0),
         "percentiles": row.get("percentiles") or [],
         "ob_median": _ob_median_from_percentiles(row.get("percentiles") or []),
+        "ob_p1": _ob_p1_from_percentiles(row.get("percentiles") or []),
         "test_version": row.get("test_version") or "",
         "app_version": row.get("app_version") or "",
     }

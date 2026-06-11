@@ -1982,6 +1982,7 @@ def api_compare():
                             "comparison_hash": st.get("comparison_hash"),
                             "pts_relative": st.get("pts_relative"),
                             "pts_ob_relative": st.get("pts_ob_relative"),
+                            "pts_ob_p1_relative": st.get("pts_ob_p1_relative"),
                             "ob_percentile": st.get("ob_percentile"),
                             "ob": st.get("ob"),
                         }
