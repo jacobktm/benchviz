@@ -156,9 +156,14 @@ def build_pts_global_summary(
     """
     per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
     subtest_count = 0
+    lib_rows = 0
+    native_scales: set[str] = set()
     for ctx in group_contexts:
         for st in ctx.get("subtests") or []:
             hib = st.get("hib", True)
+            scale = (st.get("scale") or "").strip()
+            if scale:
+                native_scales.add(scale)
             values = st.get("values") or {}
             contributed = False
             for sid in system_ids:
@@ -175,6 +180,8 @@ def build_pts_global_summary(
                 contributed = True
             if contributed:
                 subtest_count += 1
+                if not hib:
+                    lib_rows += 1
 
     composite_raw = {
         sid: geometric_mean(vs) if len(vs) >= 2 else None
@@ -197,6 +204,8 @@ def build_pts_global_summary(
         "composite_relative": composite_relative,
         "reference_system_id": ref_id,
         "subtest_count": subtest_count,
+        "lib_inverted": lib_rows > 0,
+        "native_scales": sorted(native_scales),
     }
 
 

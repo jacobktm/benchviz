@@ -1061,7 +1061,9 @@
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
-                cap.textContent = 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = capped median blend across options; see “Composite basis check”.)';
+                cap.textContent = usePtsComposite
+                    ? 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead.'
+                    : 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = capped median blend across options; see “Composite basis check”.)';
             } else {
                 cap.textContent = 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
             }
@@ -1305,41 +1307,6 @@
             const p = (proportion || '').trim().toUpperCase();
             if (p === 'HIB' || p === 'LIB') return p === 'HIB';
             return (proportion || '').toLowerCase().includes('higher');
-        }
-
-        function formatWorkloadNote(wl) {
-            if (!wl || !wl.taxonomy) return '';
-            const src = wl.source === 'cohort_imputed' ? 'inferred from systems with sensors'
-                : (wl.source === 'perf+sensors' ? 'measured perf/MONITOR' : (wl.source || 'heuristic'));
-            let txt = `Workload: ${wl.taxonomy.replace(/_/g, ' ')} (${src}${wl.confidence ? ', confidence ' + Math.round(wl.confidence * 100) + '%' : ''})`;
-            const imp = wl.imputation;
-            if (imp && imp.applied && imp.n_imputed > 0) {
-                txt += ` — bottleneck mix from ${imp.n_with_evidence} system(s) with sensor data applied to ${imp.n_imputed} without`;
-                if (imp.score_proportions) {
-                    const parts = Object.entries(imp.score_proportions)
-                        .filter(([, v]) => v >= 0.12)
-                        .sort((a, b) => b[1] - a[1])
-                        .map(([k, v]) => `${k} ${Math.round(v * 100)}%`);
-                    if (parts.length) txt += ` (${parts.join(', ')})`;
-                }
-            }
-            txt += '. Sensor filters use this class.';
-            return txt;
-        }
-
-        function collectOptionWorkloadProfiles(bGroup) {
-            const seen = new Set();
-            const profiles = [];
-            (bGroup.configs || []).forEach(cfg => {
-                ((cfg.group && cfg.group.charts) || []).forEach(ch => {
-                    if (!ch.is_primary || !ch.workload_profile) return;
-                    const key = ch.option_key || ch.metric || ch.description || '';
-                    if (seen.has(key)) return;
-                    seen.add(key);
-                    profiles.push(ch.workload_profile);
-                });
-            });
-            return profiles;
         }
 
         /** Primary BAR chart used for valuesBySystem on this config row. */
@@ -1700,8 +1667,12 @@
             if (!systems.length || !(bGroup.configs || []).length) return null;
             const perSystem = systems.map(() => []);
             let rowCount = 0;
+            let libRows = 0;
+            const nativeScales = new Set();
             bGroup.configs.forEach(config => {
-                const { HIB } = getConfigComparisonMeta(config, bGroup);
+                const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
+                if (scale) nativeScales.add(scale);
+                if (!HIB) libRows += 1;
                 let rowContributed = false;
                 systems.forEach((sid, i) => {
                     const raw = config.valuesBySystem[sid];
@@ -1735,6 +1706,8 @@
                 referenceSystemId: refId,
                 subtestCount: rowCount,
                 scale: 'Geometric Mean',
+                libInverted: libRows > 0,
+                nativeScales: Array.from(nativeScales),
             };
         }
 
@@ -1792,6 +1765,64 @@
             return results.sort((a, b) => a.scale.localeCompare(b.scale));
         }
 
+        /**
+         * Single-subtest benchmark: no PTS suite composite (geo needs ≥2, harmonic ≥4).
+         * Show raw native values, or PTS-normalized relative (slowest/worst = 1.0).
+         */
+        function computePtsDirectSubtestBarForBGroup(bGroup, systems) {
+            if (!systems.length || systems.length < 2 || !(bGroup.configs || []).length) return null;
+            let rowCount = 0;
+            let lastRow = null;
+            bGroup.configs.forEach(config => {
+                const meta = getConfigComparisonMeta(config, bGroup);
+                const values = {};
+                let contributed = false;
+                systems.forEach(sid => {
+                    const raw = config.valuesBySystem[sid];
+                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                    values[sid] = Number(raw);
+                    contributed = true;
+                });
+                if (contributed && Object.keys(values).length >= 2) {
+                    rowCount += 1;
+                    lastRow = { ...meta, values };
+                }
+            });
+            if (rowCount !== 1 || !lastRow) return null;
+            const { HIB, scale, values } = lastRow;
+            const working = {};
+            systems.forEach(sid => {
+                const v = values[sid];
+                if (v == null) return;
+                working[sid] = HIB ? v : (1 / v);
+            });
+            if (Object.keys(working).length < 2) return null;
+            let refId = systems[0];
+            let minW = working[refId];
+            systems.forEach(sid => {
+                if (working[sid] != null && working[sid] < minW) {
+                    minW = working[sid];
+                    refId = sid;
+                }
+            });
+            const raw = {};
+            const relative = {};
+            systems.forEach(sid => {
+                raw[sid] = values[sid] ?? null;
+                const w = working[sid];
+                relative[sid] = (w != null && minW > 0) ? w / minW : null;
+            });
+            return {
+                raw,
+                relative,
+                referenceSystemId: refId,
+                subtestCount: 1,
+                scale: scale || '',
+                singleSubtest: true,
+                HIB,
+            };
+        }
+
         /** @deprecated alias */
         function computePtsHarmonicMeanByRateScaleForBGroup(bGroup, systems) {
             return computePtsHarmonicMeanForBGroup(bGroup, systems);
@@ -1807,7 +1838,12 @@
             if (normalizeComposite) {
                 const refId = meanData.referenceSystemId || systems[0];
                 const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
-                compositeLabel = `${meanLabel}${scalePart} — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests)`;
+                if (meanData.singleSubtest) {
+                    const scaleHint = scaleName ? `, ${scaleName}` : '';
+                    compositeLabel = `Relative Performance (${refLabel} = 1.0; 1 subtest${scaleHint})`;
+                } else {
+                    compositeLabel = `${meanLabel}${scalePart} — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests)`;
+                }
                 aggVals = systems.map(sid => {
                     const rel = meanData.relative && meanData.relative[sid];
                     return rel != null ? rel : 1;
@@ -1815,8 +1851,19 @@
                 aggFormatter = formatPtsRelativeLabel;
             } else if (meanLabel.toLowerCase().includes('harmonic') && scaleName && scaleName !== 'Harmonic Mean') {
                 compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${meanData.subtestCount} tests)`;
+            } else if (meanData.singleSubtest) {
+                compositeLabel = scaleName
+                    ? `${scaleName} — single subtest (no suite composite; PTS needs ≥2 subtests)`
+                    : 'Single subtest result (no suite composite; PTS needs ≥2 subtests)';
             } else if (meanLabel.toLowerCase().includes('geometric')) {
-                compositeLabel = `Geometric Mean Of ${scaleName || 'All Test Results'} (${meanData.subtestCount} subtests)`;
+                const geoSubject = (scaleName === 'Geometric Mean' || !scaleName) ? 'All Test Results' : scaleName;
+                let detail = `${meanData.subtestCount} subtests`;
+                if (meanData.libInverted) {
+                    const units = (meanData.nativeScales && meanData.nativeScales.length)
+                        ? meanData.nativeScales.join(', ') : 'lower-is-better units';
+                    detail += `; inverted from ${units} (100/time) — higher = faster, not ${units.split(',')[0] || 'native units'}`;
+                }
+                compositeLabel = `Geometric Mean Of ${geoSubject} (${detail})`;
             } else {
                 compositeLabel = `${meanLabel}${scalePart} (${meanData.subtestCount} subtests)`;
             }
@@ -2781,6 +2828,8 @@
                             relative: ptsGlobal.composite_relative,
                             referenceSystemId: ptsGlobal.reference_system_id,
                             subtestCount: ptsGlobal.subtest_count || 0,
+                            libInverted: !!ptsGlobal.lib_inverted,
+                            nativeScales: ptsGlobal.native_scales || [],
                         },
                         'Geometric Mean',
                     );
@@ -2859,22 +2908,22 @@
             }
 
             function addPieChart(parent, systemLabels, values, title, systemIds) {
-                const PIE_SIZE = 180;
-                const WRAP_WIDTH = 260;
+                const PIE_SIZE = 120;
+                const WRAP_WIDTH = 200;
                 const wrap = document.createElement('div');
                 wrap.style.cssText = [
                     'margin-bottom:0.5rem',
                     'width:' + WRAP_WIDTH + 'px',
                     'max-width:100%',
-                    'flex:1 1 ' + WRAP_WIDTH + 'px',
-                    'padding:0 0.5rem',
+                    'flex:0 0 auto',
+                    'padding:0 0.25rem',
                     'box-sizing:border-box',
                     'display:flex',
                     'flex-direction:column',
                     'align-items:center',
                 ].join(';');
                 const titleEl = document.createElement('div');
-                titleEl.style.cssText = 'font-size:0.85rem;font-weight:600;color:' + BAR_CHART_TICK_COLOR + ';margin-bottom:0.35rem;text-align:center;max-width:100%;line-height:1.35;';
+                titleEl.style.cssText = 'font-size:0.78rem;font-weight:600;color:' + BAR_CHART_TICK_COLOR + ';margin-bottom:0.25rem;text-align:center;max-width:100%;line-height:1.3;';
                 titleEl.textContent = title;
                 wrap.appendChild(titleEl);
                 const canvas = document.createElement('canvas');
@@ -2896,21 +2945,24 @@
                     type: 'pie',
                     data: { labels: systemLabels, datasets: [{ data, backgroundColor: bgColors, borderColor: 'rgba(0,0,0,0.2)', borderWidth: 1 }] },
                     options: {
-                        layout: { padding: 10 },
+                        responsive: false,
+                        maintainAspectRatio: false,
+                        layout: { padding: 4 },
                         plugins: {
                             legend: {
                                 display: true,
                                 position: 'bottom',
                                 labels: {
                                     color: BAR_CHART_TICK_COLOR,
-                                    padding: 16,
-                                    boxWidth: 14,
-                                    boxHeight: 14,
+                                    padding: 8,
+                                    boxWidth: 10,
+                                    boxHeight: 10,
+                                    font: { size: 10 },
                                 },
                             },
                             datalabels: {
                                 color: '#fff',
-                                font: { size: 12, weight: '600' },
+                                font: { size: 10, weight: '600' },
                                 formatter: (v, ctx) => {
                                     if (v == null || isNaN(v) || v === 0) return '';
                                     const data = ctx.dataset.data;
@@ -3015,13 +3067,6 @@
                             panelTitle.style.cssText = 'font-size:0.95rem;font-weight:600;color:var(--text-primary);margin-bottom:0.35rem;';
                             panelTitle.textContent = primaryChartPanelTitle(chartData);
                             chartDiv.appendChild(panelTitle);
-                            const wlTxt = formatWorkloadNote(chartData.workload_profile);
-                            if (wlTxt) {
-                                const wlNote = document.createElement('div');
-                                wlNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;';
-                                wlNote.textContent = wlTxt;
-                                chartDiv.appendChild(wlNote);
-                            }
                             if (chartData.pts && chartData.pts.ob && chartData.pts.ob.matched) {
                                 const obNote = document.createElement('div');
                                 obNote.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;';
@@ -3157,6 +3202,63 @@
                     if (chartInstance) activeCharts.push(chartInstance);
             }
 
+            function configOptionLabel(config, bGroup, fallbackIdx) {
+                if (config.args_label != null && config.args_label !== '') return String(config.args_label);
+                if (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined) {
+                    return String(configLabelsMap[bGroup.benchmarkName][config.args]);
+                }
+                const raw = config.args != null ? String(config.args) : '';
+                if (raw.length > 80) return raw.slice(0, 77) + '...';
+                return raw || ('Option ' + (fallbackIdx + 1));
+            }
+
+            /** One primary chart row (not the whole comparison group). */
+            function renderConfigOptionCharts(config, container, optionKey) {
+                const key = optionKey || (config.primaryChart && config.primaryChart.option_key) || '';
+                if (config.primaryChart) {
+                    renderComparisonChart(config.primaryChart, container, { optionKey: key });
+                } else {
+                    renderOneCompGroup(config.group, container, false, key);
+                }
+            }
+
+            /** Merge config rows that share the same args (e.g. compression + decompression under one level). */
+            function groupConfigsByArgs(bGroup) {
+                const byKey = new Map();
+                bGroup.configs.forEach((config, idx) => {
+                    const k = compositeGroupKeyFromConfig(config);
+                    if (!byKey.has(k)) {
+                        byKey.set(k, {
+                            label: configOptionLabel(config, bGroup, idx),
+                            configs: [],
+                            group: config.group,
+                        });
+                    }
+                    const bucket = byKey.get(k);
+                    const metricKey = (
+                        (config.primaryChart && (config.primaryChart.description || config.primaryChart.metric || config.primaryChart.option_key))
+                        || config.metricLabel
+                        || ''
+                    ).trim();
+                    const seen = bucket.configs.some(c => {
+                        const mk = (
+                            (c.primaryChart && (c.primaryChart.description || c.primaryChart.metric || c.primaryChart.option_key))
+                            || c.metricLabel
+                            || ''
+                        ).trim();
+                        return mk === metricKey;
+                    });
+                    if (!seen) bucket.configs.push(config);
+                });
+                return Array.from(byKey.values());
+            }
+
+            function renderGroupedOptionDetail(optionGroup, container) {
+                optionGroup.configs.forEach(config => {
+                    renderConfigOptionCharts(config, container, (config.primaryChart && config.primaryChart.option_key) || '');
+                });
+            }
+
             function renderOneCompGroup(compGroup, container, skipPrimary, optionKey) {
                 compGroup.charts.forEach((chartData) => {
                     if (skipPrimary && chartData.is_primary) return;
@@ -3187,6 +3289,8 @@
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
                 const ptsHarmonicList = computePtsHarmonicMeanForBGroup(bGroup, systems);
                 const ptsGeoFallback = ptsHarmonicList.length ? null : computePtsGeoMeanForBGroup(bGroup, systems);
+                const ptsDirect = (!ptsHarmonicList.length && !ptsGeoFallback)
+                    ? computePtsDirectSubtestBarForBGroup(bGroup, systems) : null;
                 const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
 
                 const aggSection = document.createElement('div');
@@ -3199,8 +3303,10 @@
                     });
                 } else if (ptsGeoFallback) {
                     renderPtsCompositeBar(aggSection, systems, systemLabels, ptsGeoFallback, 'Geometric Mean');
+                } else if (ptsDirect) {
+                    renderPtsCompositeBar(aggSection, systems, systemLabels, ptsDirect, 'Result');
                 }
-                if (systems.length === 2 && !ptsHarmonicList.length && !ptsGeoFallback) {
+                if (systems.length === 2 && !usePtsComposite && !ptsHarmonicList.length && !ptsGeoFallback && !ptsDirect) {
                     const diag = computeTwoSystemCompositeDiagnostics(bGroup, systems);
                     if (diag) {
                         const d = document.createElement('div');
@@ -3396,17 +3502,14 @@
                         expandHeading.textContent = open ? '▼ Individual options' : '▲ Individual options';
                     });
                     const saved = expandedChartState[bGroupIdx];
-                    bGroup.configs.forEach((config, cIdx) => {
+                    const optionGroups = groupConfigsByArgs(bGroup);
+                    optionGroups.forEach((optionGroup, cIdx) => {
                         const optWrap = document.createElement('div');
                         optWrap.className = 'compare-nested-option';
                         optWrap.style.marginTop = '1rem';
                         const optHeader = document.createElement('div');
                         optHeader.style.cssText = 'padding:0.4rem 0.5rem;background:rgba(255,255,255,0.05);border-radius:4px;cursor:pointer;font-size:0.85rem;margin-bottom:0.25rem;';
-                        const optLabel = (config.args_label != null && config.args_label !== '')
-                            ? config.args_label
-                            : (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined)
-                                ? configLabelsMap[bGroup.benchmarkName][config.args]
-                                : (config.args && config.args.length > 80) ? config.args.slice(0, 77) + '...' : (config.args || 'Option ' + (cIdx + 1));
+                        const optLabel = optionGroup.label;
                         optHeader.textContent = (optLabel && optLabel.length > 80) ? optLabel.slice(0, 77) + '...' : (optLabel || 'Option ' + (cIdx + 1));
                         const optBody = document.createElement('div');
                         optBody.style.display = 'none';
@@ -3414,15 +3517,14 @@
                         optWrap.appendChild(optHeader);
                         optWrap.appendChild(optBody);
                         expandContent.appendChild(optWrap);
-                        const cfgOptionKey = (config.primaryChart && config.primaryChart.option_key) || '';
                         optHeader.addEventListener('click', () => {
                             const open = optBody.style.display !== 'none';
                             optBody.style.display = open ? 'none' : 'block';
-                            if (!open && optBody.children.length === 0) renderOneCompGroup(config.group, optBody, false, cfgOptionKey);
+                            if (!open && optBody.children.length === 0) renderGroupedOptionDetail(optionGroup, optBody);
                         });
                         if (saved && saved.optionsOpen[cIdx]) {
                             optBody.style.display = 'block';
-                            renderOneCompGroup(config.group, optBody, false, cfgOptionKey);
+                            renderGroupedOptionDetail(optionGroup, optBody);
                         }
                     });
                     if (saved && saved.individualOpen) {
