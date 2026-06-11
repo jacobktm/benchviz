@@ -913,9 +913,9 @@
         }
 
         function createBarChart(parent, labels, values, xAxisLabel, formatter, debugSource, systemIdsForLabels) {
-            const BAR_THICKNESS = 30;
-            const BAR_GAP = 30;
-            const BAR_CHART_HEIGHT_PADDING = 24;
+            const BAR_THICKNESS = 60;
+            const BAR_GAP = 48;
+            const BAR_CHART_HEIGHT_PADDING = 48;
             const barChartHeight = (n) => n * (BAR_THICKNESS + BAR_GAP) + BAR_CHART_HEIGHT_PADDING;
             const f = formatter || (v => (v == null || isNaN(v)) ? '' : Number(v).toFixed(2));
             const labelList = Array.isArray(labels) ? [...labels] : [];
@@ -942,7 +942,7 @@
                     label: '',
                     data: valueList,
                     backgroundColor: bgColors,
-                    borderRadius: 4,
+                    borderRadius: 6,
                     barThickness: BAR_THICKNESS
                 }]
             };
@@ -950,12 +950,12 @@
                 indexAxis: 'y',
                 responsive: false,
                 maintainAspectRatio: false,
-                layout: { padding: { top: 4, bottom: 4, left: 4, right: 8 } },
+                layout: { padding: { top: 8, bottom: 8, left: 4, right: 8 } },
                 scales: {
                     x: { title: { display: true, text: xAxisLabel || '', color: BAR_CHART_TICK_COLOR }, ticks: { color: BAR_CHART_TICK_COLOR } },
-                    y: { title: { display: false }, ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 12 } } }
+                    y: { title: { display: false }, ticks: { autoSkip: false, color: BAR_CHART_TICK_COLOR, font: { size: 14 } } }
                 },
-                plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 11, weight: '600' }, formatter: f, clip: true } }
+                plugins: { legend: { display: false }, datalabels: { anchor: 'center', align: 'center', color: '#fff', font: { size: 14, weight: '600' }, formatter: f, clip: true } }
             };
             function create() {
                 const containerWidth = (typeof chartsContainer !== 'undefined' && chartsContainer)
@@ -1660,8 +1660,97 @@
         }
 
         /**
+         * When every subtest shares the same scale and direction (e.g. all Seconds/LIB),
+         * average raw values instead of PTS inverted geometric mean.
+         */
+        function computePtsHomogeneousMeanForBGroup(bGroup, systems) {
+            if (!systems.length || !(bGroup.configs || []).length) return null;
+            const perSystem = systems.map(() => []);
+            let rowCount = 0;
+            let commonScale = null;
+            let commonScaleDisplay = '';
+            let commonHib = null;
+            let homogeneous = true;
+
+            bGroup.configs.forEach(config => {
+                const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
+                const scaleKey = (scale || '').trim().toLowerCase();
+                if (!scaleKey) {
+                    homogeneous = false;
+                    return;
+                }
+                if (commonScale === null) {
+                    commonScale = scaleKey;
+                    commonScaleDisplay = (scale || '').trim();
+                    commonHib = HIB;
+                } else if (scaleKey !== commonScale || HIB !== commonHib) {
+                    homogeneous = false;
+                }
+                let rowContributed = false;
+                systems.forEach((sid, i) => {
+                    const raw = config.valuesBySystem[sid];
+                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                    perSystem[i].push(Number(raw));
+                    rowContributed = true;
+                });
+                if (rowContributed) rowCount += 1;
+            });
+
+            if (!homogeneous || rowCount < 2) return null;
+
+            const rawArr = perSystem.map(arr => (arr.length >= 2
+                ? arr.reduce((sum, v) => sum + v, 0) / arr.length
+                : null));
+            const working = {};
+            systems.forEach((sid, i) => {
+                if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
+            });
+            if (Object.keys(working).length < 2) return null;
+
+            let refId = systems[0];
+            let refRaw = rawArr[systems.indexOf(refId)];
+            systems.forEach((sid, i) => {
+                const v = rawArr[i];
+                if (v == null) return;
+                if (commonHib) {
+                    if (refRaw == null || v < refRaw) {
+                        refRaw = v;
+                        refId = sid;
+                    }
+                } else if (refRaw == null || v > refRaw) {
+                    refRaw = v;
+                    refId = sid;
+                }
+            });
+
+            const raw = {};
+            const relative = {};
+            systems.forEach((sid, i) => {
+                raw[sid] = rawArr[i];
+                const v = rawArr[i];
+                if (v == null || refRaw == null || refRaw <= 0 || v <= 0) {
+                    relative[sid] = null;
+                } else {
+                    relative[sid] = commonHib ? v / refRaw : refRaw / v;
+                }
+            });
+
+            return {
+                raw,
+                relative,
+                referenceSystemId: refId,
+                subtestCount: rowCount,
+                scale: commonScaleDisplay,
+                homogeneousMean: true,
+                HIB: commonHib,
+                libInverted: false,
+            };
+        }
+
+        /**
          * PTS generate_geometric_mean_result() for one benchmark suite.
          * LIB subtests inverted to HIB scale; requires ≥2 contributing subtests.
+         * Used when subtests mix scales or directions.
          */
         function computePtsGeoMeanForBGroup(bGroup, systems) {
             if (!systems.length || !(bGroup.configs || []).length) return null;
@@ -1828,19 +1917,37 @@
             return computePtsHarmonicMeanForBGroup(bGroup, systems);
         }
 
+        /** Homogeneous-scale average first; otherwise PTS inverted geometric mean. */
+        function computePtsSuiteMeanForBGroup(bGroup, systems) {
+            return computePtsHomogeneousMeanForBGroup(bGroup, systems)
+                || computePtsGeoMeanForBGroup(bGroup, systems);
+        }
+
         /** Render a PTS geo-mean or harmonic-mean composite bar chart. */
         function renderPtsCompositeBar(parent, systems, systemLabels, meanData, meanLabel) {
-            const scaleName = meanData.scale || (meanLabel.toLowerCase().includes('geometric') ? 'Geometric Mean' : meanLabel.toLowerCase().includes('harmonic') ? 'Harmonic Mean' : '');
+            const isGeometric = meanLabel.toLowerCase().includes('geometric');
+            const isHarmonic = meanLabel.toLowerCase().includes('harmonic');
+            const scaleName = meanData.scale || (isGeometric ? 'Geometric Mean' : isHarmonic ? 'Harmonic Mean' : '');
             const scalePart = scaleName ? ` (${scaleName})` : '';
+            // LIB time metrics are inverted to (100/time) before geo-mean; raw values (~0.2) are not
+            // meaningful on their own — show PTS relative performance (slowest = 1.0) instead.
+            const showRelative = normalizeComposite || (isGeometric && !!meanData.libInverted);
+            const refId = meanData.referenceSystemId || systems[0];
+            const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
             let compositeLabel;
             let aggVals;
             let aggFormatter;
-            if (normalizeComposite) {
-                const refId = meanData.referenceSystemId || systems[0];
-                const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
+            if (showRelative) {
                 if (meanData.singleSubtest) {
                     const scaleHint = scaleName ? `, ${scaleName}` : '';
                     compositeLabel = `Relative Performance (${refLabel} = 1.0; 1 subtest${scaleHint})`;
+                } else if (meanData.homogeneousMean) {
+                    const scaleHint = scaleName ? `, ${scaleName}` : '';
+                    compositeLabel = `Average — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests${scaleHint})`;
+                } else if (isGeometric && meanData.libInverted) {
+                    const units = (meanData.nativeScales && meanData.nativeScales.length)
+                        ? meanData.nativeScales.join(', ') : 'time metrics';
+                    compositeLabel = `Geometric Mean — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests from ${units})`;
                 } else {
                     compositeLabel = `${meanLabel}${scalePart} — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests)`;
                 }
@@ -1849,32 +1956,53 @@
                     return rel != null ? rel : 1;
                 });
                 aggFormatter = formatPtsRelativeLabel;
-            } else if (meanLabel.toLowerCase().includes('harmonic') && scaleName && scaleName !== 'Harmonic Mean') {
+            } else if (meanData.homogeneousMean) {
+                const dir = meanData.HIB ? 'Higher is better' : 'Lower is better';
+                const scaleDisp = scaleName || 'result';
+                compositeLabel = `Average of ${meanData.subtestCount} subtests — ${scaleDisp}, ${dir}`;
+                aggVals = systems.map(sid => {
+                    const r = meanData.raw && meanData.raw[sid];
+                    return r != null ? r : 0;
+                });
+                aggFormatter = formatPtsRawMeanLabel;
+            } else if (isHarmonic && scaleName && scaleName !== 'Harmonic Mean') {
                 compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${meanData.subtestCount} tests)`;
+                aggVals = systems.map(sid => {
+                    const r = meanData.raw && meanData.raw[sid];
+                    return r != null ? r : 0;
+                });
+                aggFormatter = formatPtsRawMeanLabel;
             } else if (meanData.singleSubtest) {
+                const dir = meanData.HIB ? 'Higher is better' : 'Lower is better';
                 compositeLabel = scaleName
-                    ? `${scaleName} — single subtest (no suite composite; PTS needs ≥2 subtests)`
-                    : 'Single subtest result (no suite composite; PTS needs ≥2 subtests)';
-            } else if (meanLabel.toLowerCase().includes('geometric')) {
+                    ? `${scaleName} — ${dir} (single subtest)`
+                    : `${dir} (single subtest)`;
+                aggVals = systems.map(sid => {
+                    const r = meanData.raw && meanData.raw[sid];
+                    return r != null ? r : 0;
+                });
+                aggFormatter = formatPtsRawMeanLabel;
+            } else if (isGeometric) {
                 const geoSubject = (scaleName === 'Geometric Mean' || !scaleName) ? 'All Test Results' : scaleName;
-                let detail = `${meanData.subtestCount} subtests`;
-                if (meanData.libInverted) {
-                    const units = (meanData.nativeScales && meanData.nativeScales.length)
-                        ? meanData.nativeScales.join(', ') : 'lower-is-better units';
-                    detail += `; inverted from ${units} (100/time) — higher = faster, not ${units.split(',')[0] || 'native units'}`;
-                }
-                compositeLabel = `Geometric Mean Of ${geoSubject} (${detail})`;
+                compositeLabel = `Geometric Mean Of ${geoSubject} (${meanData.subtestCount} subtests)`;
+                aggVals = systems.map(sid => {
+                    const r = meanData.raw && meanData.raw[sid];
+                    return r != null ? r : 0;
+                });
+                aggFormatter = formatPtsRawMeanLabel;
             } else {
                 compositeLabel = `${meanLabel}${scalePart} (${meanData.subtestCount} subtests)`;
-            }
-            if (!normalizeComposite) {
                 aggVals = systems.map(sid => {
                     const r = meanData.raw && meanData.raw[sid];
                     return r != null ? r : 0;
                 });
                 aggFormatter = formatPtsRawMeanLabel;
             }
-            const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, true);
+            const sortHigherIsBetter = showRelative
+                || !!meanData.libInverted
+                || isHarmonic
+                || (meanData.homogeneousMean ? !!meanData.HIB : (meanData.singleSubtest ? !!meanData.HIB : true));
+            const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, sortHigherIsBetter);
             createBarChart(
                 parent,
                 sortedAgg.labels,
@@ -2011,7 +2139,7 @@
             if (opts.showBenchmarks) {
                 benchmarkGroups.forEach(bGroup => {
                     const systems = traceNames;
-                    const ptsGeo = computePtsGeoMeanForBGroup(bGroup, systems);
+                    const ptsGeo = computePtsSuiteMeanForBGroup(bGroup, systems);
                     let ratios;
                     if (ptsGeo) {
                         if (normalizeComposite) {
@@ -3288,7 +3416,7 @@
                 const systemLabels = getSystemDisplayNames(systems);
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
                 const ptsHarmonicList = computePtsHarmonicMeanForBGroup(bGroup, systems);
-                const ptsGeoFallback = ptsHarmonicList.length ? null : computePtsGeoMeanForBGroup(bGroup, systems);
+                const ptsGeoFallback = ptsHarmonicList.length ? null : computePtsSuiteMeanForBGroup(bGroup, systems);
                 const ptsDirect = (!ptsHarmonicList.length && !ptsGeoFallback)
                     ? computePtsDirectSubtestBarForBGroup(bGroup, systems) : null;
                 const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
@@ -3302,7 +3430,13 @@
                         renderPtsCompositeBar(aggSection, systems, systemLabels, hm, 'Harmonic Mean');
                     });
                 } else if (ptsGeoFallback) {
-                    renderPtsCompositeBar(aggSection, systems, systemLabels, ptsGeoFallback, 'Geometric Mean');
+                    renderPtsCompositeBar(
+                        aggSection,
+                        systems,
+                        systemLabels,
+                        ptsGeoFallback,
+                        ptsGeoFallback.homogeneousMean ? 'Average' : 'Geometric Mean',
+                    );
                 } else if (ptsDirect) {
                     renderPtsCompositeBar(aggSection, systems, systemLabels, ptsDirect, 'Result');
                 }
