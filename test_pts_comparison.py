@@ -105,8 +105,10 @@ class PtsObRelativeTest(unittest.TestCase):
         self.assertAlmostEqual(rel["b"], 85000.0 / 73490.0, places=4)
 
     def test_ob_p1_from_entry(self):
-        entry = {"ob_p1": 5000.0, "percentiles": [5000.0] + list(range(100, 1100, 10))}
+        entry = {"ob_p1": 5000.0, "percentiles": [5000.0, 5100.0] + list(range(100, 1100, 10))}
         self.assertAlmostEqual(ob_p1_from_entry(entry), 5000.0)
+        entry2 = {"percentiles": [4200.0, 5100.0]}
+        self.assertAlmostEqual(ob_p1_from_entry(entry2), 4200.0)
 
     def test_relative_vs_ob_p1_hib(self):
         rel = relative_vs_ob_baseline({"a": 10000.0, "b": 5000.0}, hib=True, baseline=5000.0)
@@ -132,24 +134,33 @@ class PtsHarmonicMeanTest(unittest.TestCase):
 
     def test_harmonic_includes_non_rate_hib_scale(self):
         subtests = [
-            {"hib": True, "scale": "Points", "values": {"a": 100.0, "b": 110.0}},
+            {
+                "hib": True, "scale": "Points", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.1, "b": 1.0},
+            },
         ] * 4
         result = pts_harmonic_mean_by_scale(subtests, ["a", "b"])
         self.assertIn("Points", result)
 
     def test_harmonic_by_scale_requires_four_subtests(self):
         subtests = [
-            {"hib": True, "scale": "FPS", "values": {"a": 100.0, "b": 110.0}},
+            {
+                "hib": True, "scale": "FPS", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.1, "b": 1.0},
+            },
         ] * 3
         self.assertEqual(pts_harmonic_mean_by_scale(subtests, ["a", "b"]), {})
 
         subtests = [
-            {"hib": True, "scale": "FPS", "values": {"a": 100.0, "b": 110.0}},
+            {
+                "hib": True, "scale": "FPS", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.1, "b": 1.0},
+            },
         ] * 4
         result = pts_harmonic_mean_by_scale(subtests, ["a", "b"])
         self.assertIn("FPS", result)
-        self.assertAlmostEqual(result["FPS"]["relative"]["a"], 1.0)
-        self.assertGreater(result["FPS"]["relative"]["b"], 1.0)
+        self.assertAlmostEqual(result["FPS"]["relative"]["a"], 1.1)
+        self.assertAlmostEqual(result["FPS"]["relative"]["b"], 1.0)
 
     def test_harmonic_skips_lib(self):
         subtests = [
@@ -166,53 +177,80 @@ class PtsHarmonicMeanTest(unittest.TestCase):
 
     def test_harmonic_cross_scale_mixes_units(self):
         subtests = [
-            {"hib": True, "scale": "MB/s", "values": {"a": 100.0, "b": 80.0}},
-            {"hib": True, "scale": "MIPS", "values": {"a": 5000.0, "b": 4000.0}},
-            {"hib": True, "scale": "FPS", "values": {"a": 120.0, "b": 100.0}},
-            {"hib": True, "scale": "runs/min", "values": {"a": 10.0, "b": 8.0}},
+            {
+                "hib": True, "scale": "MB/s", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.25, "b": 1.0},
+            },
+            {
+                "hib": True, "scale": "MIPS", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.25, "b": 1.0},
+            },
+            {
+                "hib": True, "scale": "FPS", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.25, "b": 1.0},
+            },
+            {
+                "hib": True, "scale": "runs/min", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.25, "b": 1.0},
+            },
         ]
         result = pts_harmonic_mean_cross_scale(subtests, ["a", "b"], head_to_head=True)
         self.assertIsNotNone(result)
         self.assertEqual(result["subtest_count"], 4)
+        self.assertAlmostEqual(result["relative"]["a"], 1.25)
         self.assertAlmostEqual(result["relative"]["b"], 1.0)
-        self.assertGreater(result["relative"]["a"], 1.0)
 
     def test_harmonic_cross_scale_ob_baseline(self):
         subtests = [
             {
-                "hib": True, "scale": "MB/s", "ob": {"matched": True},
-                "pts_ob_relative": {"a": 1.25, "b": 1.0},
+                "hib": True, "scale": "MB/s", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.25, "b": 1.0},
             },
             {
-                "hib": True, "scale": "MIPS", "ob": {"matched": True},
-                "pts_ob_relative": {"a": 1.1, "b": 0.95},
+                "hib": True, "scale": "MIPS", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.1, "b": 0.95},
             },
             {
-                "hib": True, "scale": "FPS", "ob": {"matched": True},
-                "pts_ob_relative": {"a": 1.05, "b": 1.02},
+                "hib": True, "scale": "FPS", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.05, "b": 1.02},
             },
             {
-                "hib": True, "scale": "runs/min", "ob": {"matched": True},
-                "pts_ob_relative": {"a": 1.08, "b": 0.98},
+                "hib": True, "scale": "runs/min", "ob": {"matched": True, "p1": 1.0},
+                "pts_ob_p1_relative": {"a": 1.08, "b": 0.98},
             },
         ]
         result = pts_harmonic_mean_cross_scale(subtests, ["a", "b"], head_to_head=False)
         self.assertIsNotNone(result)
-        self.assertTrue(result.get("ob_baseline"))
-        self.assertGreater(result["relative"]["a"], 1.0)
+        self.assertTrue(result.get("ob_p1_baseline"))
+        self.assertGreater(result["relative"]["a"], result["relative"]["b"])
 
     def test_global_harmonic_aggregates_all_benchmark_charts(self):
         def _group(scale, a_val, b_val, a_name="a", b_name="b"):
+            p1 = 100.0
+            rel = {"a": a_val / p1, "b": b_val / p1}
+            desc = f"Test {scale} {a_val}-{b_val}"
             return {
                 "system_details": [{"short_name": "a"}, {"short_name": "b"}],
+                "pts_scoring": {
+                    "subtests": [{
+                        "description": desc,
+                        "ob": {"matched": True, "p1": p1},
+                        "pts_ob_p1_relative": rel,
+                    }],
+                },
                 "charts": [{
                     "is_primary": True,
+                    "description": desc,
                     "scale": scale,
                     "proportion": "HIB",
                     "traces": [
                         {"name": a_name, "y": [a_val]},
                         {"name": b_name, "y": [b_val]},
                     ],
+                    "pts": {
+                        "ob": {"matched": True, "p1": p1},
+                        "pts_ob_p1_relative": rel,
+                    },
                 }],
             }
 

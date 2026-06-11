@@ -419,8 +419,8 @@ def _ob_median_from_percentiles(percentiles: list[Any]) -> float | None:
 
 
 def _ob_p1_from_percentiles(percentiles: list[Any]) -> float | None:
-    """OB population 1st-percentile reference (percentiles[1])."""
-    return _ob_percentile_from_list(percentiles, 1)
+    """OB population baseline reference (percentiles[0] from generated.json)."""
+    return _ob_percentile_from_list(percentiles, 0)
 
 
 def _ob_percentile_from_list(percentiles: list[Any], index: int) -> float | None:

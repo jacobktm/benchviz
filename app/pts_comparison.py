@@ -138,8 +138,8 @@ def ob_median_from_entry(ob_entry: dict[str, Any] | None) -> float | None:
 
 
 def ob_p1_from_entry(ob_entry: dict[str, Any] | None) -> float | None:
-    """Population 1st-percentile reference from an OB cache entry (percentiles[1])."""
-    return ob_percentile_value_from_entry(ob_entry, 1)
+    """Population baseline from an OB cache entry (percentiles[0] from generated.json)."""
+    return ob_percentile_value_from_entry(ob_entry, 0)
 
 
 def ob_percentile_value_from_entry(
@@ -150,7 +150,7 @@ def ob_percentile_value_from_entry(
     if not ob_entry or percentile_index < 0:
         return None
     cache_key = f"ob_p{percentile_index}" if percentile_index != 50 else "ob_median"
-    if percentile_index == 1:
+    if percentile_index == 0:
         cache_key = "ob_p1"
     cached = ob_entry.get(cache_key)
     if cached is not None:
@@ -334,8 +334,7 @@ def pts_harmonic_mean_by_scale(
     """
     Harmonic mean grouped by result scale.
 
-    All HIB subtests with a scale; LIB skipped. Each scale needs ≥4 values per
-    system and ≥2 systems with a valid harmonic mean.
+    Uses per-subtest OB baseline-relative HIB scores (1.0 = percentiles[0]).
     """
     by_scale: dict[str, dict[str, list[float]]] = {}
     subtest_counts: dict[str, int] = {}
@@ -346,11 +345,14 @@ def pts_harmonic_mean_by_scale(
         scale = normalize_harmonic_scale_key(st.get("scale"))
         if not scale:
             continue
-        vals = st.get("values") or {}
+        p1_rel = st.get("pts_ob_p1_relative") or {}
+        ob = st.get("ob") or {}
+        if not p1_rel and not ob.get("p1"):
+            continue
         bucket = by_scale.setdefault(scale, {sid: [] for sid in system_ids})
         contributed = False
         for sid in system_ids:
-            raw = vals.get(sid)
+            raw = p1_rel.get(sid)
             if raw is None:
                 continue
             try:
@@ -375,13 +377,12 @@ def pts_harmonic_mean_by_scale(
         if len(valid_systems) < 2:
             continue
 
-        relative = normalize_relative_values(raw, hib=True)
-        ref_id = _reference_system_from_raw(raw, system_ids)
         out[scale] = {
             "raw": raw,
-            "relative": relative,
-            "reference_system_id": ref_id,
+            "relative": {sid: raw.get(sid) for sid in system_ids},
+            "reference_system_id": "",
             "subtest_count": subtest_counts.get(scale, 0),
+            "ob_p1_baseline": True,
         }
     return out
 
@@ -395,55 +396,34 @@ def pts_harmonic_mean_cross_scale(
     """
     Harmonic mean of per-subtest HIB scores across mixed units.
 
-    Default (head_to_head=False): each subtest uses pts_ob_relative (OB median = 1.0).
-    head_to_head=True: each subtest uses value / worst in comparison (slowest = 1.0).
+    Uses OB baseline-relative scores (1.0 = percentiles[0] per subtest).
+    head_to_head is ignored — kept only for call-site compatibility.
     """
+    del head_to_head
     per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
     subtest_count = 0
 
     for st in subtests:
         if st.get("hib") is False:
             continue
-        if head_to_head:
-            vals = st.get("values") or {}
-            parsed: dict[str, float] = {}
-            for sid in system_ids:
-                raw = vals.get(sid)
-                if raw is None:
-                    continue
-                try:
-                    v = float(raw)
-                except (TypeError, ValueError):
-                    continue
-                if v <= 0 or not math.isfinite(v):
-                    continue
-                parsed[sid] = v
-            if len(parsed) < 2:
+        p1_rel = st.get("pts_ob_p1_relative") or {}
+        ob = st.get("ob") or {}
+        if not p1_rel and not ob.get("p1"):
+            continue
+        contributed = False
+        for sid in system_ids:
+            raw = p1_rel.get(sid)
+            if raw is None:
                 continue
-            worst = min(parsed.values())
-            for sid, v in parsed.items():
-                per_system[sid].append(v / worst)
-            subtest_count += 1
-        else:
-            ob_rel = st.get("pts_ob_relative") or {}
-            if not (st.get("ob") or {}).get("matched"):
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
                 continue
-            parsed_ob: dict[str, float] = {}
-            for sid in system_ids:
-                raw = ob_rel.get(sid)
-                if raw is None:
-                    continue
-                try:
-                    v = float(raw)
-                except (TypeError, ValueError):
-                    continue
-                if v <= 0 or not math.isfinite(v):
-                    continue
-                parsed_ob[sid] = v
-            if len(parsed_ob) < len(system_ids):
+            if v <= 0 or not math.isfinite(v):
                 continue
-            for sid, v in parsed_ob.items():
-                per_system[sid].append(v)
+            per_system[sid].append(v)
+            contributed = True
+        if contributed:
             subtest_count += 1
 
     if subtest_count < MIN_HARMONIC_SUBTESTS:
@@ -458,17 +438,12 @@ def pts_harmonic_mean_cross_scale(
     if len(valid_systems) < 2:
         return None
 
-    if head_to_head:
-        relative = normalize_relative_values(raw, hib=True)
-        ref_id = _reference_system_from_raw(raw, system_ids)
-    else:
-        relative = {sid: raw.get(sid) for sid in system_ids}
-        ref_id = ""
     return {
         "raw": raw,
-        "relative": relative,
-        "reference_system_id": ref_id,
-        "ob_baseline": not head_to_head,
+        "relative": {sid: raw.get(sid) for sid in system_ids},
+        "reference_system_id": "",
+        "ob_baseline": True,
+        "ob_p1_baseline": True,
         "subtest_count": subtest_count,
     }
 

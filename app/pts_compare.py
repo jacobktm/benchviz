@@ -239,8 +239,8 @@ def build_pts_global_summary(
 
     composite_ob = None
     if pts_contexts and trace_ids:
-        ob_summary = build_pts_ob_global_summary(pts_contexts, trace_ids)
-        composite_ob = ob_summary.get("composite_ob_relative")
+        ob_summary = build_pts_ob_p1_global_summary(pts_contexts, trace_ids)
+        composite_ob = ob_summary.get("composite_ob_p1_relative")
 
     return {
         "composite_raw": composite_raw,
@@ -253,22 +253,21 @@ def build_pts_global_summary(
     }
 
 
-def build_pts_ob_global_summary(
+def build_pts_ob_p1_global_summary(
     group_contexts: list[dict[str, Any]],
     system_ids: list[str],
 ) -> dict[str, Any]:
     """
-    Geo-mean of per-subtest OB-relative scores (1.0 = OB median per subtest).
-
-    Matches comparing each result against the OpenBenchmarking population median.
+    Arithmetic mean of per-subtest OB baseline-relative scores (1.0 = percentiles[0] per subtest).
     """
     per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
     matched_subtests = 0
     for ctx in group_contexts:
         for st in ctx.get("subtests") or []:
-            if not (st.get("ob") or {}).get("matched"):
+            ob = st.get("ob") or {}
+            if not ob.get("matched") or ob.get("p1") is None:
                 continue
-            rel = st.get("pts_ob_relative") or {}
+            rel = st.get("pts_ob_p1_relative") or {}
             contributed = False
             for sid in system_ids:
                 v = rel.get(sid)
@@ -279,13 +278,21 @@ def build_pts_ob_global_summary(
                 matched_subtests += 1
 
     composite = {
-        sid: geometric_mean(vs) if len(vs) >= 2 else None
+        sid: (sum(vs) / len(vs) if len(vs) >= 2 else None)
         for sid, vs in per_system.items()
     }
     return {
-        "composite_ob_relative": composite,
+        "composite_ob_p1_relative": composite,
         "subtest_count": matched_subtests,
     }
+
+
+def build_pts_ob_global_summary(
+    group_contexts: list[dict[str, Any]],
+    system_ids: list[str],
+) -> dict[str, Any]:
+    """Backward-compatible alias: OB p1 arithmetic mean (not median geo-mean)."""
+    return build_pts_ob_p1_global_summary(group_contexts, system_ids)
 
 
 def _canonical_system_id(trace_name: str | None, group: dict[str, Any]) -> str:
@@ -321,11 +328,18 @@ def extract_subtests_from_comparison_groups(
     """One subtest per primary chart row (matches compare UI config aggregation)."""
     subtests: list[dict[str, Any]] = []
     for group in comparison_groups:
+        sub_by_desc = {
+            (st.get("description") or "").strip(): st
+            for st in (group.get("pts_scoring") or {}).get("subtests") or []
+        }
         for ch in group.get("charts") or []:
             if not ch.get("is_primary"):
                 continue
             scale = (ch.get("scale") or "").strip()
             hib = _is_hib(ch.get("proportion"))
+            desc = (ch.get("description") or "").strip()
+            scoring_st = sub_by_desc.get(desc) or {}
+            chart_pts = ch.get("pts") or {}
             values: dict[str, float | None] = {}
             for tr in ch.get("traces") or []:
                 name = tr.get("name")
@@ -344,6 +358,9 @@ def extract_subtests_from_comparison_groups(
                 "hib": hib,
                 "scale": scale,
                 "values": values,
+                "ob": scoring_st.get("ob") or chart_pts.get("ob"),
+                "pts_ob_p1_relative": scoring_st.get("pts_ob_p1_relative") or chart_pts.get("pts_ob_p1_relative"),
+                "pts_ob_relative": scoring_st.get("pts_ob_relative") or chart_pts.get("pts_ob_relative"),
             })
     return subtests
 
@@ -373,8 +390,6 @@ def build_pts_global_harmonic_summary(
     trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
     subtests = extract_subtests_from_comparison_groups(comparison_groups)
     cross_scale = pts_harmonic_mean_cross_scale(subtests, trace_ids, head_to_head=False)
-    if cross_scale is None:
-        cross_scale = pts_harmonic_mean_cross_scale(subtests, trace_ids, head_to_head=True)
     return {
         "by_scale": pts_harmonic_mean_by_scale(subtests, trace_ids),
         "cross_scale": cross_scale,
