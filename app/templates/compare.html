@@ -1779,8 +1779,7 @@
             let commonScaleDisplay = '';
             let commonHib = null;
             let homogeneous = true;
-            const canUseOb = !normalizeComposite && (bGroup.configs || []).every(c => configHasObRelativeForAllSystems(c, systems));
-            const useOb = canUseOb;
+            let obRowCount = 0;
 
             bGroup.configs.forEach(config => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
@@ -1793,13 +1792,15 @@
                     homogeneous = false;
                 }
                 let rowContributed = false;
-                if (useOb) {
+                const useObRow = !normalizeComposite && configHasObRelativeForAllSystems(config, systems);
+                if (useObRow) {
                     systems.forEach((sid, i) => {
                         const obRel = configObRelativeForSystem(config, sid);
                         if (obRel == null) return;
                         perSystem[i].push(obRel);
                         rowContributed = true;
                     });
+                    if (rowContributed) obRowCount += 1;
                 } else {
                     systems.forEach((sid, i) => {
                         const raw = configValueForSystem(config, sid);
@@ -1824,7 +1825,8 @@
 
             const raw = {};
             const relative = {};
-            if (useOb) {
+            const allOb = !normalizeComposite && obRowCount === rowCount;
+            if (allOb) {
                 systems.forEach((sid, i) => {
                     raw[sid] = rawArr[i];
                     relative[sid] = rawArr[i];
@@ -1841,39 +1843,51 @@
                     libInverted: false,
                 };
             }
-
-            let refId = systems[0];
-            let refRaw = rawArr[systems.indexOf(refId)];
-            systems.forEach((sid, i) => {
-                const v = rawArr[i];
-                if (v == null) return;
-                if (commonHib) {
-                    if (refRaw == null || v < refRaw) {
+            if (normalizeComposite) {
+                let refId = systems[0];
+                let refRaw = rawArr[systems.indexOf(refId)];
+                systems.forEach((sid, i) => {
+                    const v = rawArr[i];
+                    if (v == null) return;
+                    if (commonHib) {
+                        if (refRaw == null || v < refRaw) {
+                            refRaw = v;
+                            refId = sid;
+                        }
+                    } else if (refRaw == null || v > refRaw) {
                         refRaw = v;
                         refId = sid;
                     }
-                } else if (refRaw == null || v > refRaw) {
-                    refRaw = v;
-                    refId = sid;
-                }
-            });
-
+                });
+                systems.forEach((sid, i) => {
+                    raw[sid] = rawArr[i];
+                    const v = rawArr[i];
+                    if (v == null || refRaw == null || refRaw <= 0 || v <= 0) {
+                        relative[sid] = null;
+                    } else {
+                        relative[sid] = commonHib ? v / refRaw : refRaw / v;
+                    }
+                });
+                return {
+                    raw,
+                    relative,
+                    headToHead: true,
+                    referenceSystemId: refId,
+                    subtestCount: rowCount,
+                    scale: commonScaleDisplay,
+                    homogeneousMean: true,
+                    HIB: commonHib,
+                    libInverted: false,
+                };
+            }
             systems.forEach((sid, i) => {
                 raw[sid] = rawArr[i];
-                const v = rawArr[i];
-                if (v == null || refRaw == null || refRaw <= 0 || v <= 0) {
-                    relative[sid] = null;
-                } else {
-                    relative[sid] = commonHib ? v / refRaw : refRaw / v;
-                }
+                relative[sid] = rawArr[i];
             });
-
             return {
                 raw,
                 relative,
-                obBaseline: useOb,
-                headToHead: !!normalizeComposite,
-                referenceSystemId: refId,
+                referenceSystemId: '',
                 subtestCount: rowCount,
                 scale: commonScaleDisplay,
                 homogeneousMean: true,
@@ -1886,22 +1900,23 @@
             if (!systems.length || !configEntries.length) return null;
             const perSystem = systems.map(() => []);
             let rowCount = 0;
+            let obRowCount = 0;
             let libRows = 0;
             const nativeScales = new Set();
-            const canUseOb = !normalizeComposite && configEntries.every(({ config }) => configHasObRelativeForAllSystems(config, systems));
-            const useOb = canUseOb;
             configEntries.forEach(({ config, bGroup }) => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
                 if (scale) nativeScales.add(scale);
                 if (!HIB) libRows += 1;
+                const useObRow = !normalizeComposite && configHasObRelativeForAllSystems(config, systems);
                 let rowContributed = false;
-                if (useOb) {
+                if (useObRow) {
                     systems.forEach((sid, i) => {
                         const obRel = configObRelativeForSystem(config, sid);
                         if (obRel == null) return;
                         perSystem[i].push(obRel);
                         rowContributed = true;
                     });
+                    if (rowContributed) obRowCount += 1;
                 } else {
                     systems.forEach((sid, i) => {
                         const raw = configValueForSystem(config, sid);
@@ -1921,7 +1936,8 @@
             if (Object.keys(working).length < 2) return null;
             const raw = {};
             const relative = {};
-            if (useOb) {
+            const allOb = !normalizeComposite && obRowCount === rowCount;
+            if (allOb) {
                 systems.forEach((sid, i) => {
                     raw[sid] = rawArr[i];
                     relative[sid] = rawArr[i];
@@ -1937,21 +1953,35 @@
                     nativeScales: Array.from(nativeScales),
                 };
             }
-            const divide = Math.min(...Object.values(working));
-            let refId = systems[0];
-            systems.forEach(sid => {
-                if (working[sid] === divide) refId = sid;
-            });
+            if (normalizeComposite) {
+                const divide = Math.min(...Object.values(working));
+                let refId = systems[0];
+                systems.forEach(sid => {
+                    if (working[sid] === divide) refId = sid;
+                });
+                systems.forEach((sid, i) => {
+                    raw[sid] = rawArr[i];
+                    relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
+                });
+                return {
+                    raw,
+                    relative,
+                    headToHead: true,
+                    referenceSystemId: refId,
+                    subtestCount: rowCount,
+                    scale: 'Geometric Mean',
+                    libInverted: libRows > 0,
+                    nativeScales: Array.from(nativeScales),
+                };
+            }
             systems.forEach((sid, i) => {
                 raw[sid] = rawArr[i];
-                relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
+                relative[sid] = rawArr[i];
             });
             return {
                 raw,
                 relative,
-                obBaseline: useOb,
-                headToHead: !!normalizeComposite,
-                referenceSystemId: refId,
+                referenceSystemId: '',
                 subtestCount: rowCount,
                 scale: 'Geometric Mean',
                 libInverted: libRows > 0,
@@ -1969,7 +1999,6 @@
         function createCrossUnitHarmonicAccumulator(systems) {
             const perSystem = systems.map(() => []);
             let subtestCount = 0;
-            let obSubtestCount = 0;
             const benchmarkSources = new Set();
 
             return {
@@ -1981,16 +2010,11 @@
                         if (!vals.every(v => v != null && !isNaN(v) && v > 0)) return false;
                         const worst = Math.min(...vals);
                         vals.forEach((v, i) => perSystem[i].push(v / worst));
-                    } else if (configHasObRelativeForAllSystems(config, systems)) {
+                    } else {
+                        if (!configHasObRelativeForAllSystems(config, systems)) return false;
                         systems.forEach((sid, i) => {
                             perSystem[i].push(configObRelativeForSystem(config, sid));
                         });
-                        obSubtestCount += 1;
-                    } else {
-                        const vals = systems.map(sid => configValueForSystem(config, sid));
-                        if (!vals.every(v => v != null && !isNaN(v) && v > 0)) return false;
-                        const worst = Math.min(...vals);
-                        vals.forEach((v, i) => perSystem[i].push(v / worst));
                     }
                     subtestCount += 1;
                     const bmName = (bGroup && bGroup.benchmarkName) || '';
@@ -2007,8 +2031,7 @@
                     if (Object.keys(working).length < 2) return null;
                     const raw = {};
                     const relative = {};
-                    const allOb = obSubtestCount === subtestCount;
-                    if (normalizeComposite || !allOb) {
+                    if (normalizeComposite) {
                         const divide = Math.min(...Object.values(working));
                         let refId = systems[0];
                         systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
@@ -2020,7 +2043,6 @@
                             scale: 'All HIB Subtests',
                             crossScale: true,
                             headToHead: true,
-                            obBaseline: false,
                             raw,
                             relative,
                             referenceSystemId: refId,
@@ -2050,12 +2072,14 @@
         function createHarmonicMeanAccumulator(systems) {
             const byScale = new Map();
             const subtestCounts = new Map();
+            const obSubtestCounts = new Map();
             const benchmarkSources = new Map();
 
             function ensureScale(scaleKey) {
                 if (!byScale.has(scaleKey)) {
                     byScale.set(scaleKey, systems.map(() => []));
                     benchmarkSources.set(scaleKey, new Set());
+                    obSubtestCounts.set(scaleKey, 0);
                 }
             }
 
@@ -2068,15 +2092,24 @@
                     if (!scaleKey) return false;
                     ensureScale(scaleKey);
                     const buckets = byScale.get(scaleKey);
+                    const useOb = !normalizeComposite && configHasObRelativeForAllSystems(config, systems);
                     let contributed = false;
                     systems.forEach((sid, i) => {
-                        const raw = configValueForSystem(config, sid);
-                        if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
-                        buckets[i].push(Number(raw));
-                        contributed = true;
+                        if (useOb) {
+                            const obRel = configObRelativeForSystem(config, sid);
+                            if (obRel == null) return;
+                            buckets[i].push(obRel);
+                            contributed = true;
+                        } else {
+                            const raw = configValueForSystem(config, sid);
+                            if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                            buckets[i].push(Number(raw));
+                            contributed = true;
+                        }
                     });
                     if (contributed) {
                         subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
+                        if (useOb) obSubtestCounts.set(scaleKey, (obSubtestCounts.get(scaleKey) || 0) + 1);
                         const bmName = (bGroup && bGroup.benchmarkName) || '';
                         if (bmName) benchmarkSources.get(scaleKey).add(bmName);
                     }
@@ -2091,23 +2124,55 @@
                             if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
                         });
                         if (Object.keys(working).length < 2) return;
-                        const divide = Math.min(...Object.values(working));
-                        let refId = systems[0];
-                        systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
+                        const subtestCount = subtestCounts.get(scale) || 0;
+                        const allOb = !normalizeComposite && obSubtestCounts.get(scale) === subtestCount;
                         const raw = {};
                         const relative = {};
-                        systems.forEach((sid, i) => {
-                            raw[sid] = rawArr[i];
-                            relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
-                        });
-                        results.push({
-                            scale,
-                            raw,
-                            relative,
-                            referenceSystemId: refId,
-                            subtestCount: subtestCounts.get(scale) || 0,
-                            benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
-                        });
+                        if (normalizeComposite) {
+                            const divide = Math.min(...Object.values(working));
+                            let refId = systems[0];
+                            systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
+                            systems.forEach((sid, i) => {
+                                raw[sid] = rawArr[i];
+                                relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
+                            });
+                            results.push({
+                                scale,
+                                raw,
+                                relative,
+                                headToHead: true,
+                                referenceSystemId: refId,
+                                subtestCount,
+                                benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
+                            });
+                        } else if (allOb) {
+                            systems.forEach((sid, i) => {
+                                raw[sid] = rawArr[i];
+                                relative[sid] = rawArr[i];
+                            });
+                            results.push({
+                                scale,
+                                raw,
+                                relative,
+                                obBaseline: true,
+                                referenceSystemId: '',
+                                subtestCount,
+                                benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
+                            });
+                        } else {
+                            systems.forEach((sid, i) => {
+                                raw[sid] = rawArr[i];
+                                relative[sid] = rawArr[i];
+                            });
+                            results.push({
+                                scale,
+                                raw,
+                                relative,
+                                referenceSystemId: '',
+                                subtestCount,
+                                benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
+                            });
+                        }
                     });
                     return results.sort((a, b) => a.scale.localeCompare(b.scale));
                 },
@@ -3492,10 +3557,10 @@
                                 obNote.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;';
                                 const parts = (chartData.traces || []).map(t => {
                                     const pct = chartData.pts.ob_percentile && chartData.pts.ob_percentile[t.name];
-                                    const rel = chartData.pts.pts_relative && chartData.pts.pts_relative[t.name];
+                                    const rel = chartData.pts.pts_ob_relative && chartData.pts.pts_ob_relative[t.name];
                                     const lbl = t.name != null ? String(t.name) : '';
                                     if (pct != null) {
-                                        const relTxt = rel != null ? `, ${formatCompositeBarValue(compositeToPercentAdvantage(rel), false)} vs ref` : '';
+                                        const relTxt = rel != null ? `, ${formatCompositeBarValue(Number(rel), true)} vs OB median` : '';
                                         return `${lbl}: ${pct}th percentile OB${relTxt}`;
                                     }
                                     return null;
@@ -4104,6 +4169,29 @@
             }
         }
 
+        function updateObBaselineNotice(pts) {
+            const chartControls = document.getElementById('chartControls');
+            if (!chartControls) return;
+            let el = chartControls.querySelector('.ob-baseline-notice');
+            if (!el) {
+                el = document.createElement('div');
+                el.className = 'ob-baseline-notice';
+                el.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;';
+                chartControls.insertBefore(el, chartControls.firstChild);
+            }
+            if (!pts || !pts.ob_index_available) {
+                el.textContent = 'PTS/OB reference unavailable — sync ob-cache (generated.json) and rebuild ob_cache_index.json on this server. Scores show raw values unless Head-to-head normalize is on.';
+                return;
+            }
+            const count = pts.ob_entry_count != null ? pts.ob_entry_count : '?';
+            const synced = pts.ob_index_synced_at ? String(pts.ob_index_synced_at).slice(0, 10) : 'unknown';
+            if (normalizeComposite) {
+                el.textContent = `PTS/OB index loaded (${count} entries, ${synced}). Head-to-head normalize is ON — scores are vs the slowest system in this comparison, not OB median.`;
+            } else {
+                el.textContent = `PTS/OB index loaded (${count} entries, ${synced}). Default baseline is OpenBenchmarking population median (1.0 = typical public result). Enable Head-to-head normalize to compare systems directly.`;
+            }
+        }
+
         generateBtn.addEventListener('click', async () => {
             const systemIds = selectedSystems.map(s => s.id);
 
@@ -4150,6 +4238,7 @@
                     currentComparisonGroups = data.comparison_groups;
                     currentPtsScoring = data.pts || null;
                     usePtsComposite = !!(currentPtsScoring && currentPtsScoring.global);
+                    updateObBaselineNotice(currentPtsScoring);
                     
                     chartControls.style.display = 'block';
                     chartTitle.textContent = "";
@@ -4190,6 +4279,7 @@
                                     generateBtn.click();
                                     return;
                                 }
+                                updateObBaselineNotice(currentPtsScoring);
                                 renderCharts();
                             });
                             const span = document.createElement('span');

@@ -76,22 +76,78 @@ echo "  python app_main.py"
 
 if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   echo
-  echo "Installing BenchViz as a systemd service..."
-  if [ -x "./install_systemd_service.sh" ]; then
-      # If the install root already exists and is owned by a non-root user,
-      # prefer that owner as the default service user.
-      BENCHVIZ_DEFAULT_SERVICE_USER=""
-      if [ -d "$PROJECT_ROOT" ]; then
-        dir_owner="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
-        if [[ -n "${dir_owner:-}" && "${dir_owner}" != "root" ]]; then
-          BENCHVIZ_DEFAULT_SERVICE_USER="$dir_owner"
-        fi
-      fi
+  echo "=== System-wide service setup ==="
 
-      BENCHVIZ_DEFAULT_SERVICE_USER="$BENCHVIZ_DEFAULT_SERVICE_USER" ./install_systemd_service.sh
+  # Runtime deps for Phoronix Test Suite ob-cache sync (git clone + phoronix-test-suite).
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "Installing git and php-cli (OpenBenchmarking cache sync)..."
+    apt-get install -y git php-cli
   else
-      echo "install_systemd_service.sh not found or not executable. Skipping systemd setup."
+    missing=()
+    command -v git >/dev/null 2>&1 || missing+=("git")
+    command -v php >/dev/null 2>&1 || missing+=("php-cli")
+    if [ "${#missing[@]}" -gt 0 ]; then
+      echo "Missing packages: ${missing[*]}"
+      echo "Install them before continuing (e.g. on Debian/Ubuntu: sudo apt install git php-cli)."
+      exit 1
+    fi
   fi
+
+  echo
+  echo "Installing BenchViz as a systemd service..."
+  if [ ! -x "./install_systemd_service.sh" ]; then
+    echo "install_systemd_service.sh not found or not executable. Aborting service setup."
+    exit 1
+  fi
+
+  BENCHVIZ_DEFAULT_SERVICE_USER=""
+  if [ -d "$PROJECT_ROOT" ]; then
+    dir_owner="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
+    if [[ -n "${dir_owner:-}" && "${dir_owner}" != "root" ]]; then
+      BENCHVIZ_DEFAULT_SERVICE_USER="$dir_owner"
+    fi
+  fi
+  if [ -z "$BENCHVIZ_DEFAULT_SERVICE_USER" ]; then
+    BENCHVIZ_DEFAULT_SERVICE_USER="${SUDO_USER:-benchviz}"
+  fi
+
+  if ! id -u "${BENCHVIZ_DEFAULT_SERVICE_USER}" >/dev/null 2>&1; then
+    echo "Creating service user '${BENCHVIZ_DEFAULT_SERVICE_USER}'..."
+    if command -v adduser >/dev/null 2>&1; then
+      adduser --disabled-password --gecos "" "${BENCHVIZ_DEFAULT_SERVICE_USER}"
+    else
+      useradd -m -s /bin/bash "${BENCHVIZ_DEFAULT_SERVICE_USER}"
+    fi
+  fi
+
+  BENCHVIZ_PROJECT_ROOT="$PROJECT_ROOT" \
+    BENCHVIZ_DEFAULT_SERVICE_USER="$BENCHVIZ_DEFAULT_SERVICE_USER" \
+    BENCHVIZ_NONINTERACTIVE=1 \
+    BENCHVIZ_SKIP_OB_TIMER=1 \
+    ./install_systemd_service.sh
+
+  SERVICE_USER="$BENCHVIZ_DEFAULT_SERVICE_USER"
+
+  echo
+  echo "Seeding OpenBenchmarking cache (clone PTS, run phoronix-test-suite, build index)..."
+  sudo -u "${SERVICE_USER}" bash -c "
+    cd \"${PROJECT_ROOT}\" &&
+    export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
+    \"${PROJECT_ROOT}/venv/bin/python\" -m flask sync-openbenchmarking-cache
+  "
+
+  echo
+  echo "Installing periodic OpenBenchmarking cache sync timer (every 24h)..."
+  BENCHVIZ_PROJECT_ROOT="$PROJECT_ROOT" \
+    BENCHVIZ_DEFAULT_SERVICE_USER="$SERVICE_USER" \
+    BENCHVIZ_OB_SYNC_INTERVAL_HOURS="24" \
+    ./install_systemd_ob_cache_timer.sh
+
+  echo
+  echo "Service setup complete."
+  echo "  sudo systemctl status benchviz.service"
+  echo "  sudo systemctl status benchviz-sync-ob-cache.timer"
+  echo "  sudo systemctl start benchviz-sync-ob-cache.service   # manual refresh"
 else
   echo
   echo "Skipping systemd service installation."

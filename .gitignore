@@ -10,6 +10,7 @@ benchmarks/*.xml
 instance/benchmarks.db
 instance/ob-cache/
 instance/ob_cache_index.json
+instance/phoronix-test-suite/
 instance/phoronix-test-suite-src/
 
 # Exported slide images

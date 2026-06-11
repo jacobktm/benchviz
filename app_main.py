@@ -4343,28 +4343,66 @@ def import_hardware_ranks_cmd(path):
     type=click.Choice(["auto", "local", "github"], case_sensitive=False),
     default="auto",
     show_default=True,
-    help="auto: local PTS clone if present, else shallow GitHub sparse checkout.",
+    help="auto: clone/update instance/phoronix-test-suite then mirror ob-cache.",
 )
 @click.option(
     "--local-path",
     default="",
-    help="PTS source tree with ob-cache/ (default: /home/system76/Git/phoronix-test-suite).",
+    help="PTS source tree with ob-cache/ (default: instance/phoronix-test-suite).",
 )
 @click.option("--branch", default="master", show_default=True, help="Git branch when pulling from GitHub.")
-def sync_openbenchmarking_cache_cmd(source: str, local_path: str, branch: str):
+@click.option(
+    "--skip-clone",
+    is_flag=True,
+    help="Do not git clone/pull; only copy generated.json from an existing local tree.",
+)
+@click.option(
+    "--skip-pts-run",
+    is_flag=True,
+    help="Do not run phoronix-test-suite (no sub-command) before copying ob-cache.",
+)
+def sync_openbenchmarking_cache_cmd(
+    source: str,
+    local_path: str,
+    branch: str,
+    skip_clone: bool,
+    skip_pts_run: bool,
+):
     """
     Mirror OpenBenchmarking generated.json analytics from Phoronix Test Suite and build a lookup index.
 
-    Run periodically (cron/systemd timer) to refresh population percentiles used for PTS-style scoring.
+    Clones PTS to instance/phoronix-test-suite, runs ``phoronix-test-suite`` with no options to
+    refresh OpenBenchmarking lists, then copies ob-cache into instance/ob-cache/.
+
+    Run periodically (systemd timer) to refresh population percentiles used for PTS-style scoring.
     """
-    from app.ob_cache_sync import build_ob_cache_index, default_ob_cache_dir, sync_ob_cache
+    from app.ob_cache_sync import (
+        build_ob_cache_index,
+        default_ob_cache_dir,
+        default_pts_clone_dir,
+        sync_ob_cache,
+    )
 
     lp = local_path.strip() or None
     with app.app_context():
-        meta = sync_ob_cache(source=source, local_path=lp, branch=branch)
+        meta = sync_ob_cache(
+            source=source,
+            local_path=lp,
+            branch=branch,
+            ensure_clone=not skip_clone,
+            run_pts_update=not skip_pts_run,
+        )
         idx = build_ob_cache_index()
         print("OpenBenchmarking cache sync:")
+        print("  pts clone:", default_pts_clone_dir())
+        if clone_meta := meta.get("clone"):
+            print("  clone action:", clone_meta.get("action"))
+        if pts_meta := meta.get("pts_update"):
+            print("  pts update ok:", pts_meta.get("ok", pts_meta.get("skipped")))
+            if pts_meta.get("reason"):
+                print("  pts update note:", pts_meta.get("reason"))
         print("  source:", meta.get("source"))
+        print("  local path:", meta.get("local_path"))
         print("  files copied:", meta.get("files_copied"))
         print("  cache dir:", default_ob_cache_dir())
         print("  index entries:", idx.get("entry_count"))
