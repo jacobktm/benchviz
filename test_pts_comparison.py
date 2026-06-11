@@ -119,47 +119,35 @@ class PtsHarmonicMeanTest(unittest.TestCase):
         self.assertEqual(normalize_harmonic_scale_key("MB/s"), "MB/s")
 
     def test_global_harmonic_aggregates_all_benchmark_charts(self):
-        groups = [
-            {
+        def _group(scale, a_val, b_val, a_name="a", b_name="b"):
+            return {
+                "system_details": [{"short_name": "a"}, {"short_name": "b"}],
                 "charts": [{
                     "is_primary": True,
-                    "scale": "MB/s",
+                    "scale": scale,
                     "proportion": "HIB",
                     "traces": [
-                        {"name": "a", "y": [100.0]},
-                        {"name": "b", "y": [110.0]},
-                    ],
-                }],
-            },
-            {
-                "charts": [{
-                    "is_primary": True,
-                    "scale": "MiB/s",
-                    "proportion": "HIB",
-                    "traces": [
-                        {"name": "a", "y": [200.0]},
-                        {"name": "b", "y": [180.0]},
-                    ],
-                }],
-            },
-        ] + [
-            {
-                "charts": [{
-                    "is_primary": True,
-                    "scale": "MB/s",
-                    "proportion": "HIB",
-                    "traces": [
-                        {"name": "a", "y": [120.0 + i]},
-                        {"name": "b", "y": [130.0 + i]},
+                        {"name": a_name, "y": [a_val]},
+                        {"name": b_name, "y": [b_val]},
                     ],
                 }],
             }
-            for i in range(2)
+
+        zstd_groups = [
+            _group("MB/s", 100.0, 110.0),
+            _group("MB/s", 120.0, 130.0),
+            _group("MB/s", 140.0, 150.0),
+            _group("MB/s", 160.0, 170.0),
         ]
-        zstd_only = build_pts_global_harmonic_summary([groups[0], *groups[2:]])
-        all_groups = build_pts_global_harmonic_summary(groups)
+        all_groups_input = zstd_groups + [
+            _group("MiB/s", 200.0, 180.0, "a (HIP)", "b (CUDA)"),
+        ]
+        zstd_only = build_pts_global_harmonic_summary(zstd_groups)
+        all_groups = build_pts_global_harmonic_summary(all_groups_input)
         self.assertIn("MB/s", all_groups)
-        self.assertEqual(all_groups["MB/s"]["subtest_count"], 4)
+        self.assertIn("MB/s", zstd_only)
+        self.assertEqual(all_groups["MB/s"]["subtest_count"], 5)
+        self.assertEqual(zstd_only["MB/s"]["subtest_count"], 4)
         self.assertNotAlmostEqual(
             all_groups["MB/s"]["raw"]["a"],
             zstd_only["MB/s"]["raw"]["a"],

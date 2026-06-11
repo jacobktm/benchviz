@@ -1285,6 +1285,57 @@
 
         const MIN_HARMONIC_SUBTESTS = 4;
 
+        /** Map trace name (possibly pooled suffix) to canonical system short_name. */
+        function canonicalSystemId(traceName, compGroup) {
+            const name = String(traceName || '').trim();
+            if (!name) return '';
+            const details = (compGroup && compGroup.system_details) || [];
+            for (const s of details) {
+                const sn = (s.short_name || '').trim();
+                if (!sn) continue;
+                if (name === sn || name.startsWith(sn + ' ') || name.startsWith(sn + '(')) return sn;
+            }
+            const m = name.match(/^(\S+)\s+\([^()]+\)$/);
+            return m ? m[1] : name;
+        }
+
+        /** Canonical compare system ids from all comparison groups (stable order). */
+        function getCompareSystemIds() {
+            const ids = [];
+            const seen = new Set();
+            (currentComparisonGroups || []).forEach(g => {
+                (g.system_details || []).forEach(s => {
+                    const id = (s.short_name || '').trim();
+                    if (id && !seen.has(id)) {
+                        seen.add(id);
+                        ids.push(id);
+                    }
+                });
+            });
+            return ids;
+        }
+
+        /** Resolve a config value for a system, matching pooled trace suffixes. */
+        function configValueForSystem(config, systemId) {
+            const vs = (config && config.valuesBySystem) || {};
+            const sid = String(systemId || '').trim();
+            if (!sid) return null;
+            const direct = vs[sid];
+            if (direct != null && !isNaN(direct)) return Number(direct);
+            const compGroup = config.group;
+            for (const [key, val] of Object.entries(vs)) {
+                if (val == null || isNaN(val)) continue;
+                if (canonicalSystemId(key, compGroup) === sid) return Number(val);
+            }
+            return null;
+        }
+
+        function resolveCompareSystems(fallbackKeys) {
+            const fromDetails = getCompareSystemIds();
+            if (fromDetails.length) return fromDetails;
+            return (fallbackKeys || []).map(k => canonicalSystemId(k, (currentComparisonGroups || [])[0])).filter(Boolean);
+        }
+
         /** PTS harmonic-mean scale filter (FPS, bps, IOPS, MB/s, etc.). */
         function isHarmonicMeanScale(scale) {
             const rs = (scale || '').trim();
@@ -1299,9 +1350,11 @@
             const rs = (scale || '').trim();
             if (!isHarmonicMeanScale(rs)) return null;
             const rsLower = rs.toLowerCase();
+            if (rsLower === 'mb/s' || rsLower === 'mib/s') return 'MB/s';
             if (rsLower.includes('byte') && (rs.includes('/') || rsLower.includes('sec') || rsLower.includes(' per '))) {
                 return 'MB/s';
             }
+            if (rsLower.endsWith('/s') && (rsLower.includes('mib') || rsLower.includes('mb'))) return 'MB/s';
             if (rsLower.includes('fps')) return 'FPS';
             if (rsLower.includes('iops')) return 'IOPS';
             if (rsLower.includes('bps')) return 'bps';
@@ -1371,7 +1424,7 @@
             const TIE_REL_EPS = 1e-9;
             bGroup.configs.forEach(config => {
                 const { HIB } = getConfigComparisonMeta(config, bGroup);
-                const vals = systems.map(s => config.valuesBySystem[s]);
+                const vals = systems.map(s => configValueForSystem(config, s));
                 const valid = vals.map((v, i) => ({ v: Number(v), i })).filter(x => !isNaN(x.v) && x.v > 0);
                 if (!valid.length) return;
                 let best = valid[0];
@@ -1426,7 +1479,7 @@
                 config.compositeBySystem = {};
                 // Raw composite basis: one scored value per config from valuesBySystem
                 // (the grouped primary), using actual values (no ratio normalization).
-                const vals = systems.map(s => config.valuesBySystem[s]);
+                const vals = systems.map(s => configValueForSystem(config, s));
                 systems.forEach((sys, sIdx) => {
                     const v = vals[sIdx];
                     if (v == null || isNaN(v) || v <= 0) {
@@ -1487,7 +1540,7 @@
             systems.forEach(s => { scores[s] = []; });
             (configEntries || []).forEach(({ config, bGroup }) => {
                 const { HIB } = metaFn(config, bGroup);
-                const vals = systems.map(s => config.valuesBySystem[s]);
+                const vals = systems.map(s => configValueForSystem(config, s));
                 systems.forEach((sys, i) => {
                     const ns = unitlessSubtestPerformance(vals[i], vals, HIB);
                     if (ns != null && isFinite(ns)) scores[sys].push(ns);
@@ -1567,12 +1620,12 @@
             bGroup.configs.forEach(config => {
                 config.compositeBySystem = {};
                 const { HIB: cfgHIB, scale } = getConfigComparisonMeta(config, bGroup);
-                const vals = systems.map(s => config.valuesBySystem[s]);
-                const refVal = config.valuesBySystem[refSys];
+                const vals = systems.map(s => configValueForSystem(config, s));
+                const refVal = configValueForSystem(config, refSys);
                 noteScale(scale);
                 systems.forEach((sys) => {
                     config.compositeBySystem[sys] = relativeOptionScoreVsReference(
-                        config.valuesBySystem[sys], refVal, vals, cfgHIB,
+                        configValueForSystem(config, sys), refVal, vals, cfgHIB,
                     );
                 });
             });
@@ -1702,7 +1755,7 @@
                 }
                 let rowContributed = false;
                 systems.forEach((sid, i) => {
-                    const raw = config.valuesBySystem[sid];
+                    const raw = configValueForSystem(config, sid);
                     if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
                     perSystem[i].push(Number(raw));
                     rowContributed = true;
@@ -1773,7 +1826,7 @@
                 if (!HIB) libRows += 1;
                 let rowContributed = false;
                 systems.forEach((sid, i) => {
-                    const raw = config.valuesBySystem[sid];
+                    const raw = configValueForSystem(config, sid);
                     if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
                     perSystem[i].push(HIB ? Number(raw) : (1 / Number(raw)) * 100);
                     rowContributed = true;
@@ -1817,32 +1870,36 @@
 
         /** Overall geometric mean across all subtests (PTS raw composite per system). */
         function computePtsGlobalGeometric(benchmarkGroups, systems) {
-            const entries = [];
-            (benchmarkGroups || []).forEach(bGroup => {
-                (bGroup.configs || []).forEach(config => entries.push({ config, bGroup }));
-            });
-            return buildPtsGeoMeanResult(entries, systems);
+            return buildPtsGeoMeanResult(collectAllPrimaryConfigEntries(benchmarkGroups), systems);
         }
 
         function buildPtsHarmonicMeanResults(configEntries, systems) {
             if (!systems.length || !configEntries.length) return [];
             const byScale = new Map();
             const subtestCounts = new Map();
+            const benchmarkSources = new Map();
             configEntries.forEach(({ config, bGroup }) => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
                 if (!HIB) return;
                 const scaleKey = normalizeHarmonicScaleKey(scale);
                 if (!scaleKey) return;
-                if (!byScale.has(scaleKey)) byScale.set(scaleKey, systems.map(() => []));
+                if (!byScale.has(scaleKey)) {
+                    byScale.set(scaleKey, systems.map(() => []));
+                    benchmarkSources.set(scaleKey, new Set());
+                }
                 const buckets = byScale.get(scaleKey);
                 let contributed = false;
                 systems.forEach((sid, i) => {
-                    const raw = config.valuesBySystem[sid];
+                    const raw = configValueForSystem(config, sid);
                     if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
                     buckets[i].push(Number(raw));
                     contributed = true;
                 });
-                if (contributed) subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
+                if (contributed) {
+                    subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
+                    const bmName = (bGroup && bGroup.benchmarkName) || '';
+                    if (bmName) benchmarkSources.get(scaleKey).add(bmName);
+                }
             });
 
             const results = [];
@@ -1862,12 +1919,14 @@
                     raw[sid] = rawArr[i];
                     relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
                 });
+                const sourceCount = (benchmarkSources.get(scale) || new Set()).size;
                 results.push({
                     scale,
                     raw,
                     relative,
                     referenceSystemId: refId,
                     subtestCount: subtestCounts.get(scale) || 0,
+                    benchmarkCount: sourceCount,
                 });
             });
             return results.sort((a, b) => a.scale.localeCompare(b.scale));
@@ -1883,13 +1942,58 @@
             return buildPtsHarmonicMeanResults(entries, systems);
         }
 
+        /** Collect every primary chart row across all comparison groups (deduped). */
+        function collectAllPrimaryConfigEntries(benchmarkGroups) {
+            const entries = [];
+            const seen = new Set();
+            const add = (config, bGroup) => {
+                const key = [
+                    bGroup.benchmarkName || '',
+                    config.args != null ? String(config.args) : '',
+                    config.option_key || '',
+                    config.metricLabel || '',
+                ].join('\u0001');
+                if (seen.has(key)) return;
+                seen.add(key);
+                entries.push({ config, bGroup });
+            };
+            (benchmarkGroups || []).forEach(bGroup => {
+                (bGroup.configs || []).forEach(config => add(config, bGroup));
+            });
+            (currentComparisonGroups || []).forEach(compGroup => {
+                const sep = ' — ';
+                const idx = compGroup.title.indexOf(sep);
+                const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
+                const args = compGroup.args !== undefined ? compGroup.args : (idx >= 0 ? compGroup.title.slice(idx + sep.length) : '');
+                const bGroupStub = { benchmarkName, proportion: null, scale: '', configs: [] };
+                (compGroup.charts || []).filter(c => c.is_primary).forEach(primary => {
+                    if (!primary || !primary.traces || !primary.traces.length) return;
+                    const valuesBySystem = {};
+                    primary.traces.forEach(t => {
+                        const v = Array.isArray(t.y) ? t.y[0] : t.y;
+                        const num = (v != null && !isNaN(v)) ? Number(v) : null;
+                        const sysId = canonicalSystemId(t.name, compGroup);
+                        if (sysId) valuesBySystem[sysId] = num;
+                    });
+                    const metricLabel = (primary.description || primary.metric || '').trim();
+                    add({
+                        args,
+                        group: compGroup,
+                        valuesBySystem,
+                        primaryChart: primary,
+                        option_key: primary.option_key || '',
+                        metricLabel,
+                        proportion: primary.proportion,
+                        scale: primary.scale || primary.metric || '',
+                    }, bGroupStub);
+                });
+            });
+            return entries;
+        }
+
         /** Overall harmonic mean: all rate HIB subtests across every benchmark group. */
         function computePtsGlobalHarmonicByScale(benchmarkGroups, systems) {
-            const entries = [];
-            (benchmarkGroups || []).forEach(bGroup => {
-                (bGroup.configs || []).forEach(config => entries.push({ config, bGroup }));
-            });
-            return buildPtsHarmonicMeanResults(entries, systems);
+            return buildPtsHarmonicMeanResults(collectAllPrimaryConfigEntries(benchmarkGroups), systems);
         }
 
         /** @deprecated alias */
@@ -1910,7 +2014,7 @@
                 const values = {};
                 let contributed = false;
                 systems.forEach(sid => {
-                    const raw = config.valuesBySystem[sid];
+                    const raw = configValueForSystem(config, sid);
                     if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
                     values[sid] = Number(raw);
                     contributed = true;
@@ -1998,7 +2102,10 @@
                 });
                 aggFormatter = formatPtsRawMeanLabel;
             } else if (isHarmonic && scaleName && scaleName !== 'Harmonic Mean') {
-                compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${meanData.subtestCount} tests; reference: ${refLabel})`;
+                const bmPart = meanData.benchmarkCount > 1
+                    ? `${meanData.subtestCount} tests from ${meanData.benchmarkCount} benchmarks`
+                    : `${meanData.subtestCount} tests`;
+                compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${bmPart}; reference: ${refLabel})`;
                 aggVals = systems.map(sid => {
                     const r = meanData.raw && meanData.raw[sid];
                     return r != null ? r : 0;
@@ -2063,8 +2170,8 @@
             const rows = [];
             bGroup.configs.forEach(config => {
                 const { HIB } = getConfigComparisonMeta(config, bGroup);
-                const a = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[0]]) : NaN;
-                const b = config && config.valuesBySystem ? Number(config.valuesBySystem[systems[1]]) : NaN;
+                const a = config ? Number(configValueForSystem(config, systems[0])) : NaN;
+                const b = config ? Number(configValueForSystem(config, systems[1])) : NaN;
                 if (!(isFinite(a) && isFinite(b) && a > 0 && b > 0)) return;
                 totalValid += 1;
                 const ratio01 = headToHeadOptionRatio(a, b, HIB);
@@ -2751,8 +2858,8 @@
 
                 bGroup.configs.forEach(config => {
                     const { HIB } = getConfigComparisonMeta(config, bGroup);
-                    const vals = systems.map(s => config.valuesBySystem[s]);
-                    const refVal = config.valuesBySystem[globalRefId];
+                    const vals = systems.map(s => configValueForSystem(config, s));
+                    const refVal = configValueForSystem(config, globalRefId);
                     systems.forEach((sys, sIdx) => {
                         const sc = relativeOptionScoreVsReference(vals[sIdx], refVal, vals, HIB);
                         if (sc != null && !isNaN(sc) && sc > 0) ratiosBySystem[sIdx].push(sc);
@@ -2808,7 +2915,8 @@
                     primary.traces.forEach(t => {
                         const v = Array.isArray(t.y) ? t.y[0] : t.y;
                         const num = (v != null && !isNaN(v)) ? Number(v) : null;
-                        if (t.name != null) valuesBySystem[t.name] = num;
+                        const sysId = canonicalSystemId(t.name, compGroup);
+                        if (sysId) valuesBySystem[sysId] = num;
                     });
                     const metricLabel = (primary.description || primary.metric || '').trim();
                     rec.configs.push({
@@ -2975,7 +3083,10 @@
             if ((showCompositeBar || showHarmonicMean || showWinsLossCharts) && benchmarkGroups.length) {
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
-                const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                const traceFallback = firstPrimary && firstPrimary.traces
+                    ? firstPrimary.traces.map(t => t.name)
+                    : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                const systems = resolveCompareSystems(traceFallback);
                 const systemLabels = getSystemDisplayNames(systems);
                 const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
 
@@ -2999,6 +3110,19 @@
                 if (showHarmonicMean && benchmarkGroups.length) {
                     const globalHarmonicList = computePtsGlobalHarmonicByScale(benchmarkGroups, systems);
                     globalHarmonicList.forEach(hm => {
+                        // Skip overall harmonic that duplicates a single benchmark's harmonic (misleading).
+                        const dupSingleBenchmark = benchmarkGroups.some(bGroup => {
+                            const perBm = computePtsHarmonicMeanForBGroup(bGroup, systems);
+                            return perBm.some(p => {
+                                if (p.scale !== hm.scale || p.subtestCount !== hm.subtestCount) return false;
+                                return systems.every(sid => {
+                                    const a = hm.raw[sid], b = p.raw[sid];
+                                    if (a == null || b == null) return a === b;
+                                    return Math.abs(a - b) <= Math.max(1e-6, Math.abs(a) * 1e-9);
+                                });
+                            });
+                        });
+                        if (dupSingleBenchmark && (hm.benchmarkCount || 1) <= 1) return;
                         hasCompositeCharts = true;
                         renderPtsCompositeBar(
                             globalCharts,
@@ -3190,7 +3314,7 @@
                 bGroup.configs.forEach(config => {
                     const ch = config.primaryChart || getConfigPrimaryChart(config, bGroup);
                     const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
-                    const vals = systems.map(s => config.valuesBySystem[s]);
+                    const vals = systems.map(s => configValueForSystem(config, s));
                     addRow(ch, HIB, vals, shortOptLabel(config), multiArgs);
                 });
                 if (systems.length === 2) {
@@ -3444,10 +3568,12 @@
                 groupHeader.style.textAlign = 'center';
                 groupWrapper.appendChild(groupHeader);
 
-                const systems = (() => {
+                const systems = resolveCompareSystems((() => {
                     const firstPrimary = bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts.find(c => c.is_primary);
-                    return firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
-                })();
+                    return firstPrimary && firstPrimary.traces
+                        ? firstPrimary.traces.map(t => t.name)
+                        : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
+                })());
                 const systemLabels = getSystemDisplayNames(systems);
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
                 const ptsHarmonicList = computePtsHarmonicMeanForBGroup(bGroup, systems);

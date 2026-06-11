@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .ob_cache_sync import load_ob_cache_index, lookup_ob_entry
@@ -245,6 +246,33 @@ def build_pts_ob_global_summary(
     }
 
 
+def _canonical_system_id(trace_name: str | None, group: dict[str, Any]) -> str:
+    name = (trace_name or "").strip()
+    if not name:
+        return ""
+    for s in group.get("system_details") or []:
+        sn = (s.get("short_name") or "").strip()
+        if not sn:
+            continue
+        if name == sn or name.startswith(sn + " ") or name.startswith(sn + "("):
+            return sn
+    m = re.match(r"^(\S+)\s+\([^()]+\)$", name)
+    return m.group(1) if m else name
+
+
+def compare_system_ids(comparison_groups: list[dict[str, Any]]) -> list[str]:
+    """Canonical system short_names for the comparison (stable order)."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for group in comparison_groups:
+        for s in group.get("system_details") or []:
+            sid = (s.get("short_name") or "").strip()
+            if sid and sid not in seen:
+                seen.add(sid)
+                ids.append(sid)
+    return ids
+
+
 def extract_subtests_from_comparison_groups(
     comparison_groups: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -261,12 +289,15 @@ def extract_subtests_from_comparison_groups(
                 name = tr.get("name")
                 if name is None:
                     continue
+                sys_id = _canonical_system_id(str(name), group)
+                if not sys_id:
+                    continue
                 y = tr.get("y")
                 raw = y[0] if isinstance(y, list) and y else y
                 try:
-                    values[str(name)] = float(raw) if raw is not None else None
+                    values[sys_id] = float(raw) if raw is not None else None
                 except (TypeError, ValueError):
-                    values[str(name)] = None
+                    values[sys_id] = None
             subtests.append({
                 "hib": hib,
                 "scale": scale,
@@ -276,21 +307,19 @@ def extract_subtests_from_comparison_groups(
 
 
 def compare_system_trace_ids(comparison_groups: list[dict[str, Any]]) -> list[str]:
-    """System keys used in chart trace values (matches frontend valuesBySystem)."""
+    """System keys used in chart trace values (canonical short_names)."""
+    ids = compare_system_ids(comparison_groups)
+    if ids:
+        return ids
     for group in comparison_groups:
         for ch in group.get("charts") or []:
             if not ch.get("is_primary"):
                 continue
             traces = ch.get("traces") or []
-            ids = [str(t["name"]) for t in traces if t.get("name") is not None]
-            if ids:
-                return ids
-    if comparison_groups:
-        return [
-            str(s.get("short_name"))
-            for s in (comparison_groups[0].get("system_details") or [])
-            if s.get("short_name")
-        ]
+            canon = [_canonical_system_id(str(t["name"]), group) for t in traces if t.get("name") is not None]
+            canon = [c for c in canon if c]
+            if canon:
+                return canon
     return []
 
 

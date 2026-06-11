@@ -224,7 +224,11 @@ def normalize_harmonic_scale_key(scale: str | None) -> str | None:
     if not rs or not is_harmonic_mean_scale(rs):
         return None
     rs_lower = rs.lower()
+    if rs_lower in ("mb/s", "mib/s"):
+        return "MB/s"
     if "byte" in rs_lower and ("/" in rs or "sec" in rs_lower or " per " in rs_lower):
+        return "MB/s"
+    if rs_lower.endswith("/s") and ("mib" in rs_lower or "mb" in rs_lower):
         return "MB/s"
     if "fps" in rs_lower:
         return "FPS"
