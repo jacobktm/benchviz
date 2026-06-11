@@ -865,6 +865,8 @@
         // Global options (all OFF by default, like Phoronix)
         let normalizeComposite = false;
         let showCompositeBar = false;
+        let filterRelevantSensors = true;
+        let filterNoisySensors = true;
         let showWinsLossCharts = false;
         let showOverallSensor = {};  // metric name -> boolean, for overall sensor bar charts
         /** Per-benchmark open state for subtest-delta panels. key: benchmarkName */
@@ -1279,6 +1281,41 @@
             return (proportion || '').toLowerCase().includes('higher');
         }
 
+        function formatWorkloadNote(wl) {
+            if (!wl || !wl.taxonomy) return '';
+            const src = wl.source === 'cohort_imputed' ? 'inferred from systems with sensors'
+                : (wl.source === 'perf+sensors' ? 'measured perf/MONITOR' : (wl.source || 'heuristic'));
+            let txt = `Workload: ${wl.taxonomy.replace(/_/g, ' ')} (${src}${wl.confidence ? ', confidence ' + Math.round(wl.confidence * 100) + '%' : ''})`;
+            const imp = wl.imputation;
+            if (imp && imp.applied && imp.n_imputed > 0) {
+                txt += ` — bottleneck mix from ${imp.n_with_evidence} system(s) with sensor data applied to ${imp.n_imputed} without`;
+                if (imp.score_proportions) {
+                    const parts = Object.entries(imp.score_proportions)
+                        .filter(([, v]) => v >= 0.12)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([k, v]) => `${k} ${Math.round(v * 100)}%`);
+                    if (parts.length) txt += ` (${parts.join(', ')})`;
+                }
+            }
+            txt += '. Sensor filters use this class.';
+            return txt;
+        }
+
+        function collectOptionWorkloadProfiles(bGroup) {
+            const seen = new Set();
+            const profiles = [];
+            (bGroup.configs || []).forEach(cfg => {
+                ((cfg.group && cfg.group.charts) || []).forEach(ch => {
+                    if (!ch.is_primary || !ch.workload_profile) return;
+                    const key = ch.option_key || ch.metric || ch.description || '';
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    profiles.push(ch.workload_profile);
+                });
+            });
+            return profiles;
+        }
+
         /** Primary BAR chart used for valuesBySystem on this config row. */
         function getConfigPrimaryChart(config, bGroup) {
             const charts = (config.group && config.group.charts) || [];
@@ -1588,6 +1625,7 @@
             compGroups.forEach(cg => {
                 (cg.charts || []).forEach(ch => {
                     if (ch.is_primary || ch.display_format !== 'LINE_GRAPH' || !ch.traces) return;
+                    if (filterNoisySensors && ch.sensor_quality && ch.sensor_quality.has_signal === false) return;
                     const metric = ch.metric || ch.description || 'Sensor';
                     const scale = ch.scale || '';
                     if (!bySensor.has(metric)) bySensor.set(metric, { scale, proportion: ch.proportion, bySystem: systems.reduce((o, s) => { o[s] = []; return o; }, {}) });
@@ -2612,8 +2650,17 @@
                 return rows;
             }
 
-            function renderComparisonChart(chartData, container) {
+            function sensorRelevantForOption(chartData, optionKey) {
+                if (!filterRelevantSensors || !optionKey || chartData.is_primary) return true;
+                const rel = chartData.option_workload_relevant;
+                if (!rel || typeof rel !== 'object') return true;
+                return rel[optionKey] !== false;
+            }
+
+            function renderComparisonChart(chartData, container, renderOpts) {
+                    renderOpts = renderOpts || {};
                     if (!chartData.is_primary && !globalToggleState[chartData.metric]) return;
+                    if (!sensorRelevantForOption(chartData, renderOpts.optionKey)) return;
                     const chartDiv = document.createElement('div');
                     chartDiv.style.width = '100%';
                     chartDiv.style.display = 'flex';
@@ -2627,6 +2674,13 @@
                             panelTitle.style.cssText = 'font-size:0.95rem;font-weight:600;color:var(--text-primary);margin-bottom:0.35rem;';
                             panelTitle.textContent = primaryChartPanelTitle(chartData);
                             chartDiv.appendChild(panelTitle);
+                            const wlTxt = formatWorkloadNote(chartData.workload_profile);
+                            if (wlTxt) {
+                                const wlNote = document.createElement('div');
+                                wlNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;';
+                                wlNote.textContent = wlTxt;
+                                chartDiv.appendChild(wlNote);
+                            }
                         }
                         const traceNames = chartData.traces.map(t => t.name != null ? t.name : '');
                         const labels = getSystemDisplayNames(traceNames);
@@ -2730,10 +2784,10 @@
                     if (chartInstance) activeCharts.push(chartInstance);
             }
 
-            function renderOneCompGroup(compGroup, container, skipPrimary) {
+            function renderOneCompGroup(compGroup, container, skipPrimary, optionKey) {
                 compGroup.charts.forEach((chartData) => {
                     if (skipPrimary && chartData.is_primary) return;
-                    renderComparisonChart(chartData, container);
+                    renderComparisonChart(chartData, container, { optionKey: optionKey || '' });
                 });
             }
 
@@ -2751,6 +2805,20 @@
                 groupHeader.style.marginBottom = '0.25rem';
                 groupHeader.style.textAlign = 'center';
                 groupWrapper.appendChild(groupHeader);
+
+                const optionProfiles = collectOptionWorkloadProfiles(bGroup);
+                const taxonomies = [...new Set(optionProfiles.map(w => w.taxonomy).filter(Boolean))];
+                if (taxonomies.length === 1 && optionProfiles[0]) {
+                    const wlNote = document.createElement('div');
+                    wlNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);text-align:center;margin-bottom:0.75rem;max-width:42rem;margin-left:auto;margin-right:auto;line-height:1.45;';
+                    wlNote.textContent = formatWorkloadNote(optionProfiles[0]);
+                    groupWrapper.appendChild(wlNote);
+                } else if (taxonomies.length > 1) {
+                    const wlNote = document.createElement('div');
+                    wlNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);text-align:center;margin-bottom:0.75rem;max-width:42rem;margin-left:auto;margin-right:auto;line-height:1.45;';
+                    wlNote.textContent = `Workload varies by option (${taxonomies.map(t => t.replace(/_/g, ' ')).join(', ')}). Expand individual metrics for per-option class and sensor filters.`;
+                    groupWrapper.appendChild(wlNote);
+                }
 
                 const subtitle = document.createElement('div');
                 subtitle.style.color = 'var(--text-secondary)';
@@ -3005,14 +3073,15 @@
                         optWrap.appendChild(optHeader);
                         optWrap.appendChild(optBody);
                         expandContent.appendChild(optWrap);
+                        const cfgOptionKey = (config.primaryChart && config.primaryChart.option_key) || '';
                         optHeader.addEventListener('click', () => {
                             const open = optBody.style.display !== 'none';
                             optBody.style.display = open ? 'none' : 'block';
-                            if (!open && optBody.children.length === 0) renderOneCompGroup(config.group, optBody);
+                            if (!open && optBody.children.length === 0) renderOneCompGroup(config.group, optBody, false, cfgOptionKey);
                         });
                         if (saved && saved.optionsOpen[cIdx]) {
                             optBody.style.display = 'block';
-                            renderOneCompGroup(config.group, optBody);
+                            renderOneCompGroup(config.group, optBody, false, cfgOptionKey);
                         }
                     });
                     if (saved && saved.individualOpen) {
@@ -3048,7 +3117,7 @@
 
                     const saved = expandedChartState[bGroupIdx];
 
-                    const finishSensorBlock = (host) => {
+                    const finishSensorBlock = (host, optionKey) => {
                         if (!benchmarkSensors.length) return;
                         const sensorHeading = document.createElement('div');
                         sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-bottom:0.5rem;margin-top:1rem;font-size:0.9rem;';
@@ -3079,7 +3148,7 @@
                         host.appendChild(sensorToggleRow);
                         const sensorChartsHost = document.createElement('div');
                         host.appendChild(sensorChartsHost);
-                        renderOneCompGroup(g0, sensorChartsHost, true);
+                        renderOneCompGroup(g0, sensorChartsHost, true, optionKey || '');
                     };
 
                     if (!skipPrimaryDup) {
@@ -3114,20 +3183,25 @@
                             optHeader.addEventListener('click', () => {
                                 const open = optBody.style.display !== 'none';
                                 optBody.style.display = open ? 'none' : 'block';
-                                if (!open && optBody.children.length === 0) renderComparisonChart(ch, optBody);
+                                if (!open && optBody.children.length === 0) {
+                                    renderComparisonChart(ch, optBody);
+                                    finishSensorBlock(optBody, ch.option_key || '');
+                                }
                             });
                             if (saved && saved.optionsOpen[cIdx]) {
                                 optBody.style.display = 'block';
                                 renderComparisonChart(ch, optBody);
+                                finishSensorBlock(optBody, ch.option_key || '');
                             }
                         });
-                        finishSensorBlock(expandContent);
+                        if (!primaryRows.length) finishSensorBlock(expandContent, '');
                         if (saved && saved.individualOpen) {
                             expandContent.style.display = 'block';
                             expandHeading.textContent = '▲ Individual metrics';
                         }
                     } else {
-                        finishSensorBlock(detailSection);
+                        const onlyPrimary = firstGroupCharts.find(c => c.is_primary);
+                        finishSensorBlock(detailSection, onlyPrimary && onlyPrimary.option_key ? onlyPrimary.option_key : '');
                     }
 
                     groupWrapper.appendChild(detailSection);
@@ -3172,6 +3246,8 @@
                         url.searchParams.set('pool_arg_flags', poolArgFlagsValue.trim());
                     }
                 }
+                url.searchParams.set('filter_sensors', filterRelevantSensors ? '1' : '0');
+                url.searchParams.set('filter_noisy_sensors', filterNoisySensors ? '1' : '0');
 
                 const response = await fetch(url.toString());
                 const data = await response.json();
@@ -3209,13 +3285,19 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : showWinsLossCharts);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
                                 else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
+                                else if (key === 'filterRelevantSensors' || key === 'filterNoisySensors') {
+                                    if (key === 'filterRelevantSensors') filterRelevantSensors = val;
+                                    else filterNoisySensors = val;
+                                    generateBtn.click();
+                                    return;
+                                }
                                 renderCharts();
                             });
                             const span = document.createElement('span');
@@ -3228,6 +3310,8 @@
                         
                         toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
+                        toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
+                        toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
                         toggleRow.appendChild(mkToggle('Normalize composite display to weakest = 1.0', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 

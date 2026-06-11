@@ -3,7 +3,7 @@
 {% block content %}
 <div class="animate-in delay-1" style="margin-bottom: 2rem;">
     <h1 style="margin-top: 1rem;">Performance Insights</h1>
-    <p class="card-meta">Statistical insights into how hardware and software configurations (CPU, GPU, cooling, kernel, drivers, etc.) impact benchmark performance. Only displaying features with at least 3 distinct systems contributing data and at least 2 distinct cohort values.</p>
+    <p class="card-meta">Statistical insights into how hardware and software configurations impact benchmark performance. Workload class (CPU / GPU / memory / storage) is inferred from LINUX_PERF counters and MONITOR sensors when present, so component rankings focus on parts that plausibly matter for that test.</p>
 </div>
 
 <style>
@@ -132,7 +132,7 @@
     </h2>
     <p class="card-meta" style="margin-bottom: 0;">
         Only lists components that meet the same replication rules as the leaderboard.
-        Components are <strong>ranked</strong> by a composite alignment score (η² plus signal-to-noise between cohort means vs within-cohort scatter). Tiers (<em>strong / moderate / weak</em>) are heuristic: strong means scores tend to track that split; weak means the benchmark looks comparatively insensitive or noisy for that part.
+        Components are <strong>ranked</strong> by a composite alignment score (η² plus signal-to-noise between cohort means vs within-cohort scatter). When perf/MONITOR data is available, only hardware dimensions relevant to the measured workload class (CPU-, GPU-, memory-, or storage-bound) are emphasized. Tiers (<em>strong / moderate / weak</em>) are heuristic: strong means scores tend to track that split; weak means the benchmark looks comparatively insensitive or noisy for that part.
         The bar chart shows each cohort’s <strong>mean</strong> raw score, ordered <strong>best → worst left to right</strong>. The chart title, Y-axis, and table blurb state whether <strong>lower</strong> or <strong>higher</strong> raw values are better for the benchmark you selected (from its Phoronix proportion). Tables list cohort stats and every system’s raw score.
         For <strong>CPU</strong> / <strong>GPU</strong>, sync specs with <code>flask sync-hardware-ranks-api</code> or <code>flask import-hardware-ranks</code>; then run <code>flask calibrate-hardware-ranks</code> so reference ranks fold in your actual primary benchmark results (e.g. V-cache vs non-X3D). Kendall τ uses the calibrated ref; tables also show the spec baseline.
     </p>
@@ -163,6 +163,7 @@
     {% for analysis in analyses %}
         {% set a_ns = namespace(result_available=false) %}
         {% for arg, feature_stats in analysis.analysis_json.items() %}
+            {% if arg.startswith('_') %}{% continue %}{% endif %}
             {# Check if there is actual data inside vs just "Insufficient data" logs #}
             {% for feature_values in feature_stats.values() %}
                 {% if not feature_values[0].get("error") %}
@@ -183,6 +184,7 @@
             <p class="card-meta" style="margin-bottom: 1.5rem;">Last analyzed: {{ analysis.last_updated.strftime('%Y-%m-%d %H:%M') }}</p>
             
             {% for arg, feature_stats in analysis.analysis_json.items() %}
+            {% if arg.startswith('_') %}{% continue %}{% endif %}
                 {% if arg != 'default' %}
                     <h3 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">Configuration: <span style="font-family: monospace;">{{ arg }}</span></h3>
                 {% endif %}
@@ -235,9 +237,9 @@
             benchmark_title: {{ a.benchmark_title | tojson }},
             app_version: {{ (a.benchmark_app_version or '') | tojson }},
             args: [
-                {% for arg in a.analysis_json.keys() %}
+                {%- for arg in a.analysis_json.keys() if not arg.startswith('_') -%}
                 {{ arg | tojson }}{% if not loop.last %},{% endif %}
-                {% endfor %}
+                {%- endfor -%}
             ]
         }{% if not loop.last %},{% endif %}
         {% endfor %}

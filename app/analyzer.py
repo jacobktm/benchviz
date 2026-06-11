@@ -3,6 +3,7 @@ from collections import defaultdict
 from app import db, create_app
 from app.models import Benchmark, BenchmarkResult, BenchmarkAnalysis, System
 from app.components import get_system_components
+from app.workload_profile import build_workload_profile, option_profile_key
 
 # Minimum distinct systems required across all cohort values for a given feature.
 # This allows you to get insights when you have (say) 3 distinct systems with 3 different
@@ -145,7 +146,45 @@ def analyze_benchmarks():
             if feature_stats:
                 argument_analyses[arg] = feature_stats
                 
-        if argument_analyses:
+        workload_by_args = {}
+        workload_by_option: dict[str, dict[str, dict]] = {}
+        option_defs: dict[str, tuple[str, str]] = {}
+        for bm in bm_list:
+            ok = option_profile_key(bm.description, bm.scale)
+            option_defs[ok] = (bm.description or "", bm.scale or "")
+
+        for arg in args_groups.keys():
+            arg_key = "default" if (not arg or arg == "default") else arg
+            args_db = "" if arg_key == "default" else arg
+            system_ids = sorted({r.system_id for r in args_groups[arg] if r.value is not None})
+            workload_by_option[arg_key] = {}
+            for ok, (opt_desc, opt_scale) in option_defs.items():
+                workload_by_option[arg_key][ok] = build_workload_profile(
+                    title,
+                    app_version or "",
+                    args_db,
+                    system_ids=system_ids or None,
+                    description=opt_desc or rep_bm.description or "",
+                    option_description=opt_desc,
+                    option_scale=opt_scale,
+                )
+            if len(workload_by_option[arg_key]) == 1:
+                workload_by_args[arg_key] = next(iter(workload_by_option[arg_key].values()))
+            elif workload_by_option[arg_key]:
+                workload_by_args[arg_key] = build_workload_profile(
+                    title,
+                    app_version or "",
+                    args_db,
+                    system_ids=system_ids or None,
+                    description=rep_bm.description or "",
+                )
+
+        if argument_analyses or workload_by_args or workload_by_option:
+            payload = dict(argument_analyses)
+            payload["_workload_by_args"] = workload_by_args
+            payload["_workload_by_option"] = workload_by_option
+            if workload_by_args:
+                payload["_workload"] = next(iter(workload_by_args.values()))
             # Save or Update the Analysis Result.
             # Multiple existing rows may exist for the same title/app_version if identifier varied historically.
             # Update them all so the UI has consistent data.
@@ -164,7 +203,7 @@ def analyze_benchmarks():
                 existing_records = [analysis_record]
 
             for analysis_record in existing_records:
-                analysis_record.analysis_json = argument_analyses
+                analysis_record.analysis_json = payload
                 analysis_record.last_updated = db.func.now()
             
     db.session.commit()

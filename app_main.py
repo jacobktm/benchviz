@@ -690,14 +690,39 @@ def _insights_infer_scope(text_blob: str) -> str:
     return scope
 
 
-def _insights_allowed_singles_for_scope(scope: str, include_all_component_keys: bool):
+def _insights_workload_context_from_analysis(
+    title: str, app_version: str, args_str: str, text_blob: str,
+) -> dict:
+    """Prefer perf/sensor workload profile from BenchmarkAnalysis when available."""
+    from app.workload_profile import workload_context_for_insights
+
+    records = BenchmarkAnalysis.query.filter_by(
+        benchmark_title=title,
+        benchmark_app_version=app_version or "",
+    ).all()
+    analysis_json = records[0].analysis_json if records else None
+    args_key = "default" if (not args_str or args_str.lower() == "default") else args_str
+    return workload_context_for_insights(title, app_version, args_key, analysis_json, text_blob)
+
+
+def _insights_scope_from_analysis(title: str, app_version: str, args_str: str, text_blob: str) -> str:
+    return _insights_workload_context_from_analysis(title, app_version, args_str, text_blob)["scope"]
+
+
+def _insights_allowed_singles_for_scope(
+    scope: str,
+    include_all_component_keys: bool,
+    active_bottlenecks: list[str] | None = None,
+):
     from app.analyzer import INSIGHT_COMPONENT_KEYS
-    if scope == "cpu":
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in INSIGHT_CPU_SCOPED_KEYS]
-    elif scope == "gpu":
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in INSIGHT_GPU_SCOPED_KEYS]
-    elif scope == "storage":
-        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in INSIGHT_STORAGE_SCOPED_KEYS]
+    from app.workload_profile import SCOPE_HARDWARE_KEYS
+    if active_bottlenecks and len(active_bottlenecks) >= 2:
+        allowed = set()
+        for bottleneck in active_bottlenecks:
+            allowed |= SCOPE_HARDWARE_KEYS.get(bottleneck, frozenset())
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in allowed]
+    elif scope in SCOPE_HARDWARE_KEYS and scope != "general":
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in SCOPE_HARDWARE_KEYS[scope]]
     elif include_all_component_keys:
         allowed_singles = list(INSIGHT_COMPONENT_KEYS)
     else:
@@ -782,13 +807,22 @@ def _load_primary_insights_bundle(title, app_version, args_str, scope_override="
         (rep_bm.description or ""),
         args_str or "",
     ]).lower()
-    scope = _insights_infer_scope(text_blob)
+    wl_ctx = _insights_workload_context_from_analysis(title, app_version, args_analysis_key, text_blob)
+    scope = wl_ctx["scope"]
+    active_bottlenecks = list(wl_ctx.get("active_bottlenecks") or [])
+    if scope == "general":
+        scope = _insights_infer_scope(text_blob)
+        active_bottlenecks = [scope] if scope in {"cpu", "gpu", "storage", "memory"} else []
     include_all_component_keys = scope_override == "all"
     if scope_override in {"all", "general"}:
         scope = "general"
-    elif scope_override in {"cpu", "gpu", "storage"}:
+        active_bottlenecks = []
+    elif scope_override in {"cpu", "gpu", "storage", "memory"}:
         scope = scope_override
-    allowed_singles = _insights_allowed_singles_for_scope(scope, include_all_component_keys)
+        active_bottlenecks = [scope_override]
+    allowed_singles = _insights_allowed_singles_for_scope(
+        scope, include_all_component_keys, active_bottlenecks or None,
+    )
 
     bundle = {
         "MIN_SYSTEMS_TOTAL": MIN_SYSTEMS_TOTAL,
@@ -1702,8 +1736,59 @@ def api_compare():
             ).all()
             # Only attach charts that are clearly sensor metrics (temp, freq, usage, power);
             # skip other LINE_GRAPH data (e.g. sample indices or raw timestamps) that would show wrong scale.
-            sensor_keywords = ('temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts')
+            sensor_keywords = (
+                'temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts',
+                'fan', 'rpm', 'voltage', 'energy', 'utilization',
+            )
             sensors = [s for s in sensors if s.description and any(k in s.description.lower() for k in sensor_keywords)]
+
+            from app.workload_profile import (
+                build_workload_profile,
+                option_profile_key,
+                sensor_is_relevant,
+            )
+            from app.sensor_quality import chart_has_usable_signal, series_quality
+
+            config_args_for_wl = args_val if args_val is not None else ""
+            workload_profiles_by_option: dict[str, dict] = {}
+            for ch in charts:
+                if not ch.get("is_primary"):
+                    continue
+                desc = (ch.get("description") or "").strip()
+                scale = (ch.get("scale") or "").strip()
+                ok = option_profile_key(desc, scale)
+                if ok in workload_profiles_by_option:
+                    ch["option_key"] = ok
+                    ch["workload_profile"] = workload_profiles_by_option[ok]
+                    continue
+                wl = build_workload_profile(
+                    primary_benchmark.title,
+                    primary_benchmark.app_version or "",
+                    config_args_for_wl,
+                    system_ids=sys_id_ints,
+                    description=desc or primary_benchmark.description or "",
+                    option_description=desc,
+                    option_scale=scale,
+                )
+                workload_profiles_by_option[ok] = wl
+                ch["option_key"] = ok
+                ch["workload_profile"] = wl
+
+            workload_profile = (
+                next(iter(workload_profiles_by_option.values()))
+                if len(workload_profiles_by_option) == 1
+                else None
+            )
+            filter_sensors = (request.args.get('filter_sensors') or '1').lower() not in {'0', 'false', 'no'}
+            filter_noisy = (request.args.get('filter_noisy_sensors') or '1').lower() not in {'0', 'false', 'no'}
+            if filter_sensors and workload_profiles_by_option:
+                sensors = [
+                    s for s in sensors
+                    if any(
+                        sensor_is_relevant(s.description, s.scale, wp, strict=True)
+                        for wp in workload_profiles_by_option.values()
+                    )
+                ]
 
             for s_bm in sensors:
                 s_traces = []
@@ -1778,9 +1863,18 @@ def api_compare():
                                         stats_dict["q3"] = qs[2]
                                 except (statistics.StatisticsError, ValueError):
                                     pass
+                                q = series_quality(clean_y, s_bm.description, s_bm.scale)
+                                stats_dict["quality"] = q
+                                trace["quality"] = q
                                 trace["stats"] = stats_dict
 
                     s_traces.append(trace)
+
+                has_signal, noise_reason = chart_has_usable_signal(
+                    s_traces, s_bm.description or "", s_bm.scale or "",
+                )
+                if filter_noisy and not has_signal:
+                    continue
 
                 if s_traces:
                     metric_label = s_bm.description
@@ -1793,6 +1887,10 @@ def api_compare():
                     elif 'CPU Power' in s_bm.description:
                         metric_label = "CPU Power"
 
+                    option_relevance = {
+                        ok: sensor_is_relevant(s_bm.description, s_bm.scale, wp, strict=True)
+                        for ok, wp in workload_profiles_by_option.items()
+                    }
                     charts.append({
                         "metric": metric_label,
                         "description": s_bm.description,
@@ -1800,7 +1898,12 @@ def api_compare():
                         "display_format": s_bm.display_format,
                         "proportion": s_bm.proportion,
                         "traces": s_traces,
-                        "is_primary": False
+                        "is_primary": False,
+                        "sensor_quality": {
+                            "has_signal": has_signal,
+                            "noise_reason": noise_reason,
+                        },
+                        "option_workload_relevant": option_relevance,
                     })
 
             if charts:
@@ -1849,6 +1952,8 @@ def api_compare():
                     "system_details": system_details,
                     "args": args_val if args_val is not None else "",
                     "args_label": args_label or args_val or "",
+                    "workload_profile": workload_profile,
+                    "workload_profiles_by_option": workload_profiles_by_option,
                 })
 
     if not comparison_groups:
@@ -2882,14 +2987,23 @@ def api_variance_leaderboard():
         (rep_bm.description or ""),
         args_str or "",
     ]).lower()
-    scope = _insights_infer_scope(text_blob)
+    wl_ctx = _insights_workload_context_from_analysis(title, app_version, args_analysis_key, text_blob)
+    scope = wl_ctx["scope"]
+    active_bottlenecks = list(wl_ctx.get("active_bottlenecks") or [])
+    if scope == "general":
+        scope = _insights_infer_scope(text_blob)
+        active_bottlenecks = [scope] if scope in {"cpu", "gpu", "storage", "memory"} else []
     scope_override = (request.args.get('scope') or '').strip().lower()
     include_all_component_keys = scope_override == "all"
     if scope_override in {"all", "general"}:
         scope = "general"
-    elif scope_override in {"cpu", "gpu", "storage"}:
+        active_bottlenecks = []
+    elif scope_override in {"cpu", "gpu", "storage", "memory"}:
         scope = scope_override
-    allowed_singles = _insights_allowed_singles_for_scope(scope, include_all_component_keys)
+        active_bottlenecks = [scope_override]
+    allowed_singles = _insights_allowed_singles_for_scope(
+        scope, include_all_component_keys, active_bottlenecks or None,
+    )
 
     rows = []
 
@@ -3306,7 +3420,7 @@ def api_variance_leaderboard_coverage():
         b_app = a.benchmark_app_version or ''
 
         for args_key, feature_stats in (a.analysis_json or {}).items():
-            if not isinstance(feature_stats, dict):
+            if not isinstance(feature_stats, dict) or str(args_key).startswith("_"):
                 continue
 
             has_any_feature = False
