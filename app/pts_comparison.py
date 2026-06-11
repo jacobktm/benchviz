@@ -197,9 +197,10 @@ MIN_HARMONIC_SUBTESTS = 4
 
 def is_harmonic_mean_scale(scale: str | None) -> bool:
     """
-    Rate-like scales eligible for PTS harmonic mean (FPS, bps, IOPS, MB/s, etc.).
+    Rate-like scales eligible for harmonic mean (MB/s, FPS, MIPS, runs/min, etc.).
 
-    Mirrors pts_result_file_analyzer::generate_harmonic_mean_result() scale filter.
+    BenchViz extends strict PTS filter (which skips MIPS) to treat throughput
+    units like MIPS and full "Frames Per Second" wording as rate scales.
     """
     rs = (scale or "").strip()
     if not rs:
@@ -211,9 +212,15 @@ def is_harmonic_mean_scale(scale: str | None) -> bool:
         return True
     if "fps" in rs_lower:
         return True
+    if "frame" in rs_lower and "second" in rs_lower:
+        return True
     if "bps" in rs_lower:
         return True
     if "iops" in rs_lower:
+        return True
+    if rs_lower == "mips" or "mips" in rs_lower:
+        return True
+    if "million instructions" in rs_lower:
         return True
     return False
 
@@ -230,12 +237,16 @@ def normalize_harmonic_scale_key(scale: str | None) -> str | None:
         return "MB/s"
     if rs_lower.endswith("/s") and ("mib" in rs_lower or "mb" in rs_lower):
         return "MB/s"
-    if "fps" in rs_lower:
+    if "fps" in rs_lower or ("frame" in rs_lower and "second" in rs_lower):
         return "FPS"
+    if rs_lower == "mips" or "mips" in rs_lower or "million instructions" in rs_lower:
+        return "MIPS"
     if "iops" in rs_lower:
         return "IOPS"
     if "bps" in rs_lower:
         return "bps"
+    if "run" in rs_lower and ("/" in rs or " per " in rs_lower):
+        return "runs/min"
     return rs
 
 

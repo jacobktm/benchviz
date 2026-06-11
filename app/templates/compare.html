@@ -1336,13 +1336,19 @@
             return (fallbackKeys || []).map(k => canonicalSystemId(k, (currentComparisonGroups || [])[0])).filter(Boolean);
         }
 
-        /** PTS harmonic-mean scale filter (FPS, bps, IOPS, MB/s, etc.). */
+        /** Rate-like scales eligible for PTS-style harmonic mean (extended for MIPS, FPS wording, etc.). */
         function isHarmonicMeanScale(scale) {
             const rs = (scale || '').trim();
             if (!rs) return false;
             const rsLower = rs.toLowerCase();
-            return rs.includes('/') || rsLower.includes(' per ') || rsLower.includes('fps')
-                || rsLower.includes('bps') || rsLower.includes('iops');
+            if (rs.includes('/') || rsLower.includes(' per ')) return true;
+            if (rsLower.includes('fps')) return true;
+            if (rsLower.includes('frame') && rsLower.includes('second')) return true;
+            if (rsLower.includes('bps')) return true;
+            if (rsLower.includes('iops')) return true;
+            if (rsLower === 'mips' || rsLower.includes('mips')) return true;
+            if (rsLower.includes('million instructions')) return true;
+            return false;
         }
 
         /** Canonical scale bucket for cross-benchmark harmonic mean (e.g. MiB/s → MB/s). */
@@ -1355,9 +1361,11 @@
                 return 'MB/s';
             }
             if (rsLower.endsWith('/s') && (rsLower.includes('mib') || rsLower.includes('mb'))) return 'MB/s';
-            if (rsLower.includes('fps')) return 'FPS';
+            if (rsLower.includes('fps') || (rsLower.includes('frame') && rsLower.includes('second'))) return 'FPS';
+            if (rsLower === 'mips' || rsLower.includes('mips') || rsLower.includes('million instructions')) return 'MIPS';
             if (rsLower.includes('iops')) return 'IOPS';
             if (rsLower.includes('bps')) return 'bps';
+            if (rsLower.includes('run') && (rs.includes('/') || rsLower.includes(' per '))) return 'runs/min';
             return rs;
         }
 

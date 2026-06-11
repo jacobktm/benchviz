@@ -91,8 +91,11 @@ class PtsHarmonicMeanTest(unittest.TestCase):
     def test_harmonic_scale_eligibility(self):
         self.assertTrue(is_harmonic_mean_scale("FPS"))
         self.assertTrue(is_harmonic_mean_scale("MB/s"))
-        self.assertFalse(is_harmonic_mean_scale("MIPS"))
+        self.assertTrue(is_harmonic_mean_scale("MIPS"))
+        self.assertTrue(is_harmonic_mean_scale("Frames Per Second"))
+        self.assertTrue(is_harmonic_mean_scale("runs/min"))
         self.assertFalse(is_harmonic_mean_scale("Seconds"))
+        self.assertFalse(is_harmonic_mean_scale("ms"))
 
     def test_harmonic_by_scale_requires_four_subtests(self):
         subtests = [
@@ -117,6 +120,9 @@ class PtsHarmonicMeanTest(unittest.TestCase):
     def test_harmonic_normalizes_byte_rate_scales(self):
         self.assertEqual(normalize_harmonic_scale_key("MiB/s"), "MB/s")
         self.assertEqual(normalize_harmonic_scale_key("MB/s"), "MB/s")
+        self.assertEqual(normalize_harmonic_scale_key("MIPS"), "MIPS")
+        self.assertEqual(normalize_harmonic_scale_key("Frames Per Second"), "FPS")
+        self.assertEqual(normalize_harmonic_scale_key("runs/min"), "runs/min")
 
     def test_global_harmonic_aggregates_all_benchmark_charts(self):
         def _group(scale, a_val, b_val, a_name="a", b_name="b"):
