@@ -52,8 +52,13 @@ class EnsurePtsCloneTest(unittest.TestCase):
             meta = ensure_pts_clone(clone, branch="master")
             self.assertEqual(meta["action"], "updated")
             self.assertEqual(mock_run.call_count, 2)
-            self.assertEqual(mock_run.call_args_list[0][0][0][1], "fetch")
-            self.assertEqual(mock_run.call_args_list[1][0][0][1], "reset")
+            fetch_cmd = mock_run.call_args_list[0][0][0]
+            self.assertEqual(fetch_cmd[0], "git")
+            self.assertEqual(fetch_cmd[1], "-c")
+            self.assertIn("safe.directory=", fetch_cmd[2])
+            self.assertEqual(fetch_cmd[3], "fetch")
+            reset_cmd = mock_run.call_args_list[1][0][0]
+            self.assertEqual(reset_cmd[3], "reset")
 
     @mock.patch("app.ob_cache_sync._fresh_pts_clone")
     @mock.patch("app.ob_cache_sync._run")

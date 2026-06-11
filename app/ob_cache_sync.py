@@ -137,13 +137,28 @@ def _run(cmd: list[str], cwd: Path | None = None, *, timeout: int | None = None)
     return proc
 
 
+def _git_cmd(repo: Path | None, *args: str) -> list[str]:
+    """Build git argv; mark repo as safe.directory when operating inside an existing clone."""
+    cmd = ["git"]
+    if repo is not None:
+        cmd.extend(["-c", f"safe.directory={repo.resolve()}"])
+    cmd.extend(args)
+    return cmd
+
+
 def _fresh_pts_clone(dest: Path, branch: str) -> None:
     if dest.exists():
-        shutil.rmtree(dest)
-    _run([
-        "git", "clone", "--depth", "1", "--single-branch", "--branch", branch,
-        OB_CACHE_GITHUB, str(dest),
-    ])
+        try:
+            shutil.rmtree(dest)
+        except PermissionError as exc:
+            raise RuntimeError(
+                f"Cannot remove {dest} (permission denied). "
+                f"Fix ownership then retry, e.g.: "
+                f"sudo chown -R $(stat -c '%U' {dest.parent}) {dest.parent} "
+                f"or sudo rm -rf {dest}"
+            ) from exc
+    _run(_git_cmd(None, "clone", "--depth", "1", "--single-branch", "--branch", branch,
+                   OB_CACHE_GITHUB, str(dest)))
 
 
 def ensure_pts_clone(
@@ -165,8 +180,8 @@ def ensure_pts_clone(
 
     if (dest / ".git").is_dir():
         try:
-            _run(["git", "fetch", "origin", branch, "--depth", "1"], cwd=dest)
-            _run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=dest)
+            _run(_git_cmd(dest, "fetch", "origin", branch, "--depth", "1"), cwd=dest)
+            _run(_git_cmd(dest, "reset", "--hard", "FETCH_HEAD"), cwd=dest)
             meta["action"] = "updated"
         except RuntimeError as exc:
             meta["fetch_error"] = str(exc)

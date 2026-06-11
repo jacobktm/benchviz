@@ -136,6 +136,9 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
 
   echo
   echo "Seeding OpenBenchmarking cache (clone PTS, run phoronix-test-suite, build index)..."
+  # Prior failed runs may have left root-owned files under instance/ (git dubious ownership).
+  mkdir -p "${PROJECT_ROOT}/instance"
+  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${PROJECT_ROOT}/instance"
   if ! sudo -u "${SERVICE_USER}" bash -c "
     cd \"${PROJECT_ROOT}\" &&
     export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
