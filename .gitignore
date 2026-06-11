@@ -8,6 +8,9 @@ benchmarks/*.xml
 
 # Local SQLite instance database
 instance/benchmarks.db
+instance/ob-cache/
+instance/ob_cache_index.json
+instance/phoronix-test-suite-src/
 
 # Exported slide images
 app/static/exports/

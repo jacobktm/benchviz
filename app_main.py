@@ -1195,6 +1195,10 @@ def api_compare():
         pool_equivalent_configs = False
 
     comparison_groups = []
+    from app.ob_cache_sync import load_ob_cache_index
+    from app.pts_compare import build_pts_context_for_compare_group, build_pts_global_summary
+
+    ob_index_cache = load_ob_cache_index()
 
     # When pooling equivalent configs, build a lookup of:
     # (benchmark_title, app_version, pool_key) -> set(raw_args_strings)
@@ -1946,6 +1950,36 @@ def api_compare():
                                 args_label = _unique_part_of_description(
                                     bm_for_args.description, other_descriptions
                                 ) or (args_val if isinstance(args_val, str) else "")
+                system_names = []
+                for sid in sys_id_ints:
+                    sys_obj = db.session.get(System, sid)
+                    if sys_obj:
+                        system_names.append(sys_obj.identifier)
+                pts_scoring = build_pts_context_for_compare_group(
+                    title=primary_benchmark.title,
+                    app_version=primary_benchmark.app_version or "",
+                    identifier=primary_benchmark.identifier,
+                    primary_charts=[c for c in charts if c.get("is_primary")],
+                    system_ids=system_names,
+                    config_args=args_val if args_val is not None else "",
+                    ob_index=ob_index_cache,
+                )
+                sub_by_desc = {
+                    (st.get("description") or "").strip(): st
+                    for st in (pts_scoring.get("subtests") or [])
+                }
+                for ch in charts:
+                    if not ch.get("is_primary"):
+                        continue
+                    st = sub_by_desc.get((ch.get("description") or "").strip())
+                    if st:
+                        ch["pts"] = {
+                            "comparison_hash": st.get("comparison_hash"),
+                            "pts_relative": st.get("pts_relative"),
+                            "ob_percentile": st.get("ob_percentile"),
+                            "ob": st.get("ob"),
+                        }
+
                 comparison_groups.append({
                     "title": title,
                     "charts": charts,
@@ -1954,12 +1988,28 @@ def api_compare():
                     "args_label": args_label or args_val or "",
                     "workload_profile": workload_profile,
                     "workload_profiles_by_option": workload_profiles_by_option,
+                    "pts_scoring": pts_scoring,
                 })
 
     if not comparison_groups:
         return {"error": "Could not find benchmark data"}, 404
-        
-    return {"comparison_groups": comparison_groups}
+
+    pts_contexts = [g.get("pts_scoring") for g in comparison_groups if g.get("pts_scoring")]
+    first_names = []
+    if comparison_groups and comparison_groups[0].get("system_details"):
+        first_names = [s.get("short_name") for s in comparison_groups[0]["system_details"] if s.get("short_name")]
+    pts_global = build_pts_global_summary(pts_contexts, first_names) if pts_contexts and first_names else None
+
+    return {
+        "comparison_groups": comparison_groups,
+        "scoring_engine": "pts" if ob_index_cache else "benchviz",
+        "pts": {
+            "ob_index_available": ob_index_cache is not None,
+            "ob_index_synced_at": (ob_index_cache or {}).get("synced_at"),
+            "ob_entry_count": (ob_index_cache or {}).get("entry_count"),
+            "global": pts_global,
+        },
+    }
 
 
 @app.route('/api/pool_flag_suggestions')
@@ -4265,6 +4315,40 @@ def import_hardware_ranks_cmd(path):
             counters["added"], "inserted,",
             counters["updated"], "updated.",
         )
+
+
+@app.cli.command("sync-openbenchmarking-cache")
+@click.option(
+    "--source",
+    type=click.Choice(["auto", "local", "github"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="auto: local PTS clone if present, else shallow GitHub sparse checkout.",
+)
+@click.option(
+    "--local-path",
+    default="",
+    help="PTS source tree with ob-cache/ (default: /home/system76/Git/phoronix-test-suite).",
+)
+@click.option("--branch", default="master", show_default=True, help="Git branch when pulling from GitHub.")
+def sync_openbenchmarking_cache_cmd(source: str, local_path: str, branch: str):
+    """
+    Mirror OpenBenchmarking generated.json analytics from Phoronix Test Suite and build a lookup index.
+
+    Run periodically (cron/systemd timer) to refresh population percentiles used for PTS-style scoring.
+    """
+    from app.ob_cache_sync import build_ob_cache_index, default_ob_cache_dir, sync_ob_cache
+
+    lp = local_path.strip() or None
+    with app.app_context():
+        meta = sync_ob_cache(source=source, local_path=lp, branch=branch)
+        idx = build_ob_cache_index()
+        print("OpenBenchmarking cache sync:")
+        print("  source:", meta.get("source"))
+        print("  files copied:", meta.get("files_copied"))
+        print("  cache dir:", default_ob_cache_dir())
+        print("  index entries:", idx.get("entry_count"))
+        print("  synced_at:", idx.get("synced_at"))
 
 
 @app.cli.command("sync-hardware-ranks-api")
