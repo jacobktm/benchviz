@@ -7,6 +7,7 @@ from typing import Any
 from .ob_cache_sync import load_ob_cache_index, lookup_ob_entry
 from .pts_comparison import (
     comparison_hash_for_benchmark,
+    lib_to_hib_value,
     normalize_relative_values,
     ob_percentiles_for_systems,
     pts_geometric_mean_composite,
@@ -139,21 +140,44 @@ def build_pts_global_summary(
     group_contexts: list[dict[str, Any]],
     system_ids: list[str],
 ) -> dict[str, Any]:
-    """Pool all subtest relative scores; geo-mean per system (PTS-style overall)."""
+    """
+    PTS generate_geometric_mean_result() across all BAR_GRAPH subtests in the comparison.
+
+    Raw values are LIB-inverted to HIB scale per subtest, geo-meaned per system, then
+    normalized via normalize_buffer_values() (reference = slowest).
+    """
     per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
+    subtest_count = 0
     for ctx in group_contexts:
         for st in ctx.get("subtests") or []:
-            rel = st.get("pts_relative") or {}
+            hib = st.get("hib", True)
+            values = st.get("values") or {}
+            contributed = False
             for sid in system_ids:
-                v = rel.get(sid)
-                if v is not None and v > 0:
-                    per_system[sid].append(float(v))
+                raw = values.get(sid)
+                if raw is None:
+                    continue
+                try:
+                    v = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if v <= 0:
+                    continue
+                per_system[sid].append(lib_to_hib_value(v) if not hib else v)
+                contributed = True
+            if contributed:
+                subtest_count += 1
 
-    composite = {sid: geometric_mean(vs) if vs else None for sid, vs in per_system.items()}
+    composite_raw = {
+        sid: geometric_mean(vs) if len(vs) >= 2 else None
+        for sid, vs in per_system.items()
+    }
+    composite_relative = normalize_relative_values(composite_raw, hib=True)
+
     ref_id = system_ids[0] if system_ids else ""
     min_v = None
     for sid in system_ids:
-        c = composite.get(sid)
+        c = composite_raw.get(sid)
         if c is None:
             continue
         if min_v is None or c < min_v:
@@ -161,7 +185,8 @@ def build_pts_global_summary(
             ref_id = sid
 
     return {
-        "composite_relative": composite,
+        "composite_raw": composite_raw,
+        "composite_relative": composite_relative,
         "reference_system_id": ref_id,
-        "subtest_count": sum(len(vs) for vs in per_system.values()) // max(len(system_ids), 1),
+        "subtest_count": subtest_count,
     }

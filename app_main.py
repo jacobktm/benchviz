@@ -2002,7 +2002,7 @@ def api_compare():
 
     return {
         "comparison_groups": comparison_groups,
-        "scoring_engine": "pts" if ob_index_cache else "benchviz",
+        "scoring_engine": "pts" if pts_contexts else "benchviz",
         "pts": {
             "ob_index_available": ob_index_cache is not None,
             "ob_index_synced_at": (ob_index_cache or {}).get("synced_at"),

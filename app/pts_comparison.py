@@ -168,7 +168,8 @@ def pts_geometric_mean_composite(
     out: dict[str, float | None] = {}
     for sid in system_ids:
         arr = per_system[sid]
-        out[sid] = geometric_mean(arr) if len(arr) >= 1 else None
+        # PTS generate_geometric_mean_result() skips when fewer than 2 tests contribute.
+        out[sid] = geometric_mean(arr) if len(arr) >= 2 else None
     return out
 
 

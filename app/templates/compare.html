@@ -1622,6 +1622,86 @@
             return (Number(v) - 1) * 100;
         }
 
+        /** Bar-chart scale: reference system's composite maps to 100. */
+        function compositeToPerformanceIndex(v, refComposite) {
+            if (v == null || isNaN(v) || Number(v) <= 0) return null;
+            const ref = (refComposite != null && !isNaN(refComposite) && Number(refComposite) > 0)
+                ? Number(refComposite) : 1;
+            return (Number(v) / ref) * 100;
+        }
+
+        /** Data label for performance-index composite bars (100 = reference). */
+        function formatPerformanceIndexLabel(indexVal) {
+            if (indexVal == null || isNaN(indexVal)) return '';
+            const n = Number(indexVal);
+            const pct = n - 100;
+            if (Math.abs(pct) < 0.05) return '100';
+            return n.toFixed(1) + ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)';
+        }
+
+        /** PTS viewer % column: relative multiplier × 100 (reference = 100). */
+        function ptsRelativePercent(relative) {
+            if (relative == null || isNaN(relative)) return null;
+            return Number(relative) * 100;
+        }
+
+        function formatPtsRelativeLabel(pct) {
+            if (pct == null || isNaN(pct)) return '';
+            if (Math.abs(pct - 100) < 0.05) return '100';
+            const delta = pct - 100;
+            return pct.toFixed(1) + ' (' + (delta >= 0 ? '+' : '') + delta.toFixed(1) + '%)';
+        }
+
+        /** Collect unique PTS subtests from all comparison groups in a benchmark bucket. */
+        function collectPtsSubtestsForBGroup(bGroup) {
+            const byDesc = new Map();
+            (bGroup.configs || []).forEach(cfg => {
+                const ps = cfg.group && cfg.group.pts_scoring;
+                (ps && ps.subtests || []).forEach(st => {
+                    const key = (st.description || '').trim();
+                    if (key && !byDesc.has(key)) byDesc.set(key, st);
+                });
+            });
+            return Array.from(byDesc.values());
+        }
+
+        /**
+         * PTS generate_geometric_mean_result() for one benchmark suite.
+         * LIB subtests inverted to HIB scale; requires ≥2 contributing subtests.
+         */
+        function computePtsGeoMeanForBGroup(bGroup, systems) {
+            const subtests = collectPtsSubtestsForBGroup(bGroup);
+            if (subtests.length < 2) return null;
+            const perSystem = systems.map(() => []);
+            subtests.forEach(st => {
+                const hib = st.hib !== false;
+                const vals = st.values || {};
+                systems.forEach((sid, i) => {
+                    const raw = vals[sid];
+                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                    perSystem[i].push(hib ? Number(raw) : (1 / Number(raw)) * 100);
+                });
+            });
+            const rawArr = perSystem.map(arr => (arr.length >= 2 ? geometricMean(arr) : null));
+            const working = {};
+            systems.forEach((sid, i) => {
+                if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
+            });
+            if (Object.keys(working).length < 2) return null;
+            const divide = Math.min(...Object.values(working));
+            let refId = systems[0];
+            systems.forEach(sid => {
+                if (working[sid] === divide) refId = sid;
+            });
+            const raw = {};
+            const relative = {};
+            systems.forEach((sid, i) => {
+                raw[sid] = rawArr[i];
+                relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
+            });
+            return { raw, relative, referenceSystemId: refId, subtestCount: subtests.length };
+        }
+
         /** Diagnostics for 2-system composite on the exact valuesBySystem path. */
         function computeTwoSystemCompositeDiagnostics(bGroup, systems) {
             if (!bGroup || !Array.isArray(systems) || systems.length !== 2) return null;
@@ -1746,11 +1826,30 @@
             const benchSummaries = [];
             if (opts.showBenchmarks) {
                 benchmarkGroups.forEach(bGroup => {
-                    const { aggValues } = computeCompositeScores(bGroup, traceNames);
-                    const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
-                    if (!valid.length) return;
-                    const minR = Math.min(...valid);
-                    const ratios = aggValues.map(v => (v != null && v > 0) ? v / minR : 0);
+                    const systems = traceNames;
+                    const ptsGeo = computePtsGeoMeanForBGroup(bGroup, systems);
+                    let ratios;
+                    if (ptsGeo) {
+                        if (normalizeComposite) {
+                            ratios = systems.map(sid => {
+                                const pct = ptsRelativePercent(ptsGeo.relative[sid]);
+                                return pct != null ? pct / 100 : 1;
+                            });
+                        } else {
+                            const refRaw = ptsGeo.raw[ptsGeo.referenceSystemId];
+                            ratios = systems.map(sid => {
+                                const raw = ptsGeo.raw[sid];
+                                if (raw == null || !refRaw || refRaw <= 0) return 1;
+                                return raw / refRaw;
+                            });
+                        }
+                    } else {
+                        const { aggValues } = computeCompositeScores(bGroup, traceNames);
+                        const valid = aggValues.filter(v => v != null && !isNaN(v) && v > 0);
+                        if (!valid.length) return;
+                        const minR = Math.min(...valid);
+                        ratios = aggValues.map(v => (v != null && v > 0) ? v / minR : 0);
+                    }
                     benchSummaries.push({
                         name: bGroup.benchmarkName,
                         ratios,
@@ -1758,7 +1857,30 @@
                 });
             }
 
-            const { globalComposite, globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, traceNames);
+            let globalRatios;
+            const ptsGlobal = currentPtsScoring && currentPtsScoring.global;
+            if (usePtsComposite && ptsGlobal && (ptsGlobal.composite_relative || ptsGlobal.composite_raw)) {
+                const refId = ptsGlobal.reference_system_id || traceNames[0];
+                if (normalizeComposite && ptsGlobal.composite_relative) {
+                    globalRatios = traceNames.map(sid => {
+                        const pct = ptsRelativePercent(ptsGlobal.composite_relative[sid]);
+                        return pct != null ? pct / 100 : 1;
+                    });
+                } else {
+                    const refRaw = (ptsGlobal.composite_raw || {})[refId];
+                    globalRatios = traceNames.map(sid => {
+                        const raw = (ptsGlobal.composite_raw || {})[sid];
+                        if (raw == null || !refRaw || refRaw <= 0) return 1;
+                        return raw / refRaw;
+                    });
+                }
+            } else {
+                const { globalComposite } = computeGlobalSummary(benchmarkGroups, traceNames);
+                const validGlobal = globalComposite.filter(v => v != null && !isNaN(v) && v > 0);
+                const minGlobal = validGlobal.length ? Math.min(...validGlobal) : 1;
+                globalRatios = globalComposite.map(v => (v != null && v > 0) ? v / minGlobal : 0);
+            }
+            const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, traceNames);
 
             const overallSensors = computeOverallSensorMeans(currentComparisonGroups, traceNames);
             const sensorSummaries = (opts.showOverallSensors ? overallSensors : []).filter(s =>
@@ -1887,15 +2009,15 @@
             }
 
             // Overall composite horizontal bar
-            if (opts.showOverallComposite && globalComposite && globalComposite.length) {
+            if (opts.showOverallComposite && globalRatios && globalRatios.length) {
                 const labels = systemLabels.slice();
-                const dataVals = systemLabels.map((_, idx) => globalComposite[idx] || 0);
+                const dataVals = systemLabels.map((_, idx) => globalRatios[idx] || 0);
                 panelPromises.push(buildExportChart({
                     type: 'bar',
                     data: {
                         labels,
                         datasets: [{
-                            label: 'Overall composite (normalized, higher = better)',
+                            label: 'Overall geometric mean (PTS, reference = 1.0)',
                             data: dataVals,
                             backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
                         }]
@@ -1907,7 +2029,7 @@
                                 ticks: { color: BAR_CHART_TICK_COLOR },
                                 title: {
                                     display: true,
-                                    text: 'Normalized score (worst = 1.0)',
+                                    text: normalizeComposite ? 'Relative performance (reference = 1.0)' : 'Index (reference = 1.0)',
                                     color: BAR_CHART_TICK_COLOR
                                 }
                             },
@@ -1918,14 +2040,13 @@
                         plugins: {
                             title: {
                                 display: true,
-                                text: 'Overall composite',
+                                text: 'Overall geometric mean',
                                 color: '#ffffff',
                                 font: { size: 16, weight: '600' }
                             },
                             datalabels: {
                                 anchor: 'end',
                                 align: 'left',
-                                // globalComposite is normalized so weakest system = 1.0.
                                 formatter: (v) => {
                                     if (v == null || isNaN(v) || v <= 1) return '';
                                     const pct = (Number(v) - 1) * 100;
@@ -2103,7 +2224,7 @@
 
                 const panelQueue = panels.slice();
                 const benchmarkPanel = opts.showBenchmarks && benchSummaries.length ? panelQueue.shift() : null;
-                const compPanel = (opts.showOverallComposite && globalComposite && globalComposite.length) ? panelQueue.shift() : null;
+                const compPanel = (opts.showOverallComposite && globalRatios && globalRatios.length) ? panelQueue.shift() : null;
                 const winsPanel = (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) ? panelQueue.shift() : null;
                 const lossesPanel = (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) ? panelQueue.shift() : null;
                 const sensorPanels = panelQueue;
@@ -2518,9 +2639,13 @@
                 if (currentPtsScoring && currentPtsScoring.ob_index_available) {
                     const syncNote = document.createElement('div');
                     syncNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.35rem;';
-                    syncNote.textContent = `OpenBenchmarking cache loaded (${currentPtsScoring.ob_entry_count || '?'} subtests; synced ${currentPtsScoring.ob_index_synced_at || 'unknown'}). Subtest OB percentiles on primary metrics; overall bar uses PTS geo-mean when available.`;
+                    syncNote.textContent = `OpenBenchmarking cache loaded (${currentPtsScoring.ob_entry_count || '?'} subtests; synced ${currentPtsScoring.ob_index_synced_at || 'unknown'}). Population percentiles shown on primary metrics.`;
                     globalSection.appendChild(syncNote);
                 }
+                const ptsScoringNote = document.createElement('div');
+                ptsScoringNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.35rem;';
+                ptsScoringNote.textContent = 'Composite scores use PTS math (geo-mean across subtests; reference = slowest system). Enable Normalize for relative performance matching the PTS results viewer.';
+                globalSection.appendChild(ptsScoringNote);
 
                 const { globalComposite, globalWins, globalLosses, referenceSystemId: globalRefId } = computeGlobalSummary(benchmarkGroups, systems);
                 const globalRefLabel = labelForReferenceSystem(globalRefId, systemLabels, systems);
@@ -2537,25 +2662,48 @@
                     let label;
                     let formatter;
 
-                    if (usePtsComposite && ptsGlobal && ptsGlobal.composite_relative) {
-                        values = systems.map(sid => {
-                            const pct = compositeToPercentAdvantage(ptsGlobal.composite_relative[sid]);
-                            return pct != null ? pct : 0;
-                        });
-                        const n = currentPtsScoring.ob_entry_count ? `; OB index ${currentPtsScoring.ob_entry_count} subtests` : '';
-                        label = `% vs ${ptsRefLabel} (PTS geo-mean of relative subtests${n})`;
-                        formatter = (v) => formatCompositeBarValue(v, false);
+                    if (usePtsComposite && ptsGlobal && (ptsGlobal.composite_relative || ptsGlobal.composite_raw)) {
+                        const ptsRefId = ptsGlobal.reference_system_id || '';
+                        const ptsRefLabel = labelForReferenceSystem(ptsRefId, systemLabels, systems);
+                        if (normalizeComposite && ptsGlobal.composite_relative) {
+                            values = systems.map(sid => {
+                                const pct = ptsRelativePercent(ptsGlobal.composite_relative[sid]);
+                                return pct != null ? pct : 100;
+                            });
+                            label = `Relative Performance (${ptsRefLabel} = 100%; PTS geo-mean across all subtests)`;
+                            formatter = formatPtsRelativeLabel;
+                        } else if (ptsGlobal.composite_raw) {
+                            const refRaw = ptsGlobal.composite_raw[ptsRefId];
+                            values = systems.map(sid => {
+                                const raw = ptsGlobal.composite_raw[sid];
+                                if (raw == null || !refRaw || refRaw <= 0) return 100;
+                                return (raw / refRaw) * 100;
+                            });
+                            label = `Geometric mean index (${ptsRefLabel} = 100; raw PTS geo-mean)`;
+                            formatter = formatPerformanceIndexLabel;
+                        } else {
+                            const refComposite = ptsGlobal.composite_relative[ptsRefId];
+                            values = systems.map(sid => {
+                                const idx = compositeToPerformanceIndex(
+                                    ptsGlobal.composite_relative[sid], refComposite,
+                                );
+                                return idx != null ? idx : 100;
+                            });
+                            label = `Performance index (${ptsRefLabel} = 100; PTS geo-mean)`;
+                            formatter = formatPerformanceIndexLabel;
+                        }
                     } else if (normalizeComposite) {
                         values = globalComposite.map(v => v != null ? v : 0);
                         label = `Overall composite vs ${globalRefLabel} (class reference; geo mean across all subtests)`;
                         formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
                     } else {
+                        const refComposite = globalComposite[systems.indexOf(globalRefId)];
                         values = globalComposite.map(v => {
-                            const pct = compositeToPercentAdvantage(v);
-                            return pct != null ? pct : 0;
+                            const idx = compositeToPerformanceIndex(v, refComposite);
+                            return idx != null ? idx : 100;
                         });
-                        label = `% vs ${globalRefLabel} (lowest overall in comparison; geo mean across all subtests)`;
-                        formatter = (v) => formatCompositeBarValue(v, false);
+                        label = `Performance index (${globalRefLabel} = 100; geo mean across all subtests)`;
+                        formatter = formatPerformanceIndexLabel;
                     }
 
                     const sortedOverall = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, true);
@@ -2825,9 +2973,15 @@
                         directionEl.textContent = directionText;
                         chartDiv.appendChild(directionEl);
 
-                        // When normalization is enabled, normalize BAR_GRAPH charts for primary
-                        // results so that the weakest system is 1.0 and others are > 1.0.
-                        if (normalizeComposite && chartData.is_primary) {
+                        // PTS normalize (nor): use server-side relative performance when available.
+                        const ptsRel = chartData.pts && chartData.pts.pts_relative;
+                        if (normalizeComposite && chartData.is_primary && ptsRel) {
+                            values = traceNames.map(name => {
+                                const rel = ptsRel[name];
+                                const pct = ptsRelativePercent(rel);
+                                return pct != null ? pct : 0;
+                            });
+                        } else if (normalizeComposite && chartData.is_primary) {
                             let worstVal = null;
                             values.forEach(v => {
                                 if (v == null || isNaN(v) || v <= 0) return;
@@ -2844,10 +2998,15 @@
 
                         const formatter = (value) => {
                             if (value == null || value === undefined || isNaN(value)) return '';
+                            if (normalizeComposite && chartData.is_primary && ptsRel) {
+                                return formatPtsRelativeLabel(Number(value));
+                            }
                             return Number(value).toFixed(2);
                         };
                         const xAxisLabel = (normalizeComposite && chartData.is_primary)
-                            ? (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)')
+                            ? (ptsRel
+                                ? 'Relative Performance (% vs slowest; PTS normalize)'
+                                : (chartData.scale ? `${chartData.scale} (normalized: higher = better, worst = 1.0)` : 'Normalized score (higher = better, worst = 1.0)'))
                             : (chartData.scale ? `${chartData.scale} — ${directionText}` : directionText);
                         const individualHigher = normalizeComposite || HIB;
                         const sortedIndividual = sortLabelsValuesSystemIdsBestFirst(labels, values, traceNames, individualHigher);
@@ -2955,8 +3114,8 @@
                 subtitle.style.textAlign = 'center';
                 // Normalized mode only rescales the same composite (ranking unchanged).
                 subtitle.textContent = normalizeComposite
-                    ? 'Higher is better — scores vs class reference system (lowest overall in this benchmark)'
-                    : 'Higher is better — % vs class reference (lowest geo-mean across all subtests here; capped median blend; ±50% cap per subtest)';
+                    ? 'PTS normalize — relative performance vs slowest system (reference = 100%)'
+                    : 'Raw values — enable Normalize for PTS relative performance; geometric mean uses PTS geo-mean when ≥2 subtests';
                 if (subtitle.textContent) groupWrapper.appendChild(subtitle);
 
                 const systems = (() => {
@@ -2965,38 +3124,79 @@
                 })();
                 const systemLabels = getSystemDisplayNames(systems);
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
-                const { aggValues, wins, losses, combinedScales, referenceSystemId: benchRefId } = computeCompositeScores(bGroup, systems);
+                const ptsGeo = computePtsGeoMeanForBGroup(bGroup, systems);
+                const { wins, losses } = computeBenchmarkWinsLosses(bGroup, systems);
+                const benchRefId = ptsGeo ? ptsGeo.referenceSystemId : computeCompositeScores(bGroup, systems).referenceSystemId;
                 const benchRefLabel = labelForReferenceSystem(benchRefId, systemLabels, systems);
-                const finalAggValues = aggValues;
 
                 const aggSection = document.createElement('div');
                 aggSection.style.marginBottom = '1.5rem';
                 groupWrapper.appendChild(aggSection);
-                const compositeLabel = normalizeComposite
-                    ? ((combinedScales && combinedScales.length > 1
-                        ? `Composite vs ${benchRefLabel} — ${combinedScales.join(', ')}`
-                        : `Composite vs ${benchRefLabel} (class reference)`))
-                    : ((combinedScales && combinedScales.length > 1
-                        ? `% vs ${benchRefLabel} — ${combinedScales.join(', ')}`
-                        : `% vs ${benchRefLabel} (lowest in this benchmark; all primary metrics)`));
-                const aggVals = finalAggValues.map(v => {
-                    if (v == null || isNaN(v)) return 0;
-                    if (normalizeComposite) return v;
-                    const pct = compositeToPercentAdvantage(v);
-                    return pct != null ? pct : 0;
-                });
-                const aggHigher = true;
-                const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, aggHigher);
-                createBarChart(
-                    aggSection,
-                    sortedAgg.labels,
-                    sortedAgg.values,
-                    compositeLabel,
-                    (v) => formatCompositeBarValue(v, normalizeComposite),
-                    'aggregate',
-                    sortedAgg.systemIds
-                );
-                if (systems.length === 2) {
+
+                if (ptsGeo) {
+                    let compositeLabel;
+                    let aggVals;
+                    let aggFormatter;
+                    if (normalizeComposite) {
+                        compositeLabel = `Geometric Mean — Relative Performance (${benchRefLabel} = 100%; ${ptsGeo.subtestCount} subtests)`;
+                        aggVals = systems.map(sid => {
+                            const pct = ptsRelativePercent(ptsGeo.relative[sid]);
+                            return pct != null ? pct : 100;
+                        });
+                        aggFormatter = formatPtsRelativeLabel;
+                    } else {
+                        compositeLabel = `Geometric Mean (${benchRefLabel} = 100; ${ptsGeo.subtestCount} subtests)`;
+                        const refRaw = ptsGeo.raw[benchRefId];
+                        aggVals = systems.map(sid => {
+                            const raw = ptsGeo.raw[sid];
+                            if (raw == null || !refRaw || refRaw <= 0) return 100;
+                            return (raw / refRaw) * 100;
+                        });
+                        aggFormatter = formatPerformanceIndexLabel;
+                    }
+                    const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, true);
+                    createBarChart(
+                        aggSection,
+                        sortedAgg.labels,
+                        sortedAgg.values,
+                        compositeLabel,
+                        aggFormatter,
+                        'aggregate-pts',
+                        sortedAgg.systemIds
+                    );
+                } else {
+                    const { aggValues, combinedScales } = computeCompositeScores(bGroup, systems);
+                    const benchRefComposite = aggValues[systems.indexOf(benchRefId)];
+                    const compositeLabel = normalizeComposite
+                        ? ((combinedScales && combinedScales.length > 1
+                            ? `Composite vs ${benchRefLabel} — ${combinedScales.join(', ')}`
+                            : `Composite vs ${benchRefLabel} (class reference)`))
+                        : ((combinedScales && combinedScales.length > 1
+                            ? `Performance index (${benchRefLabel} = 100) — ${combinedScales.join(', ')}`
+                            : `Performance index (${benchRefLabel} = 100; all primary metrics)`));
+                    const aggVals = aggValues.map(v => {
+                        if (v == null || isNaN(v)) return normalizeComposite ? 0 : 100;
+                        if (normalizeComposite) return v;
+                        const idx = compositeToPerformanceIndex(v, benchRefComposite);
+                        return idx != null ? idx : 100;
+                    });
+                    const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, true);
+                    createBarChart(
+                        aggSection,
+                        sortedAgg.labels,
+                        sortedAgg.values,
+                        compositeLabel,
+                        (v) => normalizeComposite ? formatCompositeBarValue(v, true) : formatPerformanceIndexLabel(v),
+                        'aggregate',
+                        sortedAgg.systemIds
+                    );
+                }
+                if (systems.length === 2 && ptsGeo) {
+                    const d = document.createElement('div');
+                    d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
+                    d.textContent = `PTS geometric mean of ${ptsGeo.subtestCount} subtests (LIB→HIB inverted per subtest). Reference: ${benchRefLabel} (slowest geo-mean composite).`;
+                    aggSection.appendChild(d);
+                } else if (systems.length === 2) {
                     const diag = computeTwoSystemCompositeDiagnostics(bGroup, systems);
                     if (diag) {
                         const d = document.createElement('div');
@@ -3397,7 +3597,7 @@
                 } else {
                     currentComparisonGroups = data.comparison_groups;
                     currentPtsScoring = data.pts || null;
-                    usePtsComposite = !!(currentPtsScoring && currentPtsScoring.ob_index_available);
+                    usePtsComposite = !!(currentPtsScoring && currentPtsScoring.global);
                     
                     chartControls.style.display = 'block';
                     chartTitle.textContent = "";
@@ -3447,11 +3647,11 @@
                             return label;
                         };
                         
-                        toggleRow.appendChild(mkToggle('Show overall composite score bar', 'showCompositeBar'));
+                        toggleRow.appendChild(mkToggle('PTS: Show overall geometric mean', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
                         toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
-                        toggleRow.appendChild(mkToggle('Normalize composite display to weakest = 1.0', 'normalizeComposite'));
+                        toggleRow.appendChild(mkToggle('PTS: Normalize results (relative performance)', 'normalizeComposite'));
                         modeWrap.appendChild(toggleRow);
 
                         // Overall sensor toggles (for overall charts)
