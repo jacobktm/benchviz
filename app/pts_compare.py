@@ -13,7 +13,9 @@ from .pts_comparison import (
     ob_median_from_entry,
     ob_percentiles_for_systems,
     pts_geometric_mean_composite,
+    pts_geometric_mean_ob_composite,
     pts_harmonic_mean_by_scale,
+    pts_harmonic_mean_cross_scale,
     relative_vs_ob_median,
     strip_test_profile_identifier,
 )
@@ -27,7 +29,15 @@ def _is_hib(proportion: str | None) -> bool:
     if p == "LIB":
         return False
     pl = (proportion or "").lower()
-    return "higher" in pl and "better" in pl
+    if "lower" in pl and "better" in pl:
+        return False
+    if "higher" in pl and "better" in pl:
+        return True
+    if "more" in pl and "better" in pl:
+        return True
+    if "lower" in pl:
+        return False
+    return "higher" in pl or "more" in pl
 
 
 def build_pts_context_for_compare_group(
@@ -107,6 +117,8 @@ def build_pts_context_for_compare_group(
     geo_for_norm = {sid: geo_raw.get(sid) for sid in system_ids}
     geo_relative = normalize_relative_values(geo_for_norm, hib=True)
 
+    geo_ob_relative = pts_geometric_mean_ob_composite(per_subtest, system_ids)
+
     ref_id = system_ids[0] if system_ids else ""
     best_geo = None
     for sid in system_ids:
@@ -138,6 +150,7 @@ def build_pts_context_for_compare_group(
         "subtests": per_subtest,
         "geometric_mean_raw": geo_raw,
         "geometric_mean_relative": geo_relative,
+        "geometric_mean_ob_relative": geo_ob_relative,
         "geometric_mean_of_relative_subtests": geo_mean_relative,
         "harmonic_mean_by_scale": harmonic_by_scale,
         "reference_system_id": ref_id,
@@ -148,12 +161,14 @@ def build_pts_context_for_compare_group(
 def build_pts_global_summary(
     comparison_groups: list[dict[str, Any]],
     system_ids: list[str] | None = None,
+    *,
+    pts_contexts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     PTS generate_geometric_mean_result() across all BAR_GRAPH subtests in the comparison.
 
-    Raw composite values are per-system (not normalized). reference_system_id is the
-    slowest composite (PTS nor / normalize uses it; default display stays raw).
+    composite_ob uses OB-relative subtest scores when pts_contexts are available.
+    composite_raw / composite_relative remain head-to-head fallbacks for raw display.
     """
     trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
     subtests = extract_subtests_from_comparison_groups(comparison_groups)
@@ -201,9 +216,15 @@ def build_pts_global_summary(
             min_v = c
             ref_id = sid
 
+    composite_ob = None
+    if pts_contexts and trace_ids:
+        ob_summary = build_pts_ob_global_summary(pts_contexts, trace_ids)
+        composite_ob = ob_summary.get("composite_ob_relative")
+
     return {
         "composite_raw": composite_raw,
         "composite_relative": composite_relative,
+        "composite_ob": composite_ob,
         "reference_system_id": ref_id,
         "subtest_count": subtest_count,
         "lib_inverted": lib_rows > 0,
@@ -326,8 +347,14 @@ def compare_system_trace_ids(comparison_groups: list[dict[str, Any]]) -> list[st
 def build_pts_global_harmonic_summary(
     comparison_groups: list[dict[str, Any]],
     system_ids: list[str] | None = None,
-) -> dict[str, dict[str, Any]]:
-    """PTS harmonic mean across all primary charts in the comparison, grouped by scale."""
+) -> dict[str, Any]:
+    """Harmonic summaries: per-scale raw buckets plus cross-unit relative overall."""
     trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
     subtests = extract_subtests_from_comparison_groups(comparison_groups)
-    return pts_harmonic_mean_by_scale(subtests, trace_ids)
+    cross_scale = pts_harmonic_mean_cross_scale(subtests, trace_ids, head_to_head=False)
+    if cross_scale is None:
+        cross_scale = pts_harmonic_mean_cross_scale(subtests, trace_ids, head_to_head=True)
+    return {
+        "by_scale": pts_harmonic_mean_by_scale(subtests, trace_ids),
+        "cross_scale": cross_scale,
+    }

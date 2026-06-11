@@ -13,6 +13,8 @@ from app.pts_comparison import (
     normalize_harmonic_scale_key,
     normalize_relative_values,
     pts_harmonic_mean_by_scale,
+    pts_harmonic_mean_cross_scale,
+    pts_geometric_mean_ob_composite,
     relative_vs_ob_median,
 )
 from app.pts_compare import build_pts_global_harmonic_summary, build_pts_global_summary
@@ -69,6 +71,23 @@ class PtsGlobalSummaryTest(unittest.TestCase):
         self.assertEqual(summary["reference_system_id"], "b")
         self.assertAlmostEqual(summary["composite_relative"]["b"], 1.0)
         self.assertGreater(summary["composite_relative"]["a"], 1.0)
+        self.assertIsNone(summary["composite_ob"])
+
+    def test_geometric_mean_ob_composite(self):
+        subtests = [
+            {
+                "ob": {"matched": True},
+                "pts_ob_relative": {"a": 1.2, "b": 1.0},
+            },
+            {
+                "ob": {"matched": True},
+                "pts_ob_relative": {"a": 1.1, "b": 0.95},
+            },
+        ]
+        result = pts_geometric_mean_ob_composite(subtests, ["a", "b"])
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["a"], geometric_mean([1.2, 1.1]))
+        self.assertAlmostEqual(result["b"], geometric_mean([1.0, 0.95]))
 
     def test_global_skipped_with_one_subtest(self):
         groups = self._groups([{"hib": True, "values": {"a": 100.0, "b": 110.0}}])
@@ -90,12 +109,17 @@ class PtsHarmonicMeanTest(unittest.TestCase):
 
     def test_harmonic_scale_eligibility(self):
         self.assertTrue(is_harmonic_mean_scale("FPS"))
-        self.assertTrue(is_harmonic_mean_scale("MB/s"))
         self.assertTrue(is_harmonic_mean_scale("MIPS"))
-        self.assertTrue(is_harmonic_mean_scale("Frames Per Second"))
-        self.assertTrue(is_harmonic_mean_scale("runs/min"))
-        self.assertFalse(is_harmonic_mean_scale("Seconds"))
-        self.assertFalse(is_harmonic_mean_scale("ms"))
+        self.assertTrue(is_harmonic_mean_scale("Points"))
+        self.assertFalse(is_harmonic_mean_scale(""))
+        self.assertFalse(is_harmonic_mean_scale(None))
+
+    def test_harmonic_includes_non_rate_hib_scale(self):
+        subtests = [
+            {"hib": True, "scale": "Points", "values": {"a": 100.0, "b": 110.0}},
+        ] * 4
+        result = pts_harmonic_mean_by_scale(subtests, ["a", "b"])
+        self.assertIn("Points", result)
 
     def test_harmonic_by_scale_requires_four_subtests(self):
         subtests = [
@@ -124,6 +148,43 @@ class PtsHarmonicMeanTest(unittest.TestCase):
         self.assertEqual(normalize_harmonic_scale_key("Frames Per Second"), "FPS")
         self.assertEqual(normalize_harmonic_scale_key("runs/min"), "runs/min")
 
+    def test_harmonic_cross_scale_mixes_units(self):
+        subtests = [
+            {"hib": True, "scale": "MB/s", "values": {"a": 100.0, "b": 80.0}},
+            {"hib": True, "scale": "MIPS", "values": {"a": 5000.0, "b": 4000.0}},
+            {"hib": True, "scale": "FPS", "values": {"a": 120.0, "b": 100.0}},
+            {"hib": True, "scale": "runs/min", "values": {"a": 10.0, "b": 8.0}},
+        ]
+        result = pts_harmonic_mean_cross_scale(subtests, ["a", "b"], head_to_head=True)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["subtest_count"], 4)
+        self.assertAlmostEqual(result["relative"]["b"], 1.0)
+        self.assertGreater(result["relative"]["a"], 1.0)
+
+    def test_harmonic_cross_scale_ob_baseline(self):
+        subtests = [
+            {
+                "hib": True, "scale": "MB/s", "ob": {"matched": True},
+                "pts_ob_relative": {"a": 1.25, "b": 1.0},
+            },
+            {
+                "hib": True, "scale": "MIPS", "ob": {"matched": True},
+                "pts_ob_relative": {"a": 1.1, "b": 0.95},
+            },
+            {
+                "hib": True, "scale": "FPS", "ob": {"matched": True},
+                "pts_ob_relative": {"a": 1.05, "b": 1.02},
+            },
+            {
+                "hib": True, "scale": "runs/min", "ob": {"matched": True},
+                "pts_ob_relative": {"a": 1.08, "b": 0.98},
+            },
+        ]
+        result = pts_harmonic_mean_cross_scale(subtests, ["a", "b"], head_to_head=False)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.get("ob_baseline"))
+        self.assertGreater(result["relative"]["a"], 1.0)
+
     def test_global_harmonic_aggregates_all_benchmark_charts(self):
         def _group(scale, a_val, b_val, a_name="a", b_name="b"):
             return {
@@ -150,14 +211,16 @@ class PtsHarmonicMeanTest(unittest.TestCase):
         ]
         zstd_only = build_pts_global_harmonic_summary(zstd_groups)
         all_groups = build_pts_global_harmonic_summary(all_groups_input)
-        self.assertIn("MB/s", all_groups)
-        self.assertIn("MB/s", zstd_only)
-        self.assertEqual(all_groups["MB/s"]["subtest_count"], 5)
-        self.assertEqual(zstd_only["MB/s"]["subtest_count"], 4)
+        self.assertIn("MB/s", all_groups["by_scale"])
+        self.assertIn("MB/s", zstd_only["by_scale"])
+        self.assertEqual(all_groups["by_scale"]["MB/s"]["subtest_count"], 5)
+        self.assertEqual(zstd_only["by_scale"]["MB/s"]["subtest_count"], 4)
         self.assertNotAlmostEqual(
-            all_groups["MB/s"]["raw"]["a"],
-            zstd_only["MB/s"]["raw"]["a"],
+            all_groups["by_scale"]["MB/s"]["raw"]["a"],
+            zstd_only["by_scale"]["MB/s"]["raw"]["a"],
         )
+        self.assertIsNotNone(all_groups["cross_scale"])
+        self.assertGreater(all_groups["cross_scale"]["subtest_count"], zstd_only["cross_scale"]["subtest_count"])
 
 
 class PtsMathTest(unittest.TestCase):

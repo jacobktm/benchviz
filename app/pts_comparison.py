@@ -196,39 +196,14 @@ MIN_HARMONIC_SUBTESTS = 4
 
 
 def is_harmonic_mean_scale(scale: str | None) -> bool:
-    """
-    Rate-like scales eligible for harmonic mean (MB/s, FPS, MIPS, runs/min, etc.).
-
-    BenchViz extends strict PTS filter (which skips MIPS) to treat throughput
-    units like MIPS and full "Frames Per Second" wording as rate scales.
-    """
-    rs = (scale or "").strip()
-    if not rs:
-        return False
-    rs_lower = rs.lower()
-    if "/" in rs:
-        return True
-    if " per " in rs_lower:
-        return True
-    if "fps" in rs_lower:
-        return True
-    if "frame" in rs_lower and "second" in rs_lower:
-        return True
-    if "bps" in rs_lower:
-        return True
-    if "iops" in rs_lower:
-        return True
-    if rs_lower == "mips" or "mips" in rs_lower:
-        return True
-    if "million instructions" in rs_lower:
-        return True
-    return False
+    """True when scale is non-empty (any HIB unit can form a harmonic bucket)."""
+    return bool((scale or "").strip())
 
 
 def normalize_harmonic_scale_key(scale: str | None) -> str | None:
-    """Canonical scale bucket for cross-benchmark harmonic mean (e.g. MiB/s → MB/s)."""
+    """Canonical scale bucket for cross-benchmark harmonic mean (any HIB unit)."""
     rs = (scale or "").strip()
-    if not rs or not is_harmonic_mean_scale(rs):
+    if not rs:
         return None
     rs_lower = rs.lower()
     if rs_lower in ("mb/s", "mib/s"):
@@ -271,10 +246,10 @@ def pts_harmonic_mean_by_scale(
     system_ids: list[str],
 ) -> dict[str, dict[str, Any]]:
     """
-    PTS generate_harmonic_mean_result() grouped by result_scale.
+    Harmonic mean grouped by result scale.
 
-    Only HIB rate-like subtests; LIB skipped. Each scale needs ≥4 values per system
-    and ≥2 systems with a valid harmonic mean.
+    All HIB subtests with a scale; LIB skipped. Each scale needs ≥4 values per
+    system and ≥2 systems with a valid harmonic mean.
     """
     by_scale: dict[str, dict[str, list[float]]] = {}
     subtest_counts: dict[str, int] = {}
@@ -325,6 +300,93 @@ def pts_harmonic_mean_by_scale(
     return out
 
 
+def pts_harmonic_mean_cross_scale(
+    subtests: list[dict[str, Any]],
+    system_ids: list[str],
+    *,
+    head_to_head: bool = False,
+) -> dict[str, Any] | None:
+    """
+    Harmonic mean of per-subtest HIB scores across mixed units.
+
+    Default (head_to_head=False): each subtest uses pts_ob_relative (OB median = 1.0).
+    head_to_head=True: each subtest uses value / worst in comparison (slowest = 1.0).
+    """
+    per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
+    subtest_count = 0
+
+    for st in subtests:
+        if st.get("hib") is False:
+            continue
+        if head_to_head:
+            vals = st.get("values") or {}
+            parsed: dict[str, float] = {}
+            for sid in system_ids:
+                raw = vals.get(sid)
+                if raw is None:
+                    continue
+                try:
+                    v = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if v <= 0 or not math.isfinite(v):
+                    continue
+                parsed[sid] = v
+            if len(parsed) < 2:
+                continue
+            worst = min(parsed.values())
+            for sid, v in parsed.items():
+                per_system[sid].append(v / worst)
+            subtest_count += 1
+        else:
+            ob_rel = st.get("pts_ob_relative") or {}
+            if not (st.get("ob") or {}).get("matched"):
+                continue
+            parsed_ob: dict[str, float] = {}
+            for sid in system_ids:
+                raw = ob_rel.get(sid)
+                if raw is None:
+                    continue
+                try:
+                    v = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if v <= 0 or not math.isfinite(v):
+                    continue
+                parsed_ob[sid] = v
+            if len(parsed_ob) < len(system_ids):
+                continue
+            for sid, v in parsed_ob.items():
+                per_system[sid].append(v)
+            subtest_count += 1
+
+    if subtest_count < MIN_HARMONIC_SUBTESTS:
+        return None
+
+    raw: dict[str, float | None] = {}
+    for sid in system_ids:
+        arr = per_system.get(sid) or []
+        raw[sid] = harmonic_mean(arr) if len(arr) >= MIN_HARMONIC_SUBTESTS else None
+
+    valid_systems = [sid for sid in system_ids if raw.get(sid) is not None]
+    if len(valid_systems) < 2:
+        return None
+
+    if head_to_head:
+        relative = normalize_relative_values(raw, hib=True)
+        ref_id = _reference_system_from_raw(raw, system_ids)
+    else:
+        relative = {sid: raw.get(sid) for sid in system_ids}
+        ref_id = ""
+    return {
+        "raw": raw,
+        "relative": relative,
+        "reference_system_id": ref_id,
+        "ob_baseline": not head_to_head,
+        "subtest_count": subtest_count,
+    }
+
+
 def pts_geometric_mean_composite(
     subtest_values: list[dict[str, float | None]],
     system_ids: list[str],
@@ -357,6 +419,49 @@ def pts_geometric_mean_composite(
         # PTS generate_geometric_mean_result() skips when fewer than 2 tests contribute.
         out[sid] = geometric_mean(arr) if len(arr) >= 2 else None
     return out
+
+
+def pts_geometric_mean_ob_composite(
+    subtests: list[dict[str, Any]],
+    system_ids: list[str],
+) -> dict[str, float | None] | None:
+    """
+    Geometric mean of per-subtest OB-relative scores (OB median = 1.0 per subtest).
+
+    Combines mixed units safely; requires matched OB data on every included subtest.
+    """
+    per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
+    subtest_count = 0
+
+    for st in subtests:
+        if not (st.get("ob") or {}).get("matched"):
+            continue
+        ob_rel = st.get("pts_ob_relative") or {}
+        parsed: dict[str, float] = {}
+        for sid in system_ids:
+            raw = ob_rel.get(sid)
+            if raw is None:
+                continue
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if v <= 0 or not math.isfinite(v):
+                continue
+            parsed[sid] = v
+        if len(parsed) < len(system_ids):
+            continue
+        for sid, v in parsed.items():
+            per_system[sid].append(v)
+        subtest_count += 1
+
+    if subtest_count < 2:
+        return None
+
+    return {
+        sid: geometric_mean(arr) if len(arr) >= 2 else None
+        for sid, arr in per_system.items()
+    }
 
 
 def ob_percentiles_for_systems(

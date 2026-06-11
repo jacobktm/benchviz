@@ -2004,7 +2004,10 @@ def api_compare():
     first_names = []
     if comparison_groups and comparison_groups[0].get("system_details"):
         first_names = [s.get("short_name") for s in comparison_groups[0]["system_details"] if s.get("short_name")]
-    pts_global = build_pts_global_summary(comparison_groups) if comparison_groups else None
+    pts_global = (
+        build_pts_global_summary(comparison_groups, pts_contexts=pts_contexts)
+        if comparison_groups else None
+    )
     pts_global_harmonic = (
         build_pts_global_harmonic_summary(comparison_groups)
         if comparison_groups else None
@@ -2022,7 +2025,8 @@ def api_compare():
             "ob_index_synced_at": (ob_index_cache or {}).get("synced_at"),
             "ob_entry_count": (ob_index_cache or {}).get("entry_count"),
             "global": pts_global,
-            "global_harmonic_by_scale": pts_global_harmonic,
+            "global_harmonic_by_scale": (pts_global_harmonic or {}).get("by_scale") if pts_global_harmonic else None,
+            "global_harmonic_cross_scale": (pts_global_harmonic or {}).get("cross_scale") if pts_global_harmonic else None,
             "global_ob": pts_global_ob,
         },
     }
