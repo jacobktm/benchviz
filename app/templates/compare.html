@@ -450,7 +450,6 @@
                     normalizeComposite,
                     showCompositeBar,
                     showHarmonicMean,
-                    showWinsLossCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
                 },
@@ -492,7 +491,6 @@
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
                 showHarmonicMean = !!opts.showHarmonicMean;
-                showWinsLossCharts = !!opts.showWinsLossCharts;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
                 }
@@ -872,7 +870,6 @@
         let showHarmonicMean = false;
         let filterRelevantSensors = true;
         let filterNoisySensors = true;
-        let showWinsLossCharts = false;
         let showOverallSensor = {};  // metric name -> boolean, for overall sensor bar charts
         /** Per-benchmark open state for subtest-delta panels. key: benchmarkName */
         let subtestDeltaOpenState = {};
@@ -1695,18 +1692,21 @@
          * LIB subtests inverted to HIB scale; requires ≥2 contributing subtests.
          */
         function computePtsGeoMeanForBGroup(bGroup, systems) {
-            const subtests = collectPtsSubtestsForBGroup(bGroup);
-            if (subtests.length < 2) return null;
+            if (!systems.length || !(bGroup.configs || []).length) return null;
             const perSystem = systems.map(() => []);
-            subtests.forEach(st => {
-                const hib = st.hib !== false;
-                const vals = st.values || {};
+            let rowCount = 0;
+            bGroup.configs.forEach(config => {
+                const { HIB } = getConfigComparisonMeta(config, bGroup);
+                let rowContributed = false;
                 systems.forEach((sid, i) => {
-                    const raw = vals[sid];
+                    const raw = config.valuesBySystem[sid];
                     if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
-                    perSystem[i].push(hib ? Number(raw) : (1 / Number(raw)) * 100);
+                    perSystem[i].push(HIB ? Number(raw) : (1 / Number(raw)) * 100);
+                    rowContributed = true;
                 });
+                if (rowContributed) rowCount += 1;
             });
+            if (rowCount < 2) return null;
             const rawArr = perSystem.map(arr => (arr.length >= 2 ? geometricMean(arr) : null));
             const working = {};
             systems.forEach((sid, i) => {
@@ -1724,32 +1724,39 @@
                 raw[sid] = rawArr[i];
                 relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
             });
-            return { raw, relative, referenceSystemId: refId, subtestCount: subtests.length };
+            return {
+                raw,
+                relative,
+                referenceSystemId: refId,
+                subtestCount: rowCount,
+                scale: 'Geometric Mean',
+            };
         }
 
         /**
-         * PTS generate_harmonic_mean_result() for one benchmark suite.
-         * HIB rate-like subtests only; ≥4 values per system per scale.
+         * PTS generate_harmonic_mean_result() scoped to one benchmark suite.
+         * HIB rate-like metrics only (MB/s, FPS, …); LIB skipped; ≥4 values per
+         * system per scale; raw values (no inversion). Uses all scored config rows.
          */
         function computePtsHarmonicMeanForBGroup(bGroup, systems) {
-            const subtests = collectPtsSubtestsForBGroup(bGroup);
+            if (!systems.length || !(bGroup.configs || []).length) return [];
             const byScale = new Map();
             const subtestCounts = new Map();
-            subtests.forEach(st => {
-                if (st.hib === false) return;
-                const scale = (st.scale || '').trim();
-                if (!isHarmonicMeanScale(scale)) return;
-                const vals = st.values || {};
-                if (!byScale.has(scale)) byScale.set(scale, systems.map(() => []));
-                const buckets = byScale.get(scale);
+            bGroup.configs.forEach(config => {
+                const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
+                if (!HIB) return;
+                const scaleKey = (scale || '').trim();
+                if (!isHarmonicMeanScale(scaleKey)) return;
+                if (!byScale.has(scaleKey)) byScale.set(scaleKey, systems.map(() => []));
+                const buckets = byScale.get(scaleKey);
                 let contributed = false;
                 systems.forEach((sid, i) => {
-                    const raw = vals[sid];
+                    const raw = config.valuesBySystem[sid];
                     if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
                     buckets[i].push(Number(raw));
                     contributed = true;
                 });
-                if (contributed) subtestCounts.set(scale, (subtestCounts.get(scale) || 0) + 1);
+                if (contributed) subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
             });
 
             const results = [];
@@ -1780,9 +1787,14 @@
             return results.sort((a, b) => a.scale.localeCompare(b.scale));
         }
 
+        /** @deprecated alias */
+        function computePtsHarmonicMeanByRateScaleForBGroup(bGroup, systems) {
+            return computePtsHarmonicMeanForBGroup(bGroup, systems);
+        }
+
         /** Render a PTS geo-mean or harmonic-mean composite bar chart. */
         function renderPtsCompositeBar(parent, systems, systemLabels, meanData, meanLabel) {
-            const scaleName = meanData.scale || (meanLabel.toLowerCase().includes('geometric') ? 'Geometric Mean' : '');
+            const scaleName = meanData.scale || (meanLabel.toLowerCase().includes('geometric') ? 'Geometric Mean' : meanLabel.toLowerCase().includes('harmonic') ? 'Harmonic Mean' : '');
             const scalePart = scaleName ? ` (${scaleName})` : '';
             let compositeLabel;
             let aggVals;
@@ -1796,8 +1808,14 @@
                     return rel != null ? rel : 1;
                 });
                 aggFormatter = formatPtsRelativeLabel;
+            } else if (meanLabel.toLowerCase().includes('harmonic') && scaleName && scaleName !== 'Harmonic Mean') {
+                compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${meanData.subtestCount} tests)`;
+            } else if (meanLabel.toLowerCase().includes('geometric')) {
+                compositeLabel = `Geometric Mean Of ${scaleName || 'All Test Results'} (${meanData.subtestCount} subtests)`;
             } else {
                 compositeLabel = `${meanLabel}${scalePart} (${meanData.subtestCount} subtests)`;
+            }
+            if (!normalizeComposite) {
                 aggVals = systems.map(sid => {
                     const r = meanData.raw && meanData.raw[sid];
                     return r != null ? r : 0;
@@ -2733,166 +2751,90 @@
                 return;
             }
 
-            // Global summary across all benchmarks (Phoronix-style options)
-            if ((showCompositeBar || showHarmonicMean || showWinsLossCharts) && benchmarkGroups.length) {
+            // Global summary across all benchmarks
+            if ((showCompositeBar || showHarmonicMean) && benchmarkGroups.length) {
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
                 const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
                 const systemLabels = getSystemDisplayNames(systems);
-
-                const globalSection = document.createElement('div');
-                globalSection.style.cssText = 'width:100%;margin-bottom:2.5rem;padding:1.5rem;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);';
-                const globalTitle = document.createElement('div');
-                globalTitle.textContent = 'Overall results across all benchmarks';
-                globalTitle.style.cssText = 'font-weight:600;color:var(--text-primary);margin-bottom:0.5rem;font-size:0.95rem;text-align:left;';
-                globalSection.appendChild(globalTitle);
-                if (currentPtsScoring && currentPtsScoring.ob_index_available) {
-                    const syncNote = document.createElement('div');
-                    syncNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.35rem;';
-                    syncNote.textContent = `OpenBenchmarking cache loaded (${currentPtsScoring.ob_entry_count || '?'} subtests; synced ${currentPtsScoring.ob_index_synced_at || 'unknown'}). Population percentiles shown on primary metrics.`;
-                    globalSection.appendChild(syncNote);
-                }
-                const ptsScoringNote = document.createElement('div');
-                ptsScoringNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.35rem;';
-                ptsScoringNote.textContent = 'Composite scores use PTS geometric/harmonic mean math. Raw values match the PTS results viewer without Normalize; enable Normalize for relative performance (slowest = 1.0).';
-                globalSection.appendChild(ptsScoringNote);
-
-                const { globalComposite, globalWins, globalLosses, referenceSystemId: globalRefId } = computeGlobalSummary(benchmarkGroups, systems);
-                const globalRefLabel = labelForReferenceSystem(globalRefId, systemLabels, systems);
                 const ptsGlobal = currentPtsScoring && currentPtsScoring.global;
-                const ptsRefLabel = ptsGlobal && ptsGlobal.reference_system_id
-                    ? labelForReferenceSystem(ptsGlobal.reference_system_id, systemLabels, systems)
-                    : '';
-                if (showCompositeBar) {
-                    const barWrap = document.createElement('div');
-                    barWrap.style.marginBottom = '1rem';
-                    globalSection.appendChild(barWrap);
 
-                    let values;
-                    let label;
-                    let formatter;
+                const globalCharts = document.createElement('div');
+                globalCharts.style.cssText = 'display:flex;flex-direction:column;gap:0.25rem;';
 
-                    if (usePtsComposite && ptsGlobal && (ptsGlobal.composite_relative || ptsGlobal.composite_raw)) {
-                        const ptsRefId = ptsGlobal.reference_system_id || '';
-                        const ptsRefLabel = labelForReferenceSystem(ptsRefId, systemLabels, systems);
-                        if (normalizeComposite && ptsGlobal.composite_relative) {
-                            values = systems.map(sid => {
-                                const rel = ptsGlobal.composite_relative[sid];
-                                return rel != null ? rel : 1;
-                            });
-                            label = `Geometric Mean — Relative Performance (${ptsRefLabel} = 1.0; ${ptsGlobal.subtest_count || '?'} subtests)`;
-                            formatter = formatPtsRelativeLabel;
-                        } else if (ptsGlobal.composite_raw) {
-                            values = systems.map(sid => {
-                                const raw = ptsGlobal.composite_raw[sid];
-                                return raw != null ? raw : 0;
-                            });
-                            label = `Geometric Mean (${ptsGlobal.subtest_count || '?'} subtests)`;
-                            formatter = formatPtsRawMeanLabel;
-                        } else {
-                            values = systems.map(sid => {
-                                const rel = ptsGlobal.composite_relative[sid];
-                                return rel != null ? rel : 1;
-                            });
-                            label = `Geometric Mean — Relative Performance (${ptsRefLabel} = 1.0)`;
-                            formatter = formatPtsRelativeLabel;
-                        }
-                    } else if (normalizeComposite) {
-                        values = globalComposite.map(v => v != null ? v : 0);
-                        label = `Overall composite vs ${globalRefLabel} (class reference; geo mean across all subtests)`;
-                        formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
-                    } else {
-                        const refComposite = globalComposite[systems.indexOf(globalRefId)];
-                        values = globalComposite.map(v => {
-                            const idx = compositeToPerformanceIndex(v, refComposite);
-                            return idx != null ? idx : 100;
-                        });
-                        label = `Performance index (${globalRefLabel} = 100; geo mean across all subtests)`;
-                        formatter = formatPerformanceIndexLabel;
-                    }
-
-                    const sortedOverall = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, true);
-                    createBarChart(
-                        barWrap,
-                        sortedOverall.labels,
-                        sortedOverall.values,
-                        label,
-                        formatter,
-                        'overall-composite',
-                        sortedOverall.systemIds
+                if (showCompositeBar && usePtsComposite && ptsGlobal && (ptsGlobal.composite_raw || ptsGlobal.composite_relative)) {
+                    renderPtsCompositeBar(
+                        globalCharts,
+                        systems,
+                        systemLabels,
+                        {
+                            scale: 'Geometric Mean',
+                            raw: ptsGlobal.composite_raw,
+                            relative: ptsGlobal.composite_relative,
+                            referenceSystemId: ptsGlobal.reference_system_id,
+                            subtestCount: ptsGlobal.subtest_count || 0,
+                        },
+                        'Geometric Mean',
                     );
                 }
                 if (showHarmonicMean && usePtsComposite && currentPtsScoring && currentPtsScoring.global_harmonic_by_scale) {
-                    const hmByScale = currentPtsScoring.global_harmonic_by_scale;
-                    Object.keys(hmByScale).sort().forEach(scale => {
-                        const hm = hmByScale[scale];
+                    Object.keys(currentPtsScoring.global_harmonic_by_scale).sort().forEach(scale => {
+                        const hm = currentPtsScoring.global_harmonic_by_scale[scale];
                         if (!hm) return;
-                        const barWrap = document.createElement('div');
-                        barWrap.style.marginBottom = '1rem';
-                        globalSection.appendChild(barWrap);
                         renderPtsCompositeBar(
-                            barWrap,
+                            globalCharts,
                             systems,
                             systemLabels,
-                            { scale, raw: hm.raw, relative: hm.relative, referenceSystemId: hm.reference_system_id, subtestCount: hm.subtest_count },
-                            'Harmonic Mean'
+                            {
+                                scale,
+                                raw: hm.raw,
+                                relative: hm.relative,
+                                referenceSystemId: hm.reference_system_id,
+                                subtestCount: hm.subtest_count,
+                            },
+                            'Harmonic Mean',
                         );
                     });
                 }
-                if (showWinsLossCharts && systems.length >= 2) {
-                    const pieRow = document.createElement('div');
-                    pieRow.style.cssText = 'display:flex;flex-direction:row;flex-wrap:wrap;gap:2rem 5rem;margin-top:0.75rem;align-items:flex-start;justify-content:space-evenly;width:100%;';
-                    globalSection.appendChild(pieRow);
-                    addPieChart(pieRow, systemLabels, globalWins, 'Overall wins (best score per option)', systems);
-                    addPieChart(pieRow, systemLabels, globalLosses, 'Overall losses (worst score per option)', systems);
-                }
+                if (globalCharts.hasChildNodes()) {
+                    const globalSection = document.createElement('div');
+                    globalSection.style.cssText = 'width:100%;margin-bottom:2rem;';
+                    const globalTitle = document.createElement('h3');
+                    globalTitle.textContent = 'Overall';
+                    globalTitle.style.cssText = 'font-weight:600;color:var(--text-primary);margin:0 0 0.75rem;font-size:0.95rem;text-align:center;';
+                    globalSection.appendChild(globalTitle);
+                    globalSection.appendChild(globalCharts);
 
-                const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
-                const sensorsToShow = overallSensors.filter(({ metric }) => showOverallSensor[metric]);
-                if (sensorsToShow.length) {
-                    const sensorHeading = document.createElement('div');
-                    sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.5rem;margin-bottom:0.75rem;font-size:0.9rem;';
-                    sensorHeading.textContent = 'Overall sensor data (mean across all runs)';
-                    globalSection.appendChild(sensorHeading);
-                    sensorsToShow.forEach(({ metric, scale, proportion, valuesBySystem }) => {
-                        const wrap = document.createElement('div');
-                        wrap.style.marginBottom = '1.25rem';
-                        globalSection.appendChild(wrap);
-                        const HIB = isHigherIsBetter(proportion);
-                        const directionText = HIB ? 'Higher is better' : 'Lower is better';
-                        const directionEl = document.createElement('div');
-                        directionEl.style.cssText = 'font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.25rem;';
-                        directionEl.textContent = normalizeComposite ? 'Higher is better (normalized)' : directionText;
-                        wrap.appendChild(directionEl);
-                        let values = systems.map((s, i) => valuesBySystem[i] != null ? valuesBySystem[i] : 0);
-                        let xLabel;
-                        let formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
-                        if (normalizeComposite) {
-                            const valid = values.filter(v => v != null && !isNaN(v) && v > 0);
-                            const worstVal = valid.length ? (HIB ? Math.min(...valid) : Math.max(...valid)) : 1;
-                            if (worstVal > 0) {
-                                values = values.map(v => (v != null && v > 0) ? (HIB ? v / worstVal : worstVal / v) : 0);
+                    const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
+                    const sensorsToShow = overallSensors.filter(({ metric }) => showOverallSensor[metric]);
+                    if (sensorsToShow.length) {
+                        const sensorHeading = document.createElement('div');
+                        sensorHeading.style.cssText = 'font-weight:600;color:var(--text-secondary);margin-top:1.25rem;margin-bottom:0.5rem;font-size:0.85rem;text-align:center;';
+                        sensorHeading.textContent = 'Sensor averages';
+                        globalSection.appendChild(sensorHeading);
+                        sensorsToShow.forEach(({ metric, scale, proportion, valuesBySystem }) => {
+                            const wrap = document.createElement('div');
+                            wrap.style.marginBottom = '0.75rem';
+                            globalSection.appendChild(wrap);
+                            const HIB = isHigherIsBetter(proportion);
+                            let values = systems.map((s, i) => valuesBySystem[i] != null ? valuesBySystem[i] : 0);
+                            let xLabel = scale ? `${metric} (${scale})` : metric;
+                            let formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
+                            if (normalizeComposite) {
+                                const valid = values.filter(v => v != null && !isNaN(v) && v > 0);
+                                const worstVal = valid.length ? (HIB ? Math.min(...valid) : Math.max(...valid)) : 1;
+                                if (worstVal > 0) {
+                                    values = values.map(v => (v != null && v > 0) ? (HIB ? v / worstVal : worstVal / v) : 0);
+                                }
+                                xLabel += ' (normalized)';
                             }
-                            xLabel = scale ? `${metric} (${scale}) — normalized (worst = 1.0)` : `${metric} — normalized (worst = 1.0)`;
-                            formatter = (v) => (v == null || isNaN(v) ? '' : Number(v).toFixed(2));
-                        } else {
-                            xLabel = scale ? `${metric} (${scale}) — ${directionText}` : `${metric} — ${directionText}`;
-                        }
-                        const sensorHigher = normalizeComposite || HIB;
-                        const sortedSensor = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, sensorHigher);
-                        createBarChart(
-                            wrap,
-                            sortedSensor.labels,
-                            sortedSensor.values,
-                            xLabel,
-                            formatter,
-                            'overall-sensor',
-                            sortedSensor.systemIds
-                        );
-                    });
-                }
+                            const sortedSensor = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, normalizeComposite || HIB);
+                            createBarChart(wrap, sortedSensor.labels, sortedSensor.values, xLabel, formatter, 'overall-sensor', sortedSensor.systemIds);
+                        });
+                    }
 
-                chartsContainer.appendChild(globalSection);
+                    chartsContainer.appendChild(globalSection);
+                }
             }
 
             function addPieChart(parent, systemLabels, values, title, systemIds) {
@@ -3217,31 +3159,6 @@
                 groupHeader.style.textAlign = 'center';
                 groupWrapper.appendChild(groupHeader);
 
-                const optionProfiles = collectOptionWorkloadProfiles(bGroup);
-                const taxonomies = [...new Set(optionProfiles.map(w => w.taxonomy).filter(Boolean))];
-                if (taxonomies.length === 1 && optionProfiles[0]) {
-                    const wlNote = document.createElement('div');
-                    wlNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);text-align:center;margin-bottom:0.75rem;max-width:42rem;margin-left:auto;margin-right:auto;line-height:1.45;';
-                    wlNote.textContent = formatWorkloadNote(optionProfiles[0]);
-                    groupWrapper.appendChild(wlNote);
-                } else if (taxonomies.length > 1) {
-                    const wlNote = document.createElement('div');
-                    wlNote.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);text-align:center;margin-bottom:0.75rem;max-width:42rem;margin-left:auto;margin-right:auto;line-height:1.45;';
-                    wlNote.textContent = `Workload varies by option (${taxonomies.map(t => t.replace(/_/g, ' ')).join(', ')}). Expand individual metrics for per-option class and sensor filters.`;
-                    groupWrapper.appendChild(wlNote);
-                }
-
-                const subtitle = document.createElement('div');
-                subtitle.style.color = 'var(--text-secondary)';
-                subtitle.style.fontSize = '0.9rem';
-                subtitle.style.marginBottom = '1rem';
-                subtitle.style.textAlign = 'center';
-                // Normalized mode only rescales the same composite (ranking unchanged).
-                subtitle.textContent = normalizeComposite
-                    ? 'PTS normalize — relative performance vs slowest system in this comparison (reference = 1.0)'
-                    : 'PTS raw composite values (same as the PTS results viewer without Normalize enabled)';
-                if (subtitle.textContent) groupWrapper.appendChild(subtitle);
-
                 const systems = (() => {
                     const firstPrimary = bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts.find(c => c.is_primary);
                     return firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
@@ -3259,30 +3176,9 @@
                 if (ptsHarmonicList.length) {
                     ptsHarmonicList.forEach(hm => {
                         renderPtsCompositeBar(aggSection, systems, systemLabels, hm, 'Harmonic Mean');
-                        if (systems.length === 2) {
-                            const d = document.createElement('div');
-                            d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
-                            d.textContent = normalizeComposite
-                                ? `PTS harmonic mean of ${hm.subtestCount} ${hm.scale} subtests (HIB rate metrics; slowest = 1.0 when normalized).`
-                                : `PTS harmonic mean of ${hm.subtestCount} ${hm.scale} subtests in native ${hm.scale} units (requires ≥${MIN_HARMONIC_SUBTESTS} eligible subtests).`;
-                            aggSection.appendChild(d);
-                        }
                     });
                 } else if (ptsGeoFallback) {
                     renderPtsCompositeBar(aggSection, systems, systemLabels, ptsGeoFallback, 'Geometric Mean');
-                    if (systems.length === 2) {
-                        const d = document.createElement('div');
-                        d.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin-top:0.35rem;';
-                        d.textContent = normalizeComposite
-                            ? `PTS geometric mean of ${ptsGeoFallback.subtestCount} subtests (LIB→HIB inverted per subtest; slowest = 1.0 when normalized). Harmonic mean needs ≥${MIN_HARMONIC_SUBTESTS} rate subtests.`
-                            : `PTS geometric mean of ${ptsGeoFallback.subtestCount} subtests in Geometric Mean units (harmonic mean unavailable — no eligible rate subtests).`;
-                        aggSection.appendChild(d);
-                    }
-                } else {
-                    const note = document.createElement('div');
-                    note.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);text-align:center;margin-bottom:0.75rem;';
-                    note.textContent = 'Composite not available (needs ≥2 subtests for geometric mean, or ≥4 eligible HIB rate subtests for harmonic mean).';
-                    aggSection.appendChild(note);
                 }
                 if (systems.length === 2 && !ptsHarmonicList.length && !ptsGeoFallback) {
                     const diag = computeTwoSystemCompositeDiagnostics(bGroup, systems);
@@ -3712,14 +3608,13 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
                                 else if (key === 'showHarmonicMean') showHarmonicMean = val;
-                                else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
                                 else if (key === 'filterRelevantSensors' || key === 'filterNoisySensors') {
                                     if (key === 'filterRelevantSensors') filterRelevantSensors = val;
                                     else filterNoisySensors = val;
@@ -3738,7 +3633,6 @@
                         
                         toggleRow.appendChild(mkToggle('PTS: Show overall geometric mean', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('PTS: Show overall harmonic mean', 'showHarmonicMean'));
-                        toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
                         toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
                         toggleRow.appendChild(mkToggle('PTS: Normalize results', 'normalizeComposite'));
@@ -3763,7 +3657,6 @@
                             if (key === 'normalizeComposite') input.checked = normalizeComposite;
                             else if (key === 'showCompositeBar') input.checked = showCompositeBar;
                             else if (key === 'showHarmonicMean') input.checked = showHarmonicMean;
-                            else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
                         });
                     }
                     

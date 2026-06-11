@@ -103,11 +103,9 @@ def build_pts_context_for_compare_group(
 
     geo_raw = pts_geometric_mean_composite(subtest_value_maps, system_ids, hib_flags)
 
-    # PTS executive summary style: normalize geo-mean composite vs best in set
     geo_for_norm = {sid: geo_raw.get(sid) for sid in system_ids}
     geo_relative = normalize_relative_values(geo_for_norm, hib=True)
 
-    # Reference = slowest overall (lowest geo-mean raw composite)
     ref_id = system_ids[0] if system_ids else ""
     best_geo = None
     for sid in system_ids:
