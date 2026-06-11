@@ -27,14 +27,16 @@ if [ ! -f "$PROJECT_ROOT/app_main.py" ]; then
 fi
 SERVICE_NAME="benchviz"
 
-# Prefer the owner of PROJECT_ROOT as the default service user when possible.
+# Prefer benchviz for /opt/benchviz installs; else use directory owner.
 DIR_OWNER="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
 if [[ -n "${BENCHVIZ_DEFAULT_SERVICE_USER:-}" ]]; then
   DEFAULT_USER="${BENCHVIZ_DEFAULT_SERVICE_USER}"
-elif [[ -n "${DIR_OWNER:-}" ]]; then
+elif [[ "$PROJECT_ROOT" == /opt/benchviz* && -n "${DIR_OWNER:-}" ]]; then
+  DEFAULT_USER="${DIR_OWNER}"
+elif [[ -n "${DIR_OWNER:-}" && "${DIR_OWNER}" != "root" ]]; then
   DEFAULT_USER="${DIR_OWNER}"
 else
-  DEFAULT_USER="${SUDO_USER:-$USER}"
+  DEFAULT_USER="benchviz"
 fi
 
 if [[ "${BENCHVIZ_NONINTERACTIVE:-}" == "1" ]]; then
@@ -59,9 +61,10 @@ if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Ensure the install directory is owned by the service user
-echo "Ensuring '${PROJECT_ROOT}' is owned by '${SERVICE_USER}' (you may be prompted for sudo)..."
-sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "${PROJECT_ROOT}"
+if [[ -n "${DIR_OWNER:-}" && "${DIR_OWNER}" != "${SERVICE_USER}" ]]; then
+  echo "Warning: '${PROJECT_ROOT}' is owned by '${DIR_OWNER}', not '${SERVICE_USER}'."
+  echo "For service installs, run sudo ./setup.sh so files and PTS caches stay owned by benchviz."
+fi
 
 PYTHON_BIN="${PROJECT_ROOT}/venv/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then

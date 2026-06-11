@@ -22,22 +22,42 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   DEFAULT_INSTALL_ROOT="/opt/benchviz"
   read -r -p "Target install path for BenchViz [${DEFAULT_INSTALL_ROOT}]: " INSTALL_ROOT
   INSTALL_ROOT="${INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
+  SERVICE_USER="benchviz"
 
-  echo "Installing BenchViz files to '$INSTALL_ROOT'..."
+  if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    echo "Creating service user '${SERVICE_USER}'..."
+    if command -v adduser >/dev/null 2>&1; then
+      adduser --disabled-password --gecos "" "${SERVICE_USER}"
+    else
+      useradd -m -s /bin/bash "${SERVICE_USER}"
+    fi
+  fi
+
+  echo "Installing BenchViz files to '$INSTALL_ROOT' (owner: ${SERVICE_USER})..."
   mkdir -p "$INSTALL_ROOT"
+  chown "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_ROOT"
+
+  RSYNC_CHOWN=()
+  if rsync --help 2>&1 | grep -q -- '--chown'; then
+    RSYNC_CHOWN=(--chown="${SERVICE_USER}:${SERVICE_USER}")
+  fi
 
   if command -v rsync >/dev/null 2>&1; then
-    rsync -a \
+    rsync -a "${RSYNC_CHOWN[@]}" \
       --exclude 'venv' \
       --exclude '.git' \
       --exclude 'instance/benchmarks.db' \
       --exclude 'benchmarks/*.xml' \
       "$PROJECT_ROOT"/ "$INSTALL_ROOT"/
+    if [ "${#RSYNC_CHOWN[@]}" -eq 0 ]; then
+      chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_ROOT"
+    fi
   else
     cp -a "$PROJECT_ROOT"/. "$INSTALL_ROOT"/
     rm -rf "$INSTALL_ROOT/venv" "$INSTALL_ROOT/.git"
     rm -f "$INSTALL_ROOT/instance/benchmarks.db" 2>/dev/null || true
     rm -f "$INSTALL_ROOT"/benchmarks/*.xml 2>/dev/null || true
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_ROOT"
   fi
 
   PROJECT_ROOT="$INSTALL_ROOT"
@@ -61,13 +81,21 @@ if ! python3 -m venv --help >/dev/null 2>&1; then
 fi
 
 if [ ! -d "venv" ]; then
-  python3 -m venv venv
+  if [[ "${INSTALL_AS_SERVICE:-N}" =~ ^[Yy]$ ]]; then
+    sudo -u "${SERVICE_USER}" python3 -m venv venv
+  else
+    python3 -m venv venv
+  fi
 fi
 
-source venv/bin/activate
-
-pip install --upgrade pip
-pip install -r requirements.txt
+if [[ "${INSTALL_AS_SERVICE:-N}" =~ ^[Yy]$ ]]; then
+  sudo -u "${SERVICE_USER}" "$PROJECT_ROOT/venv/bin/pip" install --upgrade pip
+  sudo -u "${SERVICE_USER}" "$PROJECT_ROOT/venv/bin/pip" install -r requirements.txt
+else
+  source venv/bin/activate
+  pip install --upgrade pip
+  pip install -r requirements.txt
+fi
 
 echo "Environment ready. To run the app:"
 echo "  cd \"$PROJECT_ROOT\""
@@ -100,33 +128,11 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     exit 1
   fi
 
-  BENCHVIZ_DEFAULT_SERVICE_USER=""
-  if [ -d "$PROJECT_ROOT" ]; then
-    dir_owner="$(stat -c '%U' "$PROJECT_ROOT" 2>/dev/null || true)"
-    if [[ -n "${dir_owner:-}" && "${dir_owner}" != "root" ]]; then
-      BENCHVIZ_DEFAULT_SERVICE_USER="$dir_owner"
-    fi
-  fi
-  if [ -z "$BENCHVIZ_DEFAULT_SERVICE_USER" ]; then
-    BENCHVIZ_DEFAULT_SERVICE_USER="${SUDO_USER:-benchviz}"
-  fi
-
-  if ! id -u "${BENCHVIZ_DEFAULT_SERVICE_USER}" >/dev/null 2>&1; then
-    echo "Creating service user '${BENCHVIZ_DEFAULT_SERVICE_USER}'..."
-    if command -v adduser >/dev/null 2>&1; then
-      adduser --disabled-password --gecos "" "${BENCHVIZ_DEFAULT_SERVICE_USER}"
-    else
-      useradd -m -s /bin/bash "${BENCHVIZ_DEFAULT_SERVICE_USER}"
-    fi
-  fi
-
   BENCHVIZ_PROJECT_ROOT="$PROJECT_ROOT" \
-    BENCHVIZ_DEFAULT_SERVICE_USER="$BENCHVIZ_DEFAULT_SERVICE_USER" \
+    BENCHVIZ_DEFAULT_SERVICE_USER="$SERVICE_USER" \
     BENCHVIZ_NONINTERACTIVE=1 \
     BENCHVIZ_SKIP_OB_TIMER=1 \
     ./install_systemd_service.sh
-
-  SERVICE_USER="$BENCHVIZ_DEFAULT_SERVICE_USER"
 
   echo
   echo "Seeding OpenBenchmarking cache (clone PTS, run phoronix-test-suite, build index)..."
