@@ -135,18 +135,31 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     ./install_systemd_service.sh
 
   echo
-  echo "Seeding OpenBenchmarking cache (clone PTS, run phoronix-test-suite, build index)..."
+  echo "Seeding OpenBenchmarking cache (git mirror + index; live OB fetch runs on compare/timer)..."
   # Prior failed runs may have left root-owned files under instance/ (git dubious ownership).
-  mkdir -p "${PROJECT_ROOT}/instance"
+  mkdir -p "${PROJECT_ROOT}/instance/pts-user"
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${PROJECT_ROOT}/instance"
+  # Remove PTS dirs from older BenchViz bug (PTS_USER_PATH_OVERRIDE missing trailing slash).
+  for stale in \
+    pts-useropenbenchmarking.org \
+    pts-usertest-profiles \
+    pts-usertest-suites \
+    pts-userdownload-cache \
+    pts-usermodules \
+    pts-usermodules-data \
+    pts-usercore.pt2so \
+    pts-usergraph-config.json \
+    pts-useruser-config.xml; do
+    rm -rf "${PROJECT_ROOT}/instance/${stale}" 2>/dev/null || true
+  done
   if ! sudo -u "${SERVICE_USER}" bash -c "
     cd \"${PROJECT_ROOT}\" &&
     export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
-    \"${PROJECT_ROOT}/venv/bin/python\" -m flask sync-openbenchmarking-cache
+    \"${PROJECT_ROOT}/venv/bin/python\" -m flask sync-openbenchmarking-cache --skip-live-fetch
   "; then
     echo "Warning: OpenBenchmarking cache seed failed (check git/network/php)."
     echo "You can retry after setup with:"
-    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask sync-openbenchmarking-cache'"
+    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask sync-openbenchmarking-cache --skip-live-fetch'"
   fi
 
   echo

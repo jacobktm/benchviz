@@ -69,7 +69,7 @@ User=${SERVICE_USER}
 WorkingDirectory=${PROJECT_ROOT}
 Environment=PYTHONUNBUFFERED=1
 Environment=FLASK_APP=${FLASK_APP}
-ExecStart=${PYTHON_BIN} -m flask sync-openbenchmarking-cache
+ExecStart=${PYTHON_BIN} -m flask sync-openbenchmarking-cache --skip-live-fetch
 "
 
 TIMER_UNIT="[Unit]

@@ -60,9 +60,20 @@ def default_pts_user_path(project_root_path: str | Path | None = None) -> Path:
     """PTS user dir for live OpenBenchmarking downloads (generated.json acquire)."""
     env = os.environ.get("BENCHVIZ_PTS_USER_PATH", "").strip()
     if env:
-        return Path(env)
+        return Path(env.rstrip("/"))
     root = Path(project_root_path) if project_root_path else project_root()
     return root / "instance" / "pts-user"
+
+
+def pts_user_path_override_value(project_root_path: str | Path | None = None) -> str:
+    """
+    Value for PTS_USER_PATH_OVERRIDE.
+
+    Phoronix Test Suite concatenates subpaths without inserting '/' (expects a trailing slash).
+    """
+    p = default_pts_user_path(project_root_path)
+    s = str(p.resolve())
+    return s if s.endswith("/") else f"{s}/"
 
 
 def pts_executable(clone_dir: Path) -> Path:
@@ -214,7 +225,7 @@ def run_pts_openbenchmarking_refresh(clone_dir: Path | None = None) -> dict[str,
         return meta
 
     env = os.environ.copy()
-    env["PTS_USER_PATH_OVERRIDE"] = str(user_path)
+    env["PTS_USER_PATH_OVERRIDE"] = pts_user_path_override_value()
     env.setdefault("PTS_SILENT_MODE", "1")
 
     try:
@@ -494,7 +505,7 @@ def run_pts_fetch_test_profile(test_profile: str) -> dict[str, Any]:
         return meta
 
     env = os.environ.copy()
-    env["PTS_USER_PATH_OVERRIDE"] = str(user_path)
+    env["PTS_USER_PATH_OVERRIDE"] = pts_user_path_override_value()
     env.setdefault("PTS_SILENT_MODE", "1")
 
     try:
@@ -610,6 +621,9 @@ def supplement_ob_cache_from_live(
             meta["skipped"] += 1
             continue
         was_stale = gen_cached.is_file()
+        total = meta["fetched"] + meta["failed"] + meta["skipped"] + 1
+        if os.environ.get("BENCHVIZ_OB_SYNC_VERBOSE", "").strip() in ("1", "true", "yes"):
+            print(f"OpenBenchmarking live fetch [{total}/{len(profiles)}]: {test_profile}", flush=True)
         fetch_meta = run_pts_fetch_test_profile(test_profile)
         gen_path = fetch_meta.get("generated_json")
         if fetch_meta.get("ok") and gen_path:

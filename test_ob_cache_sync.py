@@ -25,6 +25,18 @@ from app.pts_comparison import generate_comparison_hash, strip_test_profile_iden
 
 
 class ObCachePathTest(unittest.TestCase):
+    def test_pts_user_path_override_has_trailing_slash(self):
+        from app.ob_cache_sync import pts_user_path_override_value
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["BENCHVIZ_PTS_USER_PATH"] = tmp
+            try:
+                val = pts_user_path_override_value()
+                self.assertTrue(val.endswith("/"))
+                self.assertTrue(os.path.isdir(val.rstrip("/")))
+            finally:
+                del os.environ["BENCHVIZ_PTS_USER_PATH"]
+
     def test_default_pts_clone_under_instance(self):
         root = project_root()
         self.assertEqual(default_pts_clone_dir(root), root / "instance" / "phoronix-test-suite")
