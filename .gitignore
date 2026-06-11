@@ -12,6 +12,7 @@ instance/ob-cache/
 instance/ob_cache_index.json
 instance/phoronix-test-suite/
 instance/phoronix-test-suite-src/
+instance/pts-user/
 
 # Exported slide images
 app/static/exports/

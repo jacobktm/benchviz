@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from typing import Any
 
 from .pts_math import geometric_mean, harmonic_mean, result_to_percentile
@@ -16,15 +17,47 @@ def strip_test_profile_identifier(identifier: str | None) -> str:
     """
     Match pts_test_result::get_comparison_hash() identifier trimming.
 
-    Removes the last dotted segment (xx.yy.zz → xx.yy) when present.
+    Removes the patch segment from xx.yy.zz profile ids (e.g. 1.17.1 → 1.17).
+    Two-part ids such as build-linux-kernel-1.17 are left unchanged.
     """
-    tp = (identifier or "").strip()
+    tp = (identifier or "").strip().replace("\\", "/")
     if not tp:
         return ""
-    dot = tp.rfind(".")
-    if dot != -1:
-        tp = tp[:dot]
+    m = re.search(r"-(\d+)\.(\d+)\.(\d+)$", tp)
+    if m:
+        tp = tp[: m.start()] + f"-{m.group(1)}.{m.group(2)}"
     return tp
+
+
+def hash_identifier_from_test_profile(test_profile: str | None) -> str:
+    """Comparison-hash test_identifier for a mirrored ob-cache profile directory."""
+    return strip_test_profile_identifier(test_profile)
+
+
+def test_profile_family(name: str | None) -> str:
+    """
+    Benchmark family key for OB fallback (strip trailing -x.y profile version).
+
+    pts/compress-7zip-1.10.0 → pts/compress-7zip
+    """
+    s = (name or "").strip().replace("\\", "/")
+    if not s:
+        return ""
+    return re.sub(r"-\d[\d.]*$", "", s)
+
+
+def parse_version_tuple(version: str | None) -> tuple[int, ...]:
+    """Numeric prefix of an app/test version string for ordering (22.01 → (22, 1))."""
+    version = (version or "").strip()
+    if not version:
+        return ()
+    parts: list[int] = []
+    for piece in re.split(r"[._-]", version):
+        if piece.isdigit():
+            parts.append(int(piece))
+        elif piece:
+            break
+    return tuple(parts)
 
 
 def generate_comparison_hash(

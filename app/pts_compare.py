@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .ob_cache_sync import load_ob_cache_index, lookup_ob_entry
+from .ob_cache_sync import load_ob_cache_index, lookup_ob_entry_with_fallback
 from .pts_comparison import (
     comparison_hash_for_benchmark,
     lib_to_hib_value,
@@ -87,7 +87,16 @@ def build_pts_context_for_compare_group(
             scale=scale,
             arguments=config_args,
         )
-        ob_entry = lookup_ob_entry(comp_hash, ob_index)
+        ob_entry, ob_source = lookup_ob_entry_with_fallback(
+            comp_hash,
+            ob_index,
+            identifier=identifier,
+            title=title,
+            arguments=config_args,
+            description=desc,
+            app_version=app_version,
+            scale=scale,
+        )
         ob_median = ob_median_from_entry(ob_entry)
         relative = normalize_relative_values(values, hib=hib)
         ob_relative = relative_vs_ob_median(values, hib=hib, ob_median=ob_median)
@@ -100,6 +109,11 @@ def build_pts_context_for_compare_group(
             "hib": hib,
             "ob": {
                 "matched": ob_entry is not None,
+                "source": ob_source or None,
+                "fallback": ob_source == "fallback",
+                "fallback_app_version": (ob_entry or {}).get("app_version") if ob_source == "fallback" else None,
+                "requested_app_version": (ob_entry or {}).get("requested_app_version") if ob_source == "fallback" else None,
+                "live_fetched_profile": (ob_entry or {}).get("live_fetched_profile") if ob_source == "live" else None,
                 "samples": (ob_entry or {}).get("samples"),
                 "unit": (ob_entry or {}).get("unit"),
                 "test_profile": (ob_entry or {}).get("test_profile"),

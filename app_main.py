@@ -4361,20 +4361,24 @@ def import_hardware_ranks_cmd(path):
     is_flag=True,
     help="Do not run phoronix-test-suite (no sub-command) before copying ob-cache.",
 )
+@click.option(
+    "--skip-live-fetch",
+    is_flag=True,
+    help="Do not fetch missing generated.json from OpenBenchmarking.org after git mirror.",
+)
 def sync_openbenchmarking_cache_cmd(
     source: str,
     local_path: str,
     branch: str,
     skip_clone: bool,
     skip_pts_run: bool,
+    skip_live_fetch: bool,
 ):
     """
     Mirror OpenBenchmarking generated.json analytics from Phoronix Test Suite and build a lookup index.
 
-    Clones PTS to instance/phoronix-test-suite, runs ``phoronix-test-suite`` with no options to
-    refresh OpenBenchmarking lists, then copies ob-cache into instance/ob-cache/.
-
-    Run periodically (systemd timer) to refresh population percentiles used for PTS-style scoring.
+    Order: live OB fetch for missing profiles, git ob-cache mirror, then rebuild index.
+    Compare lookups use live → local → older-version fallback at runtime.
     """
     from app.ob_cache_sync import (
         build_ob_cache_index,
@@ -4391,6 +4395,7 @@ def sync_openbenchmarking_cache_cmd(
             branch=branch,
             ensure_clone=not skip_clone,
             run_pts_update=not skip_pts_run,
+            live_fetch=not skip_live_fetch,
         )
         idx = build_ob_cache_index()
         print("OpenBenchmarking cache sync:")
@@ -4401,6 +4406,11 @@ def sync_openbenchmarking_cache_cmd(
             print("  pts update ok:", pts_meta.get("ok", pts_meta.get("skipped")))
             if pts_meta.get("reason"):
                 print("  pts update note:", pts_meta.get("reason"))
+        if live_meta := meta.get("live_fetch"):
+            print("  live fetched:", live_meta.get("fetched"))
+            print("  live refreshed (stale):", live_meta.get("refreshed_stale"))
+            print("  live failed:", live_meta.get("failed"))
+        print("  cache ttl hours:", os.environ.get("BENCHVIZ_OB_CACHE_TTL_HOURS", "168 (default)"))
         print("  source:", meta.get("source"))
         print("  local path:", meta.get("local_path"))
         print("  files copied:", meta.get("files_copied"))
