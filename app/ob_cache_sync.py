@@ -80,6 +80,16 @@ def pts_executable(clone_dir: Path) -> Path:
     return clone_dir / "phoronix-test-suite"
 
 
+def compare_ob_live_fetch_enabled() -> bool:
+    """Live OB fetch during /api/compare (default off — avoids multi-minute page loads)."""
+    return os.environ.get("BENCHVIZ_OB_LIVE_ON_COMPARE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def live_ob_fetch_enabled() -> bool:
+    """Live OB fetch during sync/supplement (default off; use --skip-live-fetch or timer)."""
+    return os.environ.get("BENCHVIZ_OB_LIVE_FETCH", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 def ob_cache_ttl_seconds() -> int:
     """
     Max age for a cached generated.json before live re-fetch.
@@ -358,7 +368,7 @@ def sync_ob_cache(
         if not src_root.is_dir():
             raise FileNotFoundError(f"No ob-cache/test-profiles under {local}")
 
-    if live_fetch and os.environ.get("BENCHVIZ_OB_LIVE_FETCH", "1") != "0":
+    if live_fetch and live_ob_fetch_enabled():
         meta["live_fetch"] = supplement_ob_cache_from_live(dest_dir=dest)
 
     if use_local:
@@ -891,14 +901,14 @@ def lookup_ob_entry_with_fallback(
     description: str = "",
     app_version: str = "",
     scale: str = "",
-    allow_live: bool = True,
+    allow_live: bool = False,
 ) -> tuple[dict[str, Any] | None, ObLookupSource]:
     """
     Resolve OB population data in priority order:
 
-    1. Live fetch from OpenBenchmarking.org (via phoronix-test-suite info)
-    2. Local mirrored ob-cache (exact comparison hash)
-    3. Older profile version with matching options (generated.json fallback)
+    1. Local index / ob-cache (exact hash)
+    2. Older profile version with matching options (fallback)
+    3. Live fetch from OpenBenchmarking.org (only when allow_live=True; never during compare by default)
     """
     from .pts_comparison import comparison_hash_for_benchmark
 
@@ -910,13 +920,8 @@ def lookup_ob_entry_with_fallback(
     unit = (scale or "").strip()
 
     ent = lookup_ob_entry(comparison_hash, idx)
-    if ent is not None and _index_entry_cache_fresh(ent):
+    if ent is not None and (_index_entry_cache_fresh(ent) or not allow_live):
         return ent, "local"
-
-    if allow_live and os.environ.get("BENCHVIZ_OB_LIVE_FETCH", "1") != "0":
-        live_ent, live_source = _try_live_ob_lookup(comparison_hash, idx, identifier=identifier)
-        if live_ent is not None:
-            return live_ent, live_source
 
     disk_ent = _try_local_disk_exact(comparison_hash, idx, identifier)
     if disk_ent is not None:
@@ -926,6 +931,8 @@ def lookup_ob_entry_with_fallback(
     if not tp:
         tp = (title or "").strip()
     if not tp or not desc or not unit:
+        if ent is not None:
+            return ent, "local"
         return None, ""
 
     ingested = _ingest_cached_profiles_for_identifier(idx, identifier)
@@ -957,22 +964,29 @@ def lookup_ob_entry_with_fallback(
             candidates.append((row, stored_hash))
 
     picked = _pick_version_fallback_entry(candidates, app_version or "")
-    if picked is None:
-        return None, ""
+    if picked is not None:
+        entry, _ = picked
+        out = dict(entry)
+        out["fallback"] = True
+        out["requested_app_version"] = (app_version or "").strip()
+        out["comparison_hash"] = comparison_hash_for_benchmark(
+            identifier=identifier,
+            title=title,
+            description=desc,
+            app_version=app_version,
+            scale=unit,
+            arguments=arguments or "",
+        )
+        return out, "fallback"
 
-    entry, _ = picked
-    out = dict(entry)
-    out["fallback"] = True
-    out["requested_app_version"] = (app_version or "").strip()
-    out["comparison_hash"] = comparison_hash_for_benchmark(
-        identifier=identifier,
-        title=title,
-        description=desc,
-        app_version=app_version,
-        scale=unit,
-        arguments=arguments or "",
-    )
-    return out, "fallback"
+    if allow_live and live_ob_fetch_enabled():
+        live_ent, live_source = _try_live_ob_lookup(comparison_hash, idx, identifier=identifier)
+        if live_ent is not None:
+            return live_ent, live_source
+
+    if ent is not None:
+        return ent, "local"
+    return None, ""
 
 
 def lookup_ob_entry(comparison_hash: str, index: dict[str, Any] | None = None) -> dict[str, Any] | None:

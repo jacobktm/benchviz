@@ -85,6 +85,8 @@ ExecStart=${PYTHON_BIN} app_main.py
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=BENCHVIZ_OB_LIVE_ON_COMPARE=0
+Environment=BENCHVIZ_OB_LIVE_FETCH=0
 
 [Install]
 WantedBy=multi-user.target

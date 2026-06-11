@@ -245,31 +245,34 @@ class ObCacheLookupOrderTest(unittest.TestCase):
     @mock.patch("app.ob_cache_sync._try_live_ob_lookup")
     @mock.patch("app.ob_cache_sync._try_local_disk_exact")
     @mock.patch("app.ob_cache_sync.lookup_ob_entry")
-    def test_live_before_disk_and_fallback(self, mock_lookup, mock_disk, mock_live):
+    def test_disk_before_live_when_live_allowed(self, mock_lookup, mock_disk, mock_live):
         index = {"entries": {}, "fallback_buckets": {}}
         mock_lookup.return_value = None
-        mock_live.return_value = ({"app_version": "6.9", "samples": 1}, "live")
-        mock_disk.return_value = None
+        mock_disk.return_value = {"app_version": "6.8", "samples": 1}
+        mock_live.return_value = (None, "")
 
-        entry, source = lookup_ob_entry_with_fallback(
-            "abc",
-            index,
-            identifier="pts/build-linux-kernel-1.17",
-            description="Build: defconfig",
-            scale="Seconds",
-        )
-        self.assertEqual(source, "live")
-        self.assertEqual(entry["app_version"], "6.9")
-        mock_live.assert_called_once()
-        mock_disk.assert_not_called()
+        with mock.patch("app.ob_cache_sync.live_ob_fetch_enabled", return_value=True):
+            entry, source = lookup_ob_entry_with_fallback(
+                "abc",
+                index,
+                identifier="pts/build-linux-kernel-1.17",
+                description="Build: defconfig",
+                scale="Seconds",
+                allow_live=True,
+            )
+        self.assertEqual(source, "local")
+        self.assertEqual(entry["app_version"], "6.8")
+        mock_live.assert_not_called()
 
     @mock.patch("app.ob_cache_sync._try_live_ob_lookup")
     @mock.patch("app.ob_cache_sync.lookup_ob_entry")
-    def test_index_hit_skips_live(self, mock_lookup, mock_live):
-        index = {"entries": {"abc": {"app_version": "1.0"}}, "fallback_buckets": {}}
+    def test_index_hit_skips_live_on_compare(self, mock_lookup, mock_live):
+        index = {"entries": {"abc": {"app_version": "1.0", "test_profile": "pts/foo-1.0"}}, "fallback_buckets": {}}
         mock_lookup.return_value = {"app_version": "1.0"}
 
-        entry, source = lookup_ob_entry_with_fallback("abc", index, identifier="pts/foo-1.0")
+        entry, source = lookup_ob_entry_with_fallback(
+            "abc", index, identifier="pts/foo-1.0", allow_live=False,
+        )
         self.assertEqual(source, "local")
         mock_live.assert_not_called()
 
@@ -362,20 +365,26 @@ class ObCacheStaleRefreshTest(unittest.TestCase):
                     mock_fetch.assert_called_once_with("pts/example-1.0")
 
     @mock.patch("app.ob_cache_sync._try_live_ob_lookup")
+    @mock.patch("app.ob_cache_sync._try_local_disk_exact", return_value=None)
+    @mock.patch("app.ob_cache_sync._ingest_cached_profiles_for_identifier", return_value=0)
     @mock.patch("app.ob_cache_sync._index_entry_cache_fresh", return_value=False)
     @mock.patch("app.ob_cache_sync.lookup_ob_entry")
-    def test_stale_index_entry_triggers_live(self, mock_lookup, _mock_fresh, mock_live):
+    def test_stale_index_entry_triggers_live(
+        self, mock_lookup, _mock_fresh, _mock_ingest, _mock_disk, mock_live,
+    ):
         index = {"entries": {"abc": {"test_profile": "pts/foo-1.0"}}, "fallback_buckets": {}}
-        mock_lookup.return_value = {"app_version": "1.0"}
+        mock_lookup.return_value = {"app_version": "1.0", "test_profile": "pts/foo-1.0"}
         mock_live.return_value = (None, "")
 
-        lookup_ob_entry_with_fallback(
-            "abc",
-            index,
-            identifier="pts/foo-1.0",
-            description="Test",
-            scale="Score",
-        )
+        with mock.patch("app.ob_cache_sync.live_ob_fetch_enabled", return_value=True):
+            lookup_ob_entry_with_fallback(
+                "abc",
+                index,
+                identifier="pts/foo-1.0",
+                description="Test",
+                scale="Score",
+                allow_live=True,
+            )
         mock_live.assert_called_once()
 
 
