@@ -1868,68 +1868,79 @@
             return buildPtsGeoMeanResult(entries, systems);
         }
 
-        /** Overall geometric mean across all subtests (PTS raw composite per system). */
-        function computePtsGlobalGeometric(benchmarkGroups, systems) {
-            return buildPtsGeoMeanResult(collectAllPrimaryConfigEntries(benchmarkGroups), systems);
-        }
-
-        function buildPtsHarmonicMeanResults(configEntries, systems) {
-            if (!systems.length || !configEntries.length) return [];
+        /** PTS generate_harmonic_mean_result() scoped to one benchmark suite. */
+        function createHarmonicMeanAccumulator(systems) {
             const byScale = new Map();
             const subtestCounts = new Map();
             const benchmarkSources = new Map();
-            configEntries.forEach(({ config, bGroup }) => {
-                const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
-                if (!HIB) return;
-                const scaleKey = normalizeHarmonicScaleKey(scale);
-                if (!scaleKey) return;
+
+            function ensureScale(scaleKey) {
                 if (!byScale.has(scaleKey)) {
                     byScale.set(scaleKey, systems.map(() => []));
                     benchmarkSources.set(scaleKey, new Set());
                 }
-                const buckets = byScale.get(scaleKey);
-                let contributed = false;
-                systems.forEach((sid, i) => {
-                    const raw = configValueForSystem(config, sid);
-                    if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
-                    buckets[i].push(Number(raw));
-                    contributed = true;
-                });
-                if (contributed) {
-                    subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
-                    const bmName = (bGroup && bGroup.benchmarkName) || '';
-                    if (bmName) benchmarkSources.get(scaleKey).add(bmName);
-                }
-            });
+            }
 
-            const results = [];
-            byScale.forEach((buckets, scale) => {
-                const rawArr = buckets.map(arr => (arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null));
-                const working = {};
-                systems.forEach((sid, i) => {
-                    if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
-                });
-                if (Object.keys(working).length < 2) return;
-                const divide = Math.min(...Object.values(working));
-                let refId = systems[0];
-                systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
-                const raw = {};
-                const relative = {};
-                systems.forEach((sid, i) => {
-                    raw[sid] = rawArr[i];
-                    relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
-                });
-                const sourceCount = (benchmarkSources.get(scale) || new Set()).size;
-                results.push({
-                    scale,
-                    raw,
-                    relative,
-                    referenceSystemId: refId,
-                    subtestCount: subtestCounts.get(scale) || 0,
-                    benchmarkCount: sourceCount,
-                });
-            });
-            return results.sort((a, b) => a.scale.localeCompare(b.scale));
+            return {
+                /** @returns {boolean} true when this row contributed to any scale bucket */
+                add(config, bGroup) {
+                    const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
+                    if (!HIB) return false;
+                    const scaleKey = normalizeHarmonicScaleKey(scale);
+                    if (!scaleKey) return false;
+                    ensureScale(scaleKey);
+                    const buckets = byScale.get(scaleKey);
+                    let contributed = false;
+                    systems.forEach((sid, i) => {
+                        const raw = configValueForSystem(config, sid);
+                        if (raw == null || isNaN(raw) || Number(raw) <= 0) return;
+                        buckets[i].push(Number(raw));
+                        contributed = true;
+                    });
+                    if (contributed) {
+                        subtestCounts.set(scaleKey, (subtestCounts.get(scaleKey) || 0) + 1);
+                        const bmName = (bGroup && bGroup.benchmarkName) || '';
+                        if (bmName) benchmarkSources.get(scaleKey).add(bmName);
+                    }
+                    return contributed;
+                },
+                finalize() {
+                    const results = [];
+                    byScale.forEach((buckets, scale) => {
+                        const rawArr = buckets.map(arr => (arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null));
+                        const working = {};
+                        systems.forEach((sid, i) => {
+                            if (rawArr[i] != null && isFinite(rawArr[i]) && rawArr[i] > 0) working[sid] = rawArr[i];
+                        });
+                        if (Object.keys(working).length < 2) return;
+                        const divide = Math.min(...Object.values(working));
+                        let refId = systems[0];
+                        systems.forEach(sid => { if (working[sid] === divide) refId = sid; });
+                        const raw = {};
+                        const relative = {};
+                        systems.forEach((sid, i) => {
+                            raw[sid] = rawArr[i];
+                            relative[sid] = (rawArr[i] != null && divide > 0) ? rawArr[i] / divide : null;
+                        });
+                        results.push({
+                            scale,
+                            raw,
+                            relative,
+                            referenceSystemId: refId,
+                            subtestCount: subtestCounts.get(scale) || 0,
+                            benchmarkCount: (benchmarkSources.get(scale) || new Set()).size,
+                        });
+                    });
+                    return results.sort((a, b) => a.scale.localeCompare(b.scale));
+                },
+            };
+        }
+
+        function buildPtsHarmonicMeanResults(configEntries, systems) {
+            if (!systems.length || !configEntries.length) return [];
+            const acc = createHarmonicMeanAccumulator(systems);
+            configEntries.forEach(({ config, bGroup }) => acc.add(config, bGroup));
+            return acc.finalize();
         }
 
         /**
@@ -1942,31 +1953,44 @@
             return buildPtsHarmonicMeanResults(entries, systems);
         }
 
-        /** Collect every primary chart row across all comparison groups (deduped). */
-        function collectAllPrimaryConfigEntries(benchmarkGroups) {
-            const entries = [];
-            const seen = new Set();
-            const add = (config, bGroup) => {
-                const key = [
-                    bGroup.benchmarkName || '',
-                    config.args != null ? String(config.args) : '',
-                    config.option_key || '',
-                    config.metricLabel || '',
-                ].join('\u0001');
-                if (seen.has(key)) return;
-                seen.add(key);
-                entries.push({ config, bGroup });
-            };
-            (benchmarkGroups || []).forEach(bGroup => {
-                (bGroup.configs || []).forEach(config => add(config, bGroup));
-            });
-            (currentComparisonGroups || []).forEach(compGroup => {
+        /**
+         * Single pass over comparison data: benchmark groups for rendering plus
+         * precomputed overall harmonic / geometric summaries (display toggles only).
+         */
+        function buildComparePageData() {
+            const traceFallback = (() => {
+                for (const compGroup of (currentComparisonGroups || [])) {
+                    const primary = (compGroup.charts || []).find(c => c.is_primary && c.traces && c.traces.length);
+                    if (primary) return primary.traces.map(t => t.name);
+                }
+                return [];
+            })();
+            const systems = resolveCompareSystems(traceFallback);
+            const harmonicAcc = systems.length ? createHarmonicMeanAccumulator(systems) : null;
+            const geoEntries = [];
+            const byKey = new Map();
+
+            currentComparisonGroups.forEach(compGroup => {
+                const primaryCharts = (compGroup.charts || []).filter(c => c.is_primary);
+                if (!primaryCharts.length) return;
                 const sep = ' — ';
                 const idx = compGroup.title.indexOf(sep);
                 const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
                 const args = compGroup.args !== undefined ? compGroup.args : (idx >= 0 ? compGroup.title.slice(idx + sep.length) : '');
-                const bGroupStub = { benchmarkName, proportion: null, scale: '', configs: [] };
-                (compGroup.charts || []).filter(c => c.is_primary).forEach(primary => {
+                const argsLabel = compGroup.args_label != null && compGroup.args_label !== '' ? compGroup.args_label : null;
+
+                let rec = byKey.get(benchmarkName);
+                if (!rec) {
+                    rec = {
+                        benchmarkName,
+                        proportion: null,
+                        scale: '',
+                        configs: [],
+                    };
+                    byKey.set(benchmarkName, rec);
+                }
+
+                primaryCharts.forEach(primary => {
                     if (!primary || !primary.traces || !primary.traces.length) return;
                     const valuesBySystem = {};
                     primary.traces.forEach(t => {
@@ -1976,8 +2000,9 @@
                         if (sysId) valuesBySystem[sysId] = num;
                     });
                     const metricLabel = (primary.description || primary.metric || '').trim();
-                    add({
+                    const config = {
                         args,
+                        args_label: argsLabel,
                         group: compGroup,
                         valuesBySystem,
                         primaryChart: primary,
@@ -1985,15 +2010,28 @@
                         metricLabel,
                         proportion: primary.proportion,
                         scale: primary.scale || primary.metric || '',
-                    }, bGroupStub);
+                    };
+                    rec.configs.push(config);
+                    geoEntries.push({ config, bGroup: rec });
+                    if (harmonicAcc) harmonicAcc.add(config, rec);
+                    if (!rec.proportion && primary.proportion != null) {
+                        rec.proportion = primary.proportion;
+                        rec.scale = primary.scale || primary.metric || '';
+                    }
                 });
             });
-            return entries;
+
+            const benchmarkGroups = Array.from(byKey.values());
+            return {
+                benchmarkGroups,
+                systems,
+                overallHarmonicByScale: harmonicAcc ? harmonicAcc.finalize() : [],
+                overallGeometric: systems.length ? buildPtsGeoMeanResult(geoEntries, systems) : null,
+            };
         }
 
-        /** Overall harmonic mean: all rate HIB subtests across every benchmark group. */
-        function computePtsGlobalHarmonicByScale(benchmarkGroups, systems) {
-            return buildPtsHarmonicMeanResults(collectAllPrimaryConfigEntries(benchmarkGroups), systems);
+        function groupComparisonGroupsByBenchmark() {
+            return buildComparePageData().benchmarkGroups;
         }
 
         /** @deprecated alias */
@@ -2268,10 +2306,11 @@
         // Export slide: compact, normalized summary PNG rendered with Chart.js
         function exportSummarySlide(opts) {
             if (!currentComparisonGroups.length) return;
-            const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            const pageData = buildComparePageData();
+            const { benchmarkGroups, systems: pageSystems, overallGeometric } = pageData;
             if (!benchmarkGroups.length) return;
 
-            const traceNames = (() => {
+            const traceNames = pageSystems.length ? pageSystems : (() => {
                 const firstGroup = benchmarkGroups[0];
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
                     firstGroup.configs[0].group.charts.find(c => c.is_primary);
@@ -2316,16 +2355,15 @@
             }
 
             let globalRatios;
-            const ptsGlobalGeo = computePtsGlobalGeometric(benchmarkGroups, traceNames);
-            if (ptsGlobalGeo) {
+            if (overallGeometric) {
                 if (normalizeComposite) {
                     globalRatios = traceNames.map(sid => {
-                        const rel = ptsGlobalGeo.relative[sid];
+                        const rel = overallGeometric.relative[sid];
                         return rel != null ? rel : 1;
                     });
                 } else {
                     globalRatios = traceNames.map(sid => {
-                        const raw = ptsGlobalGeo.raw[sid];
+                        const raw = overallGeometric.raw[sid];
                         return raw != null && raw > 0 ? raw : 0;
                     });
                 }
@@ -2789,14 +2827,17 @@
             // Build sensor checkboxes from current overall sensors
             const sensorContainer = document.getElementById('exportSensorChoices');
             sensorContainer.innerHTML = '';
-            const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            const pageData = buildComparePageData();
+            const { benchmarkGroups, systems: pageSystems } = pageData;
             if (benchmarkGroups.length) {
-                const firstGroup = benchmarkGroups[0];
-                const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
-                    firstGroup.configs[0].group.charts.find(c => c.is_primary);
-                const traceNames = firstPrimary && firstPrimary.traces
-                    ? firstPrimary.traces.map(t => t.name)
-                    : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                const traceNames = pageSystems.length ? pageSystems : (() => {
+                    const firstGroup = benchmarkGroups[0];
+                    const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group &&
+                        firstGroup.configs[0].group.charts.find(c => c.is_primary);
+                    return firstPrimary && firstPrimary.traces
+                        ? firstPrimary.traces.map(t => t.name)
+                        : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
+                })();
                 const overallSensors = computeOverallSensorMeans(currentComparisonGroups, traceNames);
                 const allMetrics = overallSensors.map(s => s.metric);
                 if (!opts.sensorMetrics.length) opts.sensorMetrics = [...allMetrics];
@@ -2884,59 +2925,6 @@
         function labelForReferenceSystem(refId, systemLabels, systems) {
             const idx = systems.indexOf(refId);
             return (idx >= 0 && systemLabels[idx]) ? systemLabels[idx] : (refId || 'reference');
-        }
-
-        function groupComparisonGroupsByBenchmark() {
-            const byKey = new Map();
-            currentComparisonGroups.forEach(compGroup => {
-                const primaryCharts = (compGroup.charts || []).filter(c => c.is_primary);
-                if (!primaryCharts.length) return;
-                const sep = ' — ';
-                const idx = compGroup.title.indexOf(sep);
-                const benchmarkName = idx >= 0 ? compGroup.title.slice(0, idx) : compGroup.title;
-                const args = compGroup.args !== undefined ? compGroup.args : (idx >= 0 ? compGroup.title.slice(idx + sep.length) : '');
-                const argsLabel = compGroup.args_label != null && compGroup.args_label !== '' ? compGroup.args_label : null;
-
-                let rec = byKey.get(benchmarkName);
-                if (!rec) {
-                    rec = {
-                        benchmarkName,
-                        proportion: null,
-                        scale: '',
-                        configs: []
-                    };
-                    byKey.set(benchmarkName, rec);
-                }
-
-                // Each primary BAR_GRAPH (compression, decompression, etc.) is its own scored row.
-                primaryCharts.forEach(primary => {
-                    if (!primary || !primary.traces || !primary.traces.length) return;
-                    const valuesBySystem = {};
-                    primary.traces.forEach(t => {
-                        const v = Array.isArray(t.y) ? t.y[0] : t.y;
-                        const num = (v != null && !isNaN(v)) ? Number(v) : null;
-                        const sysId = canonicalSystemId(t.name, compGroup);
-                        if (sysId) valuesBySystem[sysId] = num;
-                    });
-                    const metricLabel = (primary.description || primary.metric || '').trim();
-                    rec.configs.push({
-                        args,
-                        args_label: argsLabel,
-                        group: compGroup,
-                        valuesBySystem,
-                        primaryChart: primary,
-                        option_key: primary.option_key || '',
-                        metricLabel,
-                        proportion: primary.proportion,
-                        scale: primary.scale || primary.metric || '',
-                    });
-                    if (!rec.proportion && primary.proportion != null) {
-                        rec.proportion = primary.proportion;
-                        rec.scale = primary.scale || primary.metric || '';
-                    }
-                });
-            });
-            return Array.from(byKey.values());
         }
 
         let expandedChartState = {};
@@ -3061,7 +3049,8 @@
                 }
             }
 
-            const benchmarkGroups = groupComparisonGroupsByBenchmark();
+            const pageData = buildComparePageData();
+            const { benchmarkGroups, systems: pageSystems, overallHarmonicByScale, overallGeometric } = pageData;
             const configLabelsMap = {};
             (availableBenchmarks || []).forEach(bm => {
                 configLabelsMap[bm.label] = {};
@@ -3081,12 +3070,7 @@
 
             // Global summary across all benchmarks
             if ((showCompositeBar || showHarmonicMean || showWinsLossCharts) && benchmarkGroups.length) {
-                const firstGroup = benchmarkGroups[0];
-                const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
-                const traceFallback = firstPrimary && firstPrimary.traces
-                    ? firstPrimary.traces.map(t => t.name)
-                    : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
-                const systems = resolveCompareSystems(traceFallback);
+                const systems = pageSystems;
                 const systemLabels = getSystemDisplayNames(systems);
                 const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
 
@@ -3094,35 +3078,18 @@
                 globalCharts.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;';
 
                 let hasCompositeCharts = false;
-                if (showCompositeBar && benchmarkGroups.length) {
-                    const ptsGlobalGeo = computePtsGlobalGeometric(benchmarkGroups, systems);
-                    if (ptsGlobalGeo) {
-                        hasCompositeCharts = true;
-                        renderPtsCompositeBar(
-                            globalCharts,
-                            systems,
-                            systemLabels,
-                            ptsGlobalGeo,
-                            'Geometric Mean',
-                        );
-                    }
+                if (showCompositeBar && overallGeometric) {
+                    hasCompositeCharts = true;
+                    renderPtsCompositeBar(
+                        globalCharts,
+                        systems,
+                        systemLabels,
+                        overallGeometric,
+                        'Geometric Mean',
+                    );
                 }
-                if (showHarmonicMean && benchmarkGroups.length) {
-                    const globalHarmonicList = computePtsGlobalHarmonicByScale(benchmarkGroups, systems);
-                    globalHarmonicList.forEach(hm => {
-                        // Skip overall harmonic that duplicates a single benchmark's harmonic (misleading).
-                        const dupSingleBenchmark = benchmarkGroups.some(bGroup => {
-                            const perBm = computePtsHarmonicMeanForBGroup(bGroup, systems);
-                            return perBm.some(p => {
-                                if (p.scale !== hm.scale || p.subtestCount !== hm.subtestCount) return false;
-                                return systems.every(sid => {
-                                    const a = hm.raw[sid], b = p.raw[sid];
-                                    if (a == null || b == null) return a === b;
-                                    return Math.abs(a - b) <= Math.max(1e-6, Math.abs(a) * 1e-9);
-                                });
-                            });
-                        });
-                        if (dupSingleBenchmark && (hm.benchmarkCount || 1) <= 1) return;
+                if (showHarmonicMean && overallHarmonicByScale.length) {
+                    overallHarmonicByScale.forEach(hm => {
                         hasCompositeCharts = true;
                         renderPtsCompositeBar(
                             globalCharts,
@@ -3568,12 +3535,7 @@
                 groupHeader.style.textAlign = 'center';
                 groupWrapper.appendChild(groupHeader);
 
-                const systems = resolveCompareSystems((() => {
-                    const firstPrimary = bGroup.configs[0] && bGroup.configs[0].group && bGroup.configs[0].group.charts.find(c => c.is_primary);
-                    return firstPrimary && firstPrimary.traces
-                        ? firstPrimary.traces.map(t => t.name)
-                        : (bGroup.configs[0] ? Object.keys(bGroup.configs[0].valuesBySystem) : []);
-                })());
+                const systems = pageSystems;
                 const systemLabels = getSystemDisplayNames(systems);
                 const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
                 const ptsHarmonicList = computePtsHarmonicMeanForBGroup(bGroup, systems);
