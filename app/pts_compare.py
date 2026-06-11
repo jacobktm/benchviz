@@ -145,43 +145,44 @@ def build_pts_context_for_compare_group(
 
 
 def build_pts_global_summary(
-    group_contexts: list[dict[str, Any]],
-    system_ids: list[str],
+    comparison_groups: list[dict[str, Any]],
+    system_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     PTS generate_geometric_mean_result() across all BAR_GRAPH subtests in the comparison.
 
-    Raw values are LIB-inverted to HIB scale per subtest, geo-meaned per system, then
-    normalized via normalize_buffer_values() (reference = slowest).
+    Raw composite values are per-system (not normalized). reference_system_id is the
+    slowest composite (PTS nor / normalize uses it; default display stays raw).
     """
-    per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
+    trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
+    subtests = extract_subtests_from_comparison_groups(comparison_groups)
+    per_system: dict[str, list[float]] = {sid: [] for sid in trace_ids}
     subtest_count = 0
     lib_rows = 0
     native_scales: set[str] = set()
-    for ctx in group_contexts:
-        for st in ctx.get("subtests") or []:
-            hib = st.get("hib", True)
-            scale = (st.get("scale") or "").strip()
-            if scale:
-                native_scales.add(scale)
-            values = st.get("values") or {}
-            contributed = False
-            for sid in system_ids:
-                raw = values.get(sid)
-                if raw is None:
-                    continue
-                try:
-                    v = float(raw)
-                except (TypeError, ValueError):
-                    continue
-                if v <= 0:
-                    continue
-                per_system[sid].append(lib_to_hib_value(v) if not hib else v)
-                contributed = True
-            if contributed:
-                subtest_count += 1
-                if not hib:
-                    lib_rows += 1
+    for st in subtests:
+        hib = st.get("hib", True)
+        scale = (st.get("scale") or "").strip()
+        if scale:
+            native_scales.add(scale)
+        values = st.get("values") or {}
+        contributed = False
+        for sid in trace_ids:
+            raw = values.get(sid)
+            if raw is None:
+                continue
+            try:
+                v = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if v <= 0:
+                continue
+            per_system[sid].append(lib_to_hib_value(v) if not hib else v)
+            contributed = True
+        if contributed:
+            subtest_count += 1
+            if not hib:
+                lib_rows += 1
 
     composite_raw = {
         sid: geometric_mean(vs) if len(vs) >= 2 else None
@@ -189,9 +190,9 @@ def build_pts_global_summary(
     }
     composite_relative = normalize_relative_values(composite_raw, hib=True)
 
-    ref_id = system_ids[0] if system_ids else ""
+    ref_id = trace_ids[0] if trace_ids else ""
     min_v = None
-    for sid in system_ids:
+    for sid in trace_ids:
         c = composite_raw.get(sid)
         if c is None:
             continue
@@ -244,12 +245,60 @@ def build_pts_ob_global_summary(
     }
 
 
+def extract_subtests_from_comparison_groups(
+    comparison_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One subtest per primary chart row (matches compare UI config aggregation)."""
+    subtests: list[dict[str, Any]] = []
+    for group in comparison_groups:
+        for ch in group.get("charts") or []:
+            if not ch.get("is_primary"):
+                continue
+            scale = (ch.get("scale") or "").strip()
+            hib = _is_hib(ch.get("proportion"))
+            values: dict[str, float | None] = {}
+            for tr in ch.get("traces") or []:
+                name = tr.get("name")
+                if name is None:
+                    continue
+                y = tr.get("y")
+                raw = y[0] if isinstance(y, list) and y else y
+                try:
+                    values[str(name)] = float(raw) if raw is not None else None
+                except (TypeError, ValueError):
+                    values[str(name)] = None
+            subtests.append({
+                "hib": hib,
+                "scale": scale,
+                "values": values,
+            })
+    return subtests
+
+
+def compare_system_trace_ids(comparison_groups: list[dict[str, Any]]) -> list[str]:
+    """System keys used in chart trace values (matches frontend valuesBySystem)."""
+    for group in comparison_groups:
+        for ch in group.get("charts") or []:
+            if not ch.get("is_primary"):
+                continue
+            traces = ch.get("traces") or []
+            ids = [str(t["name"]) for t in traces if t.get("name") is not None]
+            if ids:
+                return ids
+    if comparison_groups:
+        return [
+            str(s.get("short_name"))
+            for s in (comparison_groups[0].get("system_details") or [])
+            if s.get("short_name")
+        ]
+    return []
+
+
 def build_pts_global_harmonic_summary(
-    group_contexts: list[dict[str, Any]],
-    system_ids: list[str],
+    comparison_groups: list[dict[str, Any]],
+    system_ids: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """PTS harmonic mean across all comparison groups, grouped by result scale."""
-    all_subtests: list[dict[str, Any]] = []
-    for ctx in group_contexts:
-        all_subtests.extend(ctx.get("subtests") or [])
-    return pts_harmonic_mean_by_scale(all_subtests, system_ids)
+    """PTS harmonic mean across all primary charts in the comparison, grouped by scale."""
+    trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
+    subtests = extract_subtests_from_comparison_groups(comparison_groups)
+    return pts_harmonic_mean_by_scale(subtests, trace_ids)

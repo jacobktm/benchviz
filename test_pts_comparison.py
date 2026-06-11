@@ -10,11 +10,12 @@ from app.pts_math import geometric_mean, harmonic_mean, result_to_percentile
 from app.pts_comparison import (
     generate_comparison_hash,
     is_harmonic_mean_scale,
+    normalize_harmonic_scale_key,
     normalize_relative_values,
     pts_harmonic_mean_by_scale,
     relative_vs_ob_median,
 )
-from app.pts_compare import build_pts_global_summary
+from app.pts_compare import build_pts_global_harmonic_summary, build_pts_global_summary
 
 
 class PtsComparisonHashTest(unittest.TestCase):
@@ -43,14 +44,26 @@ class PtsComparisonHashTest(unittest.TestCase):
 
 
 class PtsGlobalSummaryTest(unittest.TestCase):
+    def _groups(self, subtests):
+        return [{
+            "charts": [{
+                "is_primary": True,
+                "scale": st.get("scale") or "",
+                "proportion": "HIB" if st.get("hib", True) else "LIB",
+                "traces": [
+                    {"name": sid, "y": [val]}
+                    for sid, val in (st.get("values") or {}).items()
+                    if val is not None
+                ],
+            }],
+        } for st in subtests]
+
     def test_global_geo_mean_from_raw_subtests(self):
-        ctx = [{
-            "subtests": [
-                {"hib": True, "values": {"a": 100.0, "b": 110.0}},
-                {"hib": True, "values": {"a": 200.0, "b": 180.0}},
-            ],
-        }]
-        summary = build_pts_global_summary(ctx, ["a", "b"])
+        groups = self._groups([
+            {"hib": True, "values": {"a": 100.0, "b": 110.0}},
+            {"hib": True, "values": {"a": 200.0, "b": 180.0}},
+        ])
+        summary = build_pts_global_summary(groups, ["a", "b"])
         self.assertAlmostEqual(summary["composite_raw"]["a"], geometric_mean([100.0, 200.0]))
         self.assertAlmostEqual(summary["composite_raw"]["b"], geometric_mean([110.0, 180.0]))
         self.assertEqual(summary["reference_system_id"], "b")
@@ -58,8 +71,8 @@ class PtsGlobalSummaryTest(unittest.TestCase):
         self.assertGreater(summary["composite_relative"]["a"], 1.0)
 
     def test_global_skipped_with_one_subtest(self):
-        ctx = [{"subtests": [{"hib": True, "values": {"a": 100.0, "b": 110.0}}]}]
-        summary = build_pts_global_summary(ctx, ["a", "b"])
+        groups = self._groups([{"hib": True, "values": {"a": 100.0, "b": 110.0}}])
+        summary = build_pts_global_summary(groups, ["a", "b"])
         self.assertIsNone(summary["composite_raw"]["a"])
         self.assertIsNone(summary["composite_raw"]["b"])
 
@@ -100,6 +113,57 @@ class PtsHarmonicMeanTest(unittest.TestCase):
             {"hib": False, "scale": "FPS", "values": {"a": 10.0, "b": 12.0}},
         ] * 4
         self.assertEqual(pts_harmonic_mean_by_scale(subtests, ["a", "b"]), {})
+
+    def test_harmonic_normalizes_byte_rate_scales(self):
+        self.assertEqual(normalize_harmonic_scale_key("MiB/s"), "MB/s")
+        self.assertEqual(normalize_harmonic_scale_key("MB/s"), "MB/s")
+
+    def test_global_harmonic_aggregates_all_benchmark_charts(self):
+        groups = [
+            {
+                "charts": [{
+                    "is_primary": True,
+                    "scale": "MB/s",
+                    "proportion": "HIB",
+                    "traces": [
+                        {"name": "a", "y": [100.0]},
+                        {"name": "b", "y": [110.0]},
+                    ],
+                }],
+            },
+            {
+                "charts": [{
+                    "is_primary": True,
+                    "scale": "MiB/s",
+                    "proportion": "HIB",
+                    "traces": [
+                        {"name": "a", "y": [200.0]},
+                        {"name": "b", "y": [180.0]},
+                    ],
+                }],
+            },
+        ] + [
+            {
+                "charts": [{
+                    "is_primary": True,
+                    "scale": "MB/s",
+                    "proportion": "HIB",
+                    "traces": [
+                        {"name": "a", "y": [120.0 + i]},
+                        {"name": "b", "y": [130.0 + i]},
+                    ],
+                }],
+            }
+            for i in range(2)
+        ]
+        zstd_only = build_pts_global_harmonic_summary([groups[0], *groups[2:]])
+        all_groups = build_pts_global_harmonic_summary(groups)
+        self.assertIn("MB/s", all_groups)
+        self.assertEqual(all_groups["MB/s"]["subtest_count"], 4)
+        self.assertNotAlmostEqual(
+            all_groups["MB/s"]["raw"]["a"],
+            zstd_only["MB/s"]["raw"]["a"],
+        )
 
 
 class PtsMathTest(unittest.TestCase):

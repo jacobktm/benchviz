@@ -2004,10 +2004,10 @@ def api_compare():
     first_names = []
     if comparison_groups and comparison_groups[0].get("system_details"):
         first_names = [s.get("short_name") for s in comparison_groups[0]["system_details"] if s.get("short_name")]
-    pts_global = build_pts_global_summary(pts_contexts, first_names) if pts_contexts and first_names else None
+    pts_global = build_pts_global_summary(comparison_groups) if comparison_groups else None
     pts_global_harmonic = (
-        build_pts_global_harmonic_summary(pts_contexts, first_names)
-        if pts_contexts and first_names else None
+        build_pts_global_harmonic_summary(comparison_groups)
+        if comparison_groups else None
     )
     pts_global_ob = (
         build_pts_ob_global_summary(pts_contexts, first_names)

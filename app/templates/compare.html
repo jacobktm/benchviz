@@ -1294,6 +1294,20 @@
                 || rsLower.includes('bps') || rsLower.includes('iops');
         }
 
+        /** Canonical scale bucket for cross-benchmark harmonic mean (e.g. MiB/s → MB/s). */
+        function normalizeHarmonicScaleKey(scale) {
+            const rs = (scale || '').trim();
+            if (!isHarmonicMeanScale(rs)) return null;
+            const rsLower = rs.toLowerCase();
+            if (rsLower.includes('byte') && (rs.includes('/') || rsLower.includes('sec') || rsLower.includes(' per '))) {
+                return 'MB/s';
+            }
+            if (rsLower.includes('fps')) return 'FPS';
+            if (rsLower.includes('iops')) return 'IOPS';
+            if (rsLower.includes('bps')) return 'bps';
+            return rs;
+        }
+
         function medianPositive(arr) {
             const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0).sort((a, b) => a - b);
             if (!valid.length) return null;
@@ -1747,18 +1761,13 @@
             };
         }
 
-        /**
-         * PTS generate_geometric_mean_result() for one benchmark suite.
-         * LIB subtests inverted to HIB scale; requires ≥2 contributing subtests.
-         * Used when subtests mix scales or directions.
-         */
-        function computePtsGeoMeanForBGroup(bGroup, systems) {
-            if (!systems.length || !(bGroup.configs || []).length) return null;
+        function buildPtsGeoMeanResult(configEntries, systems) {
+            if (!systems.length || !configEntries.length) return null;
             const perSystem = systems.map(() => []);
             let rowCount = 0;
             let libRows = 0;
             const nativeScales = new Set();
-            bGroup.configs.forEach(config => {
+            configEntries.forEach(({ config, bGroup }) => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
                 if (scale) nativeScales.add(scale);
                 if (!HIB) libRows += 1;
@@ -1800,20 +1809,30 @@
             };
         }
 
-        /**
-         * PTS generate_harmonic_mean_result() scoped to one benchmark suite.
-         * HIB rate-like metrics only (MB/s, FPS, …); LIB skipped; ≥4 values per
-         * system per scale; raw values (no inversion). Uses all scored config rows.
-         */
-        function computePtsHarmonicMeanForBGroup(bGroup, systems) {
-            if (!systems.length || !(bGroup.configs || []).length) return [];
+        /** PTS generate_geometric_mean_result() for one benchmark suite (mixed scales). */
+        function computePtsGeoMeanForBGroup(bGroup, systems) {
+            const entries = (bGroup.configs || []).map(config => ({ config, bGroup }));
+            return buildPtsGeoMeanResult(entries, systems);
+        }
+
+        /** Overall geometric mean across all subtests (PTS raw composite per system). */
+        function computePtsGlobalGeometric(benchmarkGroups, systems) {
+            const entries = [];
+            (benchmarkGroups || []).forEach(bGroup => {
+                (bGroup.configs || []).forEach(config => entries.push({ config, bGroup }));
+            });
+            return buildPtsGeoMeanResult(entries, systems);
+        }
+
+        function buildPtsHarmonicMeanResults(configEntries, systems) {
+            if (!systems.length || !configEntries.length) return [];
             const byScale = new Map();
             const subtestCounts = new Map();
-            bGroup.configs.forEach(config => {
+            configEntries.forEach(({ config, bGroup }) => {
                 const { HIB, scale } = getConfigComparisonMeta(config, bGroup);
                 if (!HIB) return;
-                const scaleKey = (scale || '').trim();
-                if (!isHarmonicMeanScale(scaleKey)) return;
+                const scaleKey = normalizeHarmonicScaleKey(scale);
+                if (!scaleKey) return;
                 if (!byScale.has(scaleKey)) byScale.set(scaleKey, systems.map(() => []));
                 const buckets = byScale.get(scaleKey);
                 let contributed = false;
@@ -1852,6 +1871,30 @@
                 });
             });
             return results.sort((a, b) => a.scale.localeCompare(b.scale));
+        }
+
+        /**
+         * PTS generate_harmonic_mean_result() scoped to one benchmark suite.
+         * HIB rate-like metrics only (MB/s, FPS, …); LIB skipped; ≥4 values per
+         * system per scale; raw values (no inversion). Uses all scored config rows.
+         */
+        function computePtsHarmonicMeanForBGroup(bGroup, systems) {
+            const entries = (bGroup.configs || []).map(config => ({ config, bGroup }));
+            return buildPtsHarmonicMeanResults(entries, systems);
+        }
+
+        /** Overall harmonic mean: all rate HIB subtests across every benchmark group. */
+        function computePtsGlobalHarmonicByScale(benchmarkGroups, systems) {
+            const entries = [];
+            (benchmarkGroups || []).forEach(bGroup => {
+                (bGroup.configs || []).forEach(config => entries.push({ config, bGroup }));
+            });
+            return buildPtsHarmonicMeanResults(entries, systems);
+        }
+
+        /** @deprecated alias */
+        function computePtsHarmonicMeanByRateScaleForBGroup(bGroup, systems) {
+            return computePtsHarmonicMeanForBGroup(bGroup, systems);
         }
 
         /**
@@ -1912,11 +1955,6 @@
             };
         }
 
-        /** @deprecated alias */
-        function computePtsHarmonicMeanByRateScaleForBGroup(bGroup, systems) {
-            return computePtsHarmonicMeanForBGroup(bGroup, systems);
-        }
-
         /** Homogeneous-scale average first; otherwise PTS inverted geometric mean. */
         function computePtsSuiteMeanForBGroup(bGroup, systems) {
             return computePtsHomogeneousMeanForBGroup(bGroup, systems)
@@ -1929,9 +1967,7 @@
             const isHarmonic = meanLabel.toLowerCase().includes('harmonic');
             const scaleName = meanData.scale || (isGeometric ? 'Geometric Mean' : isHarmonic ? 'Harmonic Mean' : '');
             const scalePart = scaleName ? ` (${scaleName})` : '';
-            // LIB time metrics are inverted to (100/time) before geo-mean; raw values (~0.2) are not
-            // meaningful on their own — show PTS relative performance (slowest = 1.0) instead.
-            const showRelative = normalizeComposite || (isGeometric && !!meanData.libInverted);
+            const showRelative = normalizeComposite;
             const refId = meanData.referenceSystemId || systems[0];
             const refLabel = labelForReferenceSystem(refId, systemLabels, systems);
             let compositeLabel;
@@ -1944,10 +1980,6 @@
                 } else if (meanData.homogeneousMean) {
                     const scaleHint = scaleName ? `, ${scaleName}` : '';
                     compositeLabel = `Average — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests${scaleHint})`;
-                } else if (isGeometric && meanData.libInverted) {
-                    const units = (meanData.nativeScales && meanData.nativeScales.length)
-                        ? meanData.nativeScales.join(', ') : 'time metrics';
-                    compositeLabel = `Geometric Mean — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests from ${units})`;
                 } else {
                     compositeLabel = `${meanLabel}${scalePart} — Relative Performance (${refLabel} = 1.0; ${meanData.subtestCount} subtests)`;
                 }
@@ -1966,7 +1998,7 @@
                 });
                 aggFormatter = formatPtsRawMeanLabel;
             } else if (isHarmonic && scaleName && scaleName !== 'Harmonic Mean') {
-                compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${meanData.subtestCount} tests)`;
+                compositeLabel = `Harmonic Mean Of ${scaleName} Test Results (${meanData.subtestCount} tests; reference: ${refLabel})`;
                 aggVals = systems.map(sid => {
                     const r = meanData.raw && meanData.raw[sid];
                     return r != null ? r : 0;
@@ -1982,9 +2014,18 @@
                     return r != null ? r : 0;
                 });
                 aggFormatter = formatPtsRawMeanLabel;
+            } else if (isGeometric && meanData.libInverted) {
+                const units = (meanData.nativeScales && meanData.nativeScales.length)
+                    ? meanData.nativeScales.join(', ') : 'time metrics';
+                compositeLabel = `Geometric Mean Of All Test Results (${meanData.subtestCount} subtests from ${units}; reference: ${refLabel})`;
+                aggVals = systems.map(sid => {
+                    const r = meanData.raw && meanData.raw[sid];
+                    return r != null ? r : 0;
+                });
+                aggFormatter = formatPtsRawMeanLabel;
             } else if (isGeometric) {
                 const geoSubject = (scaleName === 'Geometric Mean' || !scaleName) ? 'All Test Results' : scaleName;
-                compositeLabel = `Geometric Mean Of ${geoSubject} (${meanData.subtestCount} subtests)`;
+                compositeLabel = `Geometric Mean Of ${geoSubject} (${meanData.subtestCount} subtests; reference: ${refLabel})`;
                 aggVals = systems.map(sid => {
                     const r = meanData.raw && meanData.raw[sid];
                     return r != null ? r : 0;
@@ -2168,17 +2209,16 @@
             }
 
             let globalRatios;
-            const ptsGlobal = currentPtsScoring && currentPtsScoring.global;
-            if (usePtsComposite && ptsGlobal && (ptsGlobal.composite_relative || ptsGlobal.composite_raw)) {
-                const refId = ptsGlobal.reference_system_id || traceNames[0];
-                if (normalizeComposite && ptsGlobal.composite_relative) {
+            const ptsGlobalGeo = computePtsGlobalGeometric(benchmarkGroups, traceNames);
+            if (ptsGlobalGeo) {
+                if (normalizeComposite) {
                     globalRatios = traceNames.map(sid => {
-                        const rel = ptsGlobal.composite_relative[sid];
+                        const rel = ptsGlobalGeo.relative[sid];
                         return rel != null ? rel : 1;
                     });
                 } else {
                     globalRatios = traceNames.map(sid => {
-                        const raw = (ptsGlobal.composite_raw || {})[sid];
+                        const raw = ptsGlobalGeo.raw[sid];
                         return raw != null && raw > 0 ? raw : 0;
                     });
                 }
@@ -2937,47 +2977,34 @@
                 const firstPrimary = firstGroup.configs[0] && firstGroup.configs[0].group && firstGroup.configs[0].group.charts.find(c => c.is_primary);
                 const systems = firstPrimary && firstPrimary.traces ? firstPrimary.traces.map(t => t.name) : (firstGroup.configs[0] ? Object.keys(firstGroup.configs[0].valuesBySystem) : []);
                 const systemLabels = getSystemDisplayNames(systems);
-                const ptsGlobal = currentPtsScoring && currentPtsScoring.global;
                 const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
 
                 const globalCharts = document.createElement('div');
                 globalCharts.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;';
 
                 let hasCompositeCharts = false;
-                if (showCompositeBar && usePtsComposite && ptsGlobal && (ptsGlobal.composite_raw || ptsGlobal.composite_relative)) {
-                    hasCompositeCharts = true;
-                    renderPtsCompositeBar(
-                        globalCharts,
-                        systems,
-                        systemLabels,
-                        {
-                            scale: 'Geometric Mean',
-                            raw: ptsGlobal.composite_raw,
-                            relative: ptsGlobal.composite_relative,
-                            referenceSystemId: ptsGlobal.reference_system_id,
-                            subtestCount: ptsGlobal.subtest_count || 0,
-                            libInverted: !!ptsGlobal.lib_inverted,
-                            nativeScales: ptsGlobal.native_scales || [],
-                        },
-                        'Geometric Mean',
-                    );
-                }
-                if (showHarmonicMean && usePtsComposite && currentPtsScoring && currentPtsScoring.global_harmonic_by_scale) {
-                    Object.keys(currentPtsScoring.global_harmonic_by_scale).sort().forEach(scale => {
-                        const hm = currentPtsScoring.global_harmonic_by_scale[scale];
-                        if (!hm) return;
+                if (showCompositeBar && benchmarkGroups.length) {
+                    const ptsGlobalGeo = computePtsGlobalGeometric(benchmarkGroups, systems);
+                    if (ptsGlobalGeo) {
                         hasCompositeCharts = true;
                         renderPtsCompositeBar(
                             globalCharts,
                             systems,
                             systemLabels,
-                            {
-                                scale,
-                                raw: hm.raw,
-                                relative: hm.relative,
-                                referenceSystemId: hm.reference_system_id,
-                                subtestCount: hm.subtest_count,
-                            },
+                            ptsGlobalGeo,
+                            'Geometric Mean',
+                        );
+                    }
+                }
+                if (showHarmonicMean && benchmarkGroups.length) {
+                    const globalHarmonicList = computePtsGlobalHarmonicByScale(benchmarkGroups, systems);
+                    globalHarmonicList.forEach(hm => {
+                        hasCompositeCharts = true;
+                        renderPtsCompositeBar(
+                            globalCharts,
+                            systems,
+                            systemLabels,
+                            hm,
                             'Harmonic Mean',
                         );
                     });

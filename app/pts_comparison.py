@@ -218,6 +218,23 @@ def is_harmonic_mean_scale(scale: str | None) -> bool:
     return False
 
 
+def normalize_harmonic_scale_key(scale: str | None) -> str | None:
+    """Canonical scale bucket for cross-benchmark harmonic mean (e.g. MiB/s → MB/s)."""
+    rs = (scale or "").strip()
+    if not rs or not is_harmonic_mean_scale(rs):
+        return None
+    rs_lower = rs.lower()
+    if "byte" in rs_lower and ("/" in rs or "sec" in rs_lower or " per " in rs_lower):
+        return "MB/s"
+    if "fps" in rs_lower:
+        return "FPS"
+    if "iops" in rs_lower:
+        return "IOPS"
+    if "bps" in rs_lower:
+        return "bps"
+    return rs
+
+
 def _reference_system_from_raw(
     raw: dict[str, float | None],
     system_ids: list[str],
@@ -250,8 +267,8 @@ def pts_harmonic_mean_by_scale(
     for st in subtests:
         if st.get("hib") is False:
             continue
-        scale = (st.get("scale") or "").strip()
-        if not is_harmonic_mean_scale(scale):
+        scale = normalize_harmonic_scale_key(st.get("scale"))
+        if not scale:
             continue
         vals = st.get("values") or {}
         bucket = by_scale.setdefault(scale, {sid: [] for sid in system_ids})
