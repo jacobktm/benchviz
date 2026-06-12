@@ -17,6 +17,7 @@ from . import db
 from .models import Benchmark, BenchmarkResult
 from .sensor_quality import is_noisy_sensor_series, peak_series_value, sensor_kind
 from .workload_consensus import (
+    MIN_ACTIVE_SHARE,
     MIN_SYSTEMS_WITH_SENSOR_EVIDENCE,
     active_bottlenecks_from_scores,
     average_score_dicts,
@@ -764,6 +765,63 @@ def workload_scope_for_insights(
     )["scope"]
 
 
+# Map ML bottleneck dimensions to hardware cohort scopes (cache/thermal → CPU-class parts).
+_BOTTLENECK_HARDWARE_SCOPE: dict[str, str] = {
+    "cache": "cpu",
+    "thermal": "cpu",
+}
+
+
+def _normalize_insights_bottlenecks(active: list[str] | None) -> list[str]:
+    """Collapse cache/thermal into CPU-class hardware for cohort filtering."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in active or []:
+        mapped = _BOTTLENECK_HARDWARE_SCOPE.get(str(raw), str(raw))
+        if mapped not in seen:
+            seen.add(mapped)
+            out.append(mapped)
+    return out
+
+
+def _ml_workload_context_from_analysis(
+    analysis_json: dict,
+    config_args: str,
+) -> dict[str, Any] | None:
+    """Insights routing from stored ML workload profile (_ml_profile)."""
+    ml_root = analysis_json.get("_ml_profile")
+    if not isinstance(ml_root, dict):
+        return None
+    key = "default" if (not config_args or config_args == "default") else config_args
+    by_args = ml_root.get("by_args") or {}
+    prof = by_args.get(key)
+    if not isinstance(prof, dict) and len(by_args) == 1:
+        prof = next(iter(by_args.values()))
+    if not isinstance(prof, dict):
+        return None
+    wl = prof.get("workload")
+    if not isinstance(wl, dict) or wl.get("insufficient_signal"):
+        return None
+    scope = str(wl.get("scope") or "general")
+    props = wl.get("proportions") or {}
+    active = _normalize_insights_bottlenecks(list(wl.get("active_bottlenecks") or []))
+    if not active and scope not in ("general", "mixed") and scope:
+        active = _normalize_insights_bottlenecks([scope])
+    if scope == "mixed" and not active:
+        active = _normalize_insights_bottlenecks([
+            k for k, v in props.items()
+            if k in SCOPE_HARDWARE_KEYS and v and float(v) >= MIN_ACTIVE_SHARE
+        ])
+    return {
+        "scope": scope,
+        "active_bottlenecks": active,
+        "score_proportions": props,
+        "source": "ml_profile",
+        "confidence": wl.get("confidence"),
+        "evidence": list(wl.get("evidence") or []),
+    }
+
+
 def workload_context_for_insights(
     title: str,
     app_version: str,
@@ -778,6 +836,9 @@ def workload_context_for_insights(
     fallback_scope = _title_scope_fallback(text_blob)
     if analysis_json:
         key = "default" if (not config_args or config_args == "default") else config_args
+        ml_ctx = _ml_workload_context_from_analysis(analysis_json, key)
+        if ml_ctx:
+            return ml_ctx
         ok = option_profile_key(option_description, option_scale) if (option_description or option_scale) else ""
         by_option = analysis_json.get("_workload_by_option") or {}
         if ok and isinstance(by_option.get(key), dict) and by_option[key].get(ok):
@@ -788,11 +849,19 @@ def workload_context_for_insights(
         if isinstance(wl, dict) and wl.get("scope"):
             return {
                 "scope": str(wl["scope"]),
-                "active_bottlenecks": list(wl.get("active_bottlenecks") or []),
+                "active_bottlenecks": _normalize_insights_bottlenecks(
+                    list(wl.get("active_bottlenecks") or []),
+                ),
                 "score_proportions": wl.get("score_proportions") or {},
+                "source": "legacy_profile",
             }
     return {
         "scope": fallback_scope,
-        "active_bottlenecks": [fallback_scope] if fallback_scope in SCOPE_HARDWARE_KEYS and fallback_scope != "general" else [],
+        "active_bottlenecks": (
+            [fallback_scope]
+            if fallback_scope in SCOPE_HARDWARE_KEYS and fallback_scope != "general"
+            else []
+        ),
         "score_proportions": {},
+        "source": "title_heuristic",
     }

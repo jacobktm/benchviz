@@ -721,10 +721,23 @@ def _insights_allowed_singles_for_scope(
     active_bottlenecks: list[str] | None = None,
 ):
     from app.analyzer import INSIGHT_COMPONENT_KEYS
-    from app.workload_profile import SCOPE_HARDWARE_KEYS
-    if active_bottlenecks and len(active_bottlenecks) >= 2:
+    from app.workload_profile import SCOPE_HARDWARE_KEYS, _normalize_insights_bottlenecks
+
+    normalized = _normalize_insights_bottlenecks(active_bottlenecks)
+    if normalized and len(normalized) >= 2:
         allowed = set()
-        for bottleneck in active_bottlenecks:
+        for bottleneck in normalized:
+            allowed |= SCOPE_HARDWARE_KEYS.get(bottleneck, frozenset())
+        allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in allowed]
+    elif normalized and len(normalized) == 1:
+        bn = normalized[0]
+        if bn in SCOPE_HARDWARE_KEYS and bn != "general":
+            allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in SCOPE_HARDWARE_KEYS[bn]]
+        else:
+            allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k not in NVME_LAYOUT_LEADERBOARD_KEYS]
+    elif scope == "mixed" and normalized:
+        allowed = set()
+        for bottleneck in normalized:
             allowed |= SCOPE_HARDWARE_KEYS.get(bottleneck, frozenset())
         allowed_singles = [k for k in INSIGHT_COMPONENT_KEYS if k in allowed]
     elif scope in SCOPE_HARDWARE_KEYS and scope != "general":
@@ -816,9 +829,11 @@ def _load_primary_insights_bundle(title, app_version, args_str, scope_override="
     wl_ctx = _insights_workload_context_from_analysis(title, app_version, args_analysis_key, text_blob)
     scope = wl_ctx["scope"]
     active_bottlenecks = list(wl_ctx.get("active_bottlenecks") or [])
-    if scope == "general":
-        scope = _insights_infer_scope(text_blob)
-        active_bottlenecks = [scope] if scope in {"cpu", "gpu", "storage", "memory"} else []
+    if scope == "general" and not active_bottlenecks:
+        inferred = _insights_infer_scope(text_blob)
+        if inferred != "general":
+            scope = inferred
+            active_bottlenecks = [inferred]
     include_all_component_keys = scope_override == "all"
     if scope_override in {"all", "general"}:
         scope = "general"
@@ -848,6 +863,7 @@ def _load_primary_insights_bundle(title, app_version, args_str, scope_override="
         "comps_by_sid": comps_by_sid,
         "scope": scope,
         "allowed_singles": allowed_singles,
+        "workload_context": wl_ctx,
         "title": title,
         "app_version": app_version,
     }
@@ -3082,9 +3098,11 @@ def api_variance_leaderboard():
     wl_ctx = _insights_workload_context_from_analysis(title, app_version, args_analysis_key, text_blob)
     scope = wl_ctx["scope"]
     active_bottlenecks = list(wl_ctx.get("active_bottlenecks") or [])
-    if scope == "general":
-        scope = _insights_infer_scope(text_blob)
-        active_bottlenecks = [scope] if scope in {"cpu", "gpu", "storage", "memory"} else []
+    if scope == "general" and not active_bottlenecks:
+        inferred = _insights_infer_scope(text_blob)
+        if inferred != "general":
+            scope = inferred
+            active_bottlenecks = [inferred]
     scope_override = (request.args.get('scope') or '').strip().lower()
     include_all_component_keys = scope_override == "all"
     if scope_override in {"all", "general"}:
@@ -3249,6 +3267,9 @@ def api_variance_leaderboard():
             "min_distinct_cohorts": min_distinct_cohorts,
             "include_pairs": include_pairs,
             "feature_scope": scope,
+            "workload_source": wl_ctx.get("source"),
+            "workload_bottlenecks": active_bottlenecks,
+            "workload_proportions": wl_ctx.get("score_proportions") or {},
             "ranking": "eta_squared_primary",
             "require_replicated_cohort": True,
         }
@@ -3345,6 +3366,9 @@ def api_insights_eligible_groupby():
             "app_version": bundle["app_version"],
             "args": bundle["args_analysis_key"],
             "feature_scope": bundle["scope"],
+            "workload_source": (bundle.get("workload_context") or {}).get("source"),
+            "workload_bottlenecks": list((bundle.get("workload_context") or {}).get("active_bottlenecks") or []),
+            "workload_proportions": (bundle.get("workload_context") or {}).get("score_proportions") or {},
             "min_cohort_n": min_cohort_n,
             "min_distinct_cohorts": min_distinct_cohorts,
             "alignment_ranking_note": (

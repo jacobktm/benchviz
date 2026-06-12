@@ -205,7 +205,9 @@
     <p class="card-meta" style="margin-bottom: 0;">
         Ranks components by how much benchmark scores separate across their values (η²: between-cohort share of variance).
         Only includes features where some component value appears on at least two systems. NVMe pad/fan toggles are omitted for non-storage tests.
+        Component lists are filtered using the <strong>ML workload profile</strong> for the selected benchmark (GPU-bound tests emphasize graphics/drivers; CPU-bound tests emphasize processor/cooler/chipset, etc.).
     </p>
+    <div id="scatterWorkloadScope" class="card-meta" style="margin-top: 0.5rem; font-size: 0.86rem; color: var(--text-secondary);"></div>
 
     <div class="scatter-controls">
         <div class="scatter-control">
@@ -413,8 +415,33 @@
     const insightAlignmentNoteEl = document.getElementById('insightAlignmentNote');
     const insightCohortPairwiseEl = document.getElementById('insightCohortPairwise');
     const insightTheoreticalAlignEl = document.getElementById('insightTheoreticalAlign');
+    const scatterWorkloadScopeEl = document.getElementById('scatterWorkloadScope');
 
     let eligibleGroupby = [];
+
+    function formatWorkloadScopeMeta(meta) {
+        if (!meta || !meta.feature_scope) return '';
+        const scope = meta.feature_scope;
+        const src = meta.workload_source || '';
+        const bn = (meta.workload_bottlenecks || []).join(', ');
+        const props = meta.workload_proportions || {};
+        const propParts = Object.entries(props)
+            .filter(([, v]) => v && Number(v) > 0.02)
+            .map(([k, v]) => `${k} ${(Number(v) * 100).toFixed(0)}%`);
+        let line = `Workload filter: <strong>${scope}</strong>`;
+        if (bn) line += ` (${bn})`;
+        if (propParts.length) line += ` · ${propParts.join(', ')}`;
+        if (src === 'ml_profile') line += ' · from ML sensors/perf';
+        else if (src === 'legacy_profile') line += ' · from stored perf/MONITOR profile';
+        else if (src) line += ` · ${src.replace(/_/g, ' ')}`;
+        return line;
+    }
+
+    function updateScatterWorkloadScope(meta) {
+        if (!scatterWorkloadScopeEl) return;
+        const html = formatWorkloadScopeMeta(meta);
+        scatterWorkloadScopeEl.innerHTML = html || '';
+    }
 
     function escapeHtml(s) {
         if (s == null) return '';
@@ -659,6 +686,7 @@
             }
             groupbyStatusEl.textContent = '';
             renderAlignmentRankTable(eligibleGroupby, data.meta || {});
+            updateScatterWorkloadScope(data.meta || {});
             eligibleGroupby.forEach((f, i) => {
                 const opt = document.createElement('option');
                 opt.value = f.feature_key;
@@ -1050,6 +1078,7 @@
         }
 
         statusEl.textContent = `Computed leaderboard (${rows.length} rows).`;
+        updateScatterWorkloadScope(data.meta || {});
 
         const overallSpread = (data.meta && data.meta.overall_spread != null) ? Number(data.meta.overall_spread) : null;
         const fmt3 = (v) => (v == null || Number.isNaN(Number(v))) ? '' : Number(v).toFixed(3);
