@@ -1417,6 +1417,118 @@
             return systems.every(sid => configObP1RelativeForSystem(config, sid, bGroup) != null);
         }
 
+        function percentilePositive(arr, p) {
+            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0).sort((a, b) => a - b);
+            if (!valid.length) return null;
+            const idx = Math.min(valid.length - 1, Math.max(0, Math.ceil(p * valid.length) - 1));
+            return valid[idx];
+        }
+
+        /**
+         * Head-to-head spread on one subtest (OB baseline-relative scores, log ratio max/min).
+         * Large values = one system dominates this test vs the others.
+         */
+        function subtestObPairwiseMargin(config, systems, bGroup) {
+            const scores = systems
+                .map(sid => configObP1RelativeForSystem(config, sid, bGroup))
+                .filter(v => v != null && !isNaN(v) && Number(v) > 0)
+                .map(Number);
+            if (scores.length < 2) return null;
+            const hi = Math.max(...scores);
+            const lo = Math.min(...scores);
+            if (lo <= 0) return null;
+            return Math.log(hi / lo);
+        }
+
+        /**
+         * Drop subtests whose head-to-head margin is a statistical outlier vs all other subtests.
+         * Uses max(Q3 + 1.5×IQR, 3× median margin) so a few blowout results don't dominate overall.
+         */
+        function filterOutlierMarginSubtests(configEntries, systems) {
+            if (!configEntries.length || systems.length < 2) return { kept: configEntries, excluded: 0 };
+
+            const tagged = configEntries.map(entry => {
+                const margin = subtestObPairwiseMargin(entry.config, systems, entry.bGroup);
+                return margin != null ? { entry, margin } : null;
+            }).filter(Boolean);
+
+            if (tagged.length < 4) return { kept: configEntries, excluded: 0 };
+
+            const margins = tagged.map(t => t.margin).sort((a, b) => a - b);
+            const q1 = margins[Math.floor(margins.length * 0.25)];
+            const q3 = margins[Math.floor(margins.length * 0.75)];
+            const iqr = Math.max(q3 - q1, 1e-9);
+            const med = medianPositive(margins) || margins[Math.floor(margins.length / 2)];
+            const cutoff = Math.max(q3 + 1.5 * iqr, med * 3);
+
+            const kept = tagged.filter(t => t.margin <= cutoff).map(t => t.entry);
+            return {
+                kept: kept.length >= 2 ? kept : configEntries,
+                excluded: tagged.length - kept.length,
+            };
+        }
+
+        /**
+         * Overall aggregate: exclude outlier-margin subtests, winsorize scores to portfolio P95,
+         * then average OB baseline-relative values (each remaining subtest equal weight).
+         */
+        function buildObP1BalancedOverallResult(configEntries, systems, opts) {
+            opts = opts || {};
+            const minSubtests = opts.minSubtests != null ? opts.minSubtests : 2;
+            if (!systems.length || !configEntries.length) return null;
+
+            const { kept, excluded } = filterOutlierMarginSubtests(configEntries, systems);
+            const perSystem = systems.map(() => []);
+            const benchmarkSources = new Set();
+            const portfolioScores = [];
+
+            kept.forEach(({ config, bGroup }) => {
+                let rowContributed = false;
+                systems.forEach((sid, i) => {
+                    const rel = configObP1RelativeForSystem(config, sid, bGroup);
+                    if (rel == null || isNaN(rel) || Number(rel) <= 0) return;
+                    perSystem[i].push(Number(rel));
+                    portfolioScores.push(Number(rel));
+                    rowContributed = true;
+                });
+                if (rowContributed) {
+                    const bmName = (bGroup && bGroup.benchmarkName) || '';
+                    if (bmName) benchmarkSources.add(bmName);
+                }
+            });
+
+            const cap = percentilePositive(portfolioScores, 0.95);
+            const rawArr = perSystem.map(arr => {
+                const trimmed = cap != null
+                    ? arr.map(v => Math.min(v, cap))
+                    : arr;
+                if (trimmed.length < minSubtests) return null;
+                return trimmed.reduce((sum, v) => sum + v, 0) / trimmed.length;
+            });
+
+            if (!rawArr.some(v => v != null && !isNaN(v) && v > 0)) return null;
+
+            const raw = {};
+            const relative = {};
+            systems.forEach((sid, i) => {
+                raw[sid] = rawArr[i];
+                relative[sid] = rawArr[i];
+            });
+
+            return {
+                raw,
+                relative,
+                obP1Baseline: true,
+                balancedOverall: true,
+                referenceSystemId: '',
+                subtestCount: Math.max(...perSystem.map(arr => arr.length), 0),
+                excludedOutliers: excluded,
+                portfolioCap: cap,
+                benchmarkCount: benchmarkSources.size,
+                scale: opts.scale || 'Overall balanced',
+            };
+        }
+
         /**
          * Aggregate per-subtest OB baseline-relative scores (1.0 = percentiles[0] per test).
          * Each system averages only the subtests where it has a valid p1-relative score.
@@ -1446,6 +1558,7 @@
             const rawArr = perSystem.map(arr => {
                 if (arr.length < minSubtests) return null;
                 if (aggregate === 'geo') return geometricMean(arr);
+                if (aggregate === 'median') return medianPositive(arr);
                 if (aggregate === 'harmonic') {
                     return arr.length >= MIN_HARMONIC_SUBTESTS ? harmonicMean(arr) : null;
                 }
@@ -1471,6 +1584,7 @@
                 subtestCount,
                 benchmarkCount: benchmarkSources.size,
                 scale: opts.scale || 'OB baseline',
+                medianAggregate: aggregate === 'median',
             };
         }
 
@@ -2321,6 +2435,9 @@
             });
 
             const benchmarkGroups = Array.from(byKey.values());
+            const overallObP1Balanced = systems.length
+                ? buildObP1BalancedOverallResult(geoEntries, systems, { scale: 'Overall balanced' })
+                : null;
             const overallObP1Mean = systems.length
                 ? buildObP1AggregateResult(geoEntries, systems, { aggregate: 'mean', scale: 'Overall average' })
                 : null;
@@ -2333,6 +2450,7 @@
                 overallGeometric: systems.length
                     ? buildObP1AggregateResult(geoEntries, systems, { aggregate: 'geo', scale: 'Overall geometric mean' })
                     : null,
+                overallObP1Balanced,
                 overallObP1Mean,
             };
         }
@@ -2374,6 +2492,7 @@
             const isGeometric = meanLabel.toLowerCase().includes('geometric');
             const isHarmonic = meanLabel.toLowerCase().includes('harmonic');
             const isAverage = meanLabel.toLowerCase().includes('average');
+            const isBalanced = !!meanData.balancedOverall;
             const scaleName = meanData.scale || (isGeometric ? 'Geometric Mean' : isHarmonic ? 'Harmonic Mean' : '');
             const obP1 = !!meanData.obP1Baseline;
             const bmPart = meanData.benchmarkCount > 1
@@ -2389,9 +2508,17 @@
                 aggFormatter = formatPtsRawMeanLabel;
                 sortHigherIsBetter = meanData.HIB !== false;
             } else if (obP1) {
-                if (meanData.homogeneousMean || isAverage) {
+                if (isBalanced) {
+                    const excl = meanData.excludedOutliers > 0
+                        ? `; ${meanData.excludedOutliers} outlier subtests excluded`
+                        : '';
+                    const capHint = meanData.portfolioCap != null
+                        ? `; scores capped at portfolio P95 (${formatPtsRelativeLabel(meanData.portfolioCap)})`
+                        : '';
+                    compositeLabel = `Balanced average vs OB baseline (${bmPart}; ${p1Hint}${excl}${capHint})`;
+                } else if (meanData.homogeneousMean || isAverage) {
                     const scaleHint = scaleName && scaleName !== 'Overall average' ? `, ${scaleName}` : '';
-                    compositeLabel = `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint})`;
+                    compositeLabel = `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint}; outlier-sensitive)`;
                 } else if (isHarmonic && meanData.crossScale) {
                     compositeLabel = `Harmonic mean vs OB baseline (${bmPart}; ${p1Hint})`;
                 } else if (isGeometric) {
@@ -2526,7 +2653,7 @@
         function exportSummarySlide(opts) {
             if (!currentComparisonGroups.length) return;
             const pageData = buildComparePageData();
-            const { benchmarkGroups, systems: pageSystems, overallGeometric, overallObP1Mean } = pageData;
+            const { benchmarkGroups, systems: pageSystems, overallGeometric, overallObP1Balanced, overallObP1Mean } = pageData;
             if (!benchmarkGroups.length) return;
 
             const traceNames = pageSystems.length ? pageSystems : (() => {
@@ -2559,7 +2686,12 @@
             }
 
             let globalRatios;
-            if (overallObP1Mean && overallObP1Mean.relative) {
+            if (overallObP1Balanced && overallObP1Balanced.relative) {
+                globalRatios = traceNames.map(sid => {
+                    const rel = overallObP1Balanced.relative[sid];
+                    return rel != null ? rel : 0;
+                });
+            } else if (overallObP1Mean && overallObP1Mean.relative) {
                 globalRatios = traceNames.map(sid => {
                     const rel = overallObP1Mean.relative[sid];
                     return rel != null ? rel : 0;
@@ -2710,7 +2842,7 @@
                     data: {
                         labels,
                         datasets: [{
-                            label: 'Overall average vs OB baseline',
+                            label: 'Overall balanced average vs OB baseline',
                             data: dataVals,
                             backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
                         }]
@@ -2733,7 +2865,7 @@
                         plugins: {
                             title: {
                                 display: true,
-                                text: 'Overall average vs OB baseline',
+                                text: 'Overall balanced average vs OB baseline',
                                 color: '#ffffff',
                                 font: { size: 16, weight: '600' }
                             },
@@ -3232,7 +3364,7 @@
             }
 
             const pageData = buildComparePageData();
-            let { benchmarkGroups, systems: pageSystems, overallHarmonicCrossScale, overallHarmonicByScale, overallGeometric, overallObP1Mean } = pageData;
+            let { benchmarkGroups, systems: pageSystems, overallHarmonicCrossScale, overallHarmonicByScale, overallGeometric, overallObP1Balanced, overallObP1Mean } = pageData;
             const configLabelsMap = {};
             (availableBenchmarks || []).forEach(bm => {
                 configLabelsMap[bm.label] = {};
@@ -3251,7 +3383,7 @@
             }
 
             // Global summary across all benchmarks — primary bar is always OB p1 average (not head-to-head).
-            if (benchmarkGroups.length && (overallObP1Mean || showCompositeBar || showHarmonicMean || showWinsLossCharts)) {
+            if (benchmarkGroups.length && (overallObP1Balanced || overallObP1Mean || showCompositeBar || showHarmonicMean || showWinsLossCharts)) {
                 const systems = pageSystems;
                 const systemLabels = getSystemDisplayNames(systems);
                 const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
@@ -3260,14 +3392,14 @@
                 globalCharts.style.cssText = 'width:100%;max-width:100%;overflow-x:auto;';
 
                 let hasCompositeCharts = false;
-                if (overallObP1Mean) {
+                if (overallObP1Balanced) {
                     hasCompositeCharts = true;
                     renderPtsCompositeBar(
                         globalCharts,
                         systems,
                         systemLabels,
-                        overallObP1Mean,
-                        'Average',
+                        overallObP1Balanced,
+                        'Balanced Average',
                     );
                 }
                 if (showCompositeBar && overallGeometric && overallGeometric.obP1Baseline) {
@@ -3278,6 +3410,16 @@
                         systemLabels,
                         overallGeometric,
                         'Geometric Mean',
+                    );
+                }
+                if (showCompositeBar && overallObP1Mean && overallObP1Mean.obP1Baseline) {
+                    hasCompositeCharts = true;
+                    renderPtsCompositeBar(
+                        globalCharts,
+                        systems,
+                        systemLabels,
+                        overallObP1Mean,
+                        'Average',
                     );
                 }
                 if (showHarmonicMean && overallHarmonicCrossScale && overallHarmonicCrossScale.obP1Baseline) {
@@ -3302,6 +3444,21 @@
                     globalTitle.textContent = 'Overall';
                     globalTitle.style.cssText = 'font-weight:600;color:var(--text-primary);margin:0 0 0.75rem;font-size:0.95rem;text-align:center;';
                     globalSection.appendChild(globalTitle);
+
+                    const totalWins = (globalWins || []).reduce((a, b) => a + (b || 0), 0);
+                    if (totalWins > 0 && systems.length >= 2) {
+                        const winSummary = document.createElement('div');
+                        winSummary.style.cssText = 'font-size:0.76rem;color:var(--text-secondary);margin:0 0 0.75rem;line-height:1.45;text-align:center;';
+                        const parts = systems.map((sid, i) => {
+                            const label = systemLabels[i] || sid;
+                            const w = globalWins[i] || 0;
+                            const pct = Math.round((100 * w) / totalWins);
+                            return `${label}: ${w}/${totalWins} subtests (${pct}%)`;
+                        });
+                        winSummary.textContent = 'Head-to-head subtest wins: ' + parts.join(' · ')
+                            + '. Balanced overall excludes subtests with outlier-sized gaps and caps remaining scores to the portfolio P95 before averaging.';
+                        globalSection.appendChild(winSummary);
+                    }
 
                     if (hasCompositeCharts) {
                         globalSection.appendChild(globalCharts);
@@ -4239,7 +4396,7 @@
                             return label;
                         };
                         
-                        toggleRow.appendChild(mkToggle('Also show overall geometric mean (OB p1)', 'showCompositeBar'));
+                        toggleRow.appendChild(mkToggle('Also show raw arithmetic & geometric mean (no outlier filter)', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Also show overall harmonic mean (OB p1)', 'showHarmonicMean'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
