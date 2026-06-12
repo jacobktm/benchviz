@@ -450,6 +450,7 @@
                     normalizeComposite,
                     showCompositeBar,
                     showHarmonicMean,
+                    includeOverallOutliers,
                     showWinsLossCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
@@ -492,6 +493,7 @@
                 normalizeComposite = !!opts.normalizeComposite;
                 showCompositeBar = !!opts.showCompositeBar;
                 showHarmonicMean = !!opts.showHarmonicMean;
+                includeOverallOutliers = !!opts.includeOverallOutliers;
                 showWinsLossCharts = !!opts.showWinsLossCharts;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
@@ -870,6 +872,7 @@
         let normalizeComposite = false;
         let showCompositeBar = false;
         let showHarmonicMean = false;
+        let includeOverallOutliers = false;
         let showWinsLossCharts = false;
         let filterRelevantSensors = true;
         let filterNoisySensors = true;
@@ -1471,8 +1474,17 @@
         /**
          * Filter outlier-gap subtests, collect winsorized OB baseline-relative scores per system.
          */
-        function collectObP1BalancedScores(configEntries, systems) {
-            const { kept, excluded } = filterOutlierMarginSubtests(configEntries, systems);
+        function collectObP1BalancedScores(configEntries, systems, opts) {
+            opts = opts || {};
+            const includeOutliers = !!opts.includeOutliers;
+            let kept = configEntries;
+            let excluded = 0;
+            if (!includeOutliers) {
+                const filtered = filterOutlierMarginSubtests(configEntries, systems);
+                kept = filtered.kept;
+                excluded = filtered.excluded;
+            }
+
             const perSystem = systems.map(() => []);
             const benchmarkSources = new Set();
             const portfolioScores = [];
@@ -1492,7 +1504,7 @@
                 }
             });
 
-            const cap = percentilePositive(portfolioScores, 0.95);
+            const cap = includeOutliers ? null : percentilePositive(portfolioScores, 0.95);
             const cappedPerSystem = perSystem.map(arr =>
                 (cap != null ? arr.map(v => Math.min(v, cap)) : arr),
             );
@@ -1503,6 +1515,7 @@
                 cap,
                 benchmarkCount: benchmarkSources.size,
                 subtestCount: Math.max(...cappedPerSystem.map(arr => arr.length), 0),
+                includeOutliers,
             };
         }
 
@@ -1518,8 +1531,8 @@
                 : (aggregate === 'harmonic' ? MIN_HARMONIC_SUBTESTS : 2);
             if (!systems.length || !configEntries.length) return null;
 
-            const { perSystem, excluded, cap, benchmarkCount, subtestCount } =
-                collectObP1BalancedScores(configEntries, systems);
+            const { perSystem, excluded, cap, benchmarkCount, subtestCount, includeOutliers } =
+                collectObP1BalancedScores(configEntries, systems, opts);
 
             const rawArr = perSystem.map(arr => {
                 if (arr.length < minSubtests) return null;
@@ -1551,7 +1564,8 @@
                 benchmarkCount,
                 scale: opts.scale || 'Overall balanced',
                 crossScale: !!opts.crossScale,
-                outlierFiltered: true,
+                outlierFiltered: !includeOutliers,
+                includeOutliers,
             };
         }
 
@@ -2469,8 +2483,13 @@
             });
 
             const benchmarkGroups = Array.from(byKey.values());
+            const balancedOpts = { includeOutliers: includeOverallOutliers };
             const overallObP1Balanced = systems.length
-                ? buildObP1BalancedAggregateResult(geoEntries, systems, { aggregate: 'mean', scale: 'Overall balanced' })
+                ? buildObP1BalancedAggregateResult(geoEntries, systems, {
+                    aggregate: 'mean',
+                    scale: 'Overall balanced',
+                    ...balancedOpts,
+                })
                 : null;
             const overallObP1Mean = systems.length
                 ? buildObP1AggregateResult(geoEntries, systems, { aggregate: 'mean', scale: 'Overall average' })
@@ -2479,6 +2498,7 @@
                 ? buildObP1BalancedAggregateResult(geoEntries, systems, {
                     aggregate: 'geo',
                     scale: 'Overall geometric mean',
+                    ...balancedOpts,
                 })
                 : null;
             const harmonicEntries = geoEntries.filter(({ config, bGroup }) =>
@@ -2489,6 +2509,7 @@
                     aggregate: 'harmonic',
                     scale: 'All HIB Subtests',
                     crossScale: true,
+                    ...balancedOpts,
                 })
                 : null;
             return {
@@ -2565,15 +2586,16 @@
                     ? `; scores capped at portfolio P95 (${formatPtsRelativeLabel(meanData.portfolioCap)})`
                     : '';
                 const outlierHint = isOutlierFiltered && !isBalanced ? `${excl}${capHint}` : '';
+                const allSubtestsHint = meanData.includeOutliers ? '; all subtests included' : '';
                 if (isBalanced) {
-                    compositeLabel = `Balanced average vs OB baseline (${bmPart}; ${p1Hint}${excl}${capHint})`;
+                    compositeLabel = `Balanced average vs OB baseline (${bmPart}; ${p1Hint}${excl}${capHint}${allSubtestsHint})`;
                 } else if (meanData.homogeneousMean || isAverage) {
                     const scaleHint = scaleName && scaleName !== 'Overall average' ? `, ${scaleName}` : '';
                     compositeLabel = `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint}; outlier-sensitive)`;
                 } else if (isHarmonic && meanData.crossScale) {
-                    compositeLabel = `Harmonic mean vs OB baseline (${bmPart}; ${p1Hint}${outlierHint})`;
+                    compositeLabel = `Harmonic mean vs OB baseline (${bmPart}; ${p1Hint}${outlierHint}${allSubtestsHint})`;
                 } else if (isGeometric) {
-                    compositeLabel = `Geometric mean vs OB baseline (${bmPart}; ${p1Hint}${outlierHint})`;
+                    compositeLabel = `Geometric mean vs OB baseline (${bmPart}; ${p1Hint}${outlierHint}${allSubtestsHint})`;
                 } else if (isHarmonic) {
                     compositeLabel = `Harmonic mean vs OB baseline — ${scaleName} (${bmPart}; ${p1Hint}${outlierHint})`;
                 } else {
@@ -3507,7 +3529,9 @@
                             return `${label}: ${w}/${totalWins} subtests (${pct}%)`;
                         });
                         winSummary.textContent = 'Head-to-head subtest wins: ' + parts.join(' · ')
-                            + '. Balanced overall excludes subtests with outlier-sized gaps and caps remaining scores to the portfolio P95 before averaging.';
+                            + (includeOverallOutliers
+                                ? '. Overall bars include all subtests (no outlier exclusion or P95 cap).'
+                                : '. Balanced overall excludes subtests with outlier-sized gaps and caps remaining scores to the portfolio P95 before averaging.');
                         globalSection.appendChild(winSummary);
                     }
 
@@ -4422,13 +4446,14 @@
                             const input = document.createElement('input');
                             input.type = 'checkbox';
                             input.dataset.modeKey = stateKey;
-                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
+                            input.checked = (stateKey === 'normalizeComposite' ? normalizeComposite : stateKey === 'showCompositeBar' ? showCompositeBar : stateKey === 'showHarmonicMean' ? showHarmonicMean : stateKey === 'includeOverallOutliers' ? includeOverallOutliers : stateKey === 'showWinsLossCharts' ? showWinsLossCharts : stateKey === 'filterRelevantSensors' ? filterRelevantSensors : stateKey === 'filterNoisySensors' ? filterNoisySensors : false);
                             input.addEventListener('change', (e) => {
                                 const key = e.target.dataset.modeKey;
                                 const val = e.target.checked;
                                 if (key === 'normalizeComposite') normalizeComposite = val;
                                 else if (key === 'showCompositeBar') showCompositeBar = val;
                                 else if (key === 'showHarmonicMean') showHarmonicMean = val;
+                                else if (key === 'includeOverallOutliers') includeOverallOutliers = val;
                                 else if (key === 'showWinsLossCharts') showWinsLossCharts = val;
                                 else if (key === 'filterRelevantSensors' || key === 'filterNoisySensors') {
                                     if (key === 'filterRelevantSensors') filterRelevantSensors = val;
@@ -4447,8 +4472,9 @@
                             return label;
                         };
                         
+                        toggleRow.appendChild(mkToggle('Include outlier subtests in overall bars', 'includeOverallOutliers'));
                         toggleRow.appendChild(mkToggle('Also show overall geometric & raw arithmetic mean', 'showCompositeBar'));
-                        toggleRow.appendChild(mkToggle('Also show overall harmonic mean (OB p1)', 'showHarmonicMean'));
+                        toggleRow.appendChild(mkToggle('Also show overall harmonic mean (OB baseline)', 'showHarmonicMean'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
                         toggleRow.appendChild(mkToggle('Hide flat / idle sensor channels (noise)', 'filterNoisySensors'));
@@ -4474,6 +4500,7 @@
                             if (key === 'normalizeComposite') input.checked = normalizeComposite;
                             else if (key === 'showCompositeBar') input.checked = showCompositeBar;
                             else if (key === 'showHarmonicMean') input.checked = showHarmonicMean;
+                            else if (key === 'includeOverallOutliers') input.checked = includeOverallOutliers;
                             else if (key === 'showWinsLossCharts') input.checked = showWinsLossCharts;
                         });
                     }
