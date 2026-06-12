@@ -1469,65 +1469,42 @@
         }
 
         /**
-         * Mean OB baseline-relative score for one benchmark's kept subtests (optional portfolio cap).
-         */
-        function benchmarkObRelativeComposite(entries, systems, cap) {
-            const perSystem = systems.map(() => []);
-            entries.forEach(({ config, bGroup }) => {
-                systems.forEach((sid, i) => {
-                    const rel = configObP1RelativeForSystem(config, sid, bGroup);
-                    if (rel == null || isNaN(rel) || Number(rel) <= 0) return;
-                    let v = Number(rel);
-                    if (cap != null) v = Math.min(v, cap);
-                    perSystem[i].push(v);
-                });
-            });
-            return perSystem.map(arr => (arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null));
-        }
-
-        /**
-         * Typical day-to-day overall: drop outlier-gap subtests, cap extreme scores, then
-         * one composite per benchmark (equal weight per app/suite), averaged across benchmarks.
+         * Overall aggregate: exclude outlier-margin subtests, winsorize scores to portfolio P95,
+         * then average OB baseline-relative values (each remaining subtest equal weight).
          */
         function buildObP1BalancedOverallResult(configEntries, systems, opts) {
             opts = opts || {};
-            const minBenchmarks = opts.minBenchmarks != null ? opts.minBenchmarks : 1;
+            const minSubtests = opts.minSubtests != null ? opts.minSubtests : 2;
             if (!systems.length || !configEntries.length) return null;
 
             const { kept, excluded } = filterOutlierMarginSubtests(configEntries, systems);
+            const perSystem = systems.map(() => []);
+            const benchmarkSources = new Set();
             const portfolioScores = [];
+
             kept.forEach(({ config, bGroup }) => {
-                systems.forEach(sid => {
+                let rowContributed = false;
+                systems.forEach((sid, i) => {
                     const rel = configObP1RelativeForSystem(config, sid, bGroup);
-                    if (rel != null && !isNaN(rel) && Number(rel) > 0) portfolioScores.push(Number(rel));
+                    if (rel == null || isNaN(rel) || Number(rel) <= 0) return;
+                    perSystem[i].push(Number(rel));
+                    portfolioScores.push(Number(rel));
+                    rowContributed = true;
                 });
+                if (rowContributed) {
+                    const bmName = (bGroup && bGroup.benchmarkName) || '';
+                    if (bmName) benchmarkSources.add(bmName);
+                }
             });
+
             const cap = percentilePositive(portfolioScores, 0.95);
-
-            const byBenchmark = new Map();
-            kept.forEach(entry => {
-                const name = (entry.bGroup && entry.bGroup.benchmarkName) || '';
-                if (!byBenchmark.has(name)) byBenchmark.set(name, []);
-                byBenchmark.get(name).push(entry);
+            const rawArr = perSystem.map(arr => {
+                const trimmed = cap != null
+                    ? arr.map(v => Math.min(v, cap))
+                    : arr;
+                if (trimmed.length < minSubtests) return null;
+                return trimmed.reduce((sum, v) => sum + v, 0) / trimmed.length;
             });
-
-            const perSystemBenchmarkScores = systems.map(() => []);
-            let subtestCount = 0;
-            byBenchmark.forEach((bmEntries) => {
-                subtestCount += bmEntries.length;
-                const bmComposite = benchmarkObRelativeComposite(bmEntries, systems, cap);
-                systems.forEach((_, i) => {
-                    const v = bmComposite[i];
-                    if (v != null && !isNaN(v) && v > 0) perSystemBenchmarkScores[i].push(v);
-                });
-            });
-
-            const benchmarkCount = byBenchmark.size;
-            if (benchmarkCount < minBenchmarks) return null;
-
-            const rawArr = perSystemBenchmarkScores.map(arr =>
-                arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null,
-            );
 
             if (!rawArr.some(v => v != null && !isNaN(v) && v > 0)) return null;
 
@@ -1544,11 +1521,11 @@
                 obP1Baseline: true,
                 balancedOverall: true,
                 referenceSystemId: '',
-                subtestCount,
+                subtestCount: Math.max(...perSystem.map(arr => arr.length), 0),
                 excludedOutliers: excluded,
                 portfolioCap: cap,
-                benchmarkCount,
-                scale: opts.scale || 'Typical overall',
+                benchmarkCount: benchmarkSources.size,
+                scale: opts.scale || 'Overall balanced',
             };
         }
 
@@ -2459,7 +2436,7 @@
 
             const benchmarkGroups = Array.from(byKey.values());
             const overallObP1Balanced = systems.length
-                ? buildObP1BalancedOverallResult(geoEntries, systems, { scale: 'Typical overall' })
+                ? buildObP1BalancedOverallResult(geoEntries, systems, { scale: 'Overall balanced' })
                 : null;
             const overallObP1Mean = systems.length
                 ? buildObP1AggregateResult(geoEntries, systems, { aggregate: 'mean', scale: 'Overall average' })
@@ -2538,10 +2515,7 @@
                     const capHint = meanData.portfolioCap != null
                         ? `; scores capped at portfolio P95 (${formatPtsRelativeLabel(meanData.portfolioCap)})`
                         : '';
-                    const bmPartBalanced = meanData.benchmarkCount > 1
-                        ? `${meanData.benchmarkCount} benchmarks (${meanData.subtestCount} subtests), equal weight per benchmark`
-                        : `${meanData.subtestCount} subtests`;
-                    compositeLabel = `Typical overall vs OB baseline (${bmPartBalanced}; ${p1Hint}${excl}${capHint})`;
+                    compositeLabel = `Balanced average vs OB baseline (${bmPart}; ${p1Hint}${excl}${capHint})`;
                 } else if (meanData.homogeneousMean || isAverage) {
                     const scaleHint = scaleName && scaleName !== 'Overall average' ? `, ${scaleName}` : '';
                     compositeLabel = `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint}; outlier-sensitive)`;
@@ -2868,7 +2842,7 @@
                     data: {
                         labels,
                         datasets: [{
-                            label: 'Typical overall vs OB baseline',
+                            label: 'Overall balanced average vs OB baseline',
                             data: dataVals,
                             backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
                         }]
@@ -2891,7 +2865,7 @@
                         plugins: {
                             title: {
                                 display: true,
-                                text: 'Typical overall vs OB baseline',
+                                text: 'Overall balanced average vs OB baseline',
                                 color: '#ffffff',
                                 font: { size: 16, weight: '600' }
                             },
@@ -3425,7 +3399,7 @@
                         systems,
                         systemLabels,
                         overallObP1Balanced,
-                        'Typical Overall',
+                        'Balanced Average',
                     );
                 }
                 if (showCompositeBar && overallGeometric && overallGeometric.obP1Baseline) {
@@ -3482,7 +3456,7 @@
                             return `${label}: ${w}/${totalWins} subtests (${pct}%)`;
                         });
                         winSummary.textContent = 'Head-to-head subtest wins: ' + parts.join(' · ')
-                            + '. Typical overall averages one score per benchmark (equal weight per app), excludes subtests with outlier-sized gaps, and caps extreme scores so a few blowout results do not decide the summary.';
+                            + '. Balanced overall excludes subtests with outlier-sized gaps and caps remaining scores to the portfolio P95 before averaging.';
                         globalSection.appendChild(winSummary);
                     }
 
