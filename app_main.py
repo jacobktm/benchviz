@@ -14,6 +14,7 @@ from app.profile_snapshot import format_observation_label
 from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
 from app.analyzer import analyze_benchmarks
 from app.ml.analyzer import analyze_ml_profiles
+from app.insights_lock import insights_rebuild_lock
 from app.components import get_system_components
 from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
 from urllib.parse import unquote
@@ -387,8 +388,12 @@ def upload_benchmarks():
         def run_analysis_with_context(app_context):
             with app_context:
                 try:
-                    analyze_benchmarks()
-                    analyze_ml_profiles()
+                    with insights_rebuild_lock(block=False) as acquired:
+                        if not acquired:
+                            print("Insights rebuild already in progress; upload will be picked up by the next scheduled run.")
+                            return
+                        analyze_benchmarks()
+                        analyze_ml_profiles()
                 except Exception as e:
                     print(f"Error in background benchmark analysis: {e}")
                 finally:
@@ -4028,7 +4033,11 @@ def backfill_perf_counters():
 def rebuild_performance_insights():
     """Recompute legacy Performance Insights (BenchmarkAnalysis cohort η²)."""
     with app.app_context():
-        analyze_benchmarks()
+        with insights_rebuild_lock(block=False) as acquired:
+            if not acquired:
+                print("Insights rebuild already in progress; skipping.")
+                return
+            analyze_benchmarks()
         print("Legacy performance insights rebuilt.")
 
 
@@ -4036,8 +4045,12 @@ def rebuild_performance_insights():
 def rebuild_all_insights():
     """Recompute legacy cohort stats and ML workload/attribution/thermal profiles."""
     with app.app_context():
-        analyze_benchmarks()
-        n = analyze_ml_profiles()
+        with insights_rebuild_lock(block=False) as acquired:
+            if not acquired:
+                print("Insights rebuild already in progress; skipping.")
+                return
+            analyze_benchmarks()
+            n = analyze_ml_profiles()
         print(f"Performance insights rebuilt (legacy + ML profiles for {n} record(s)).")
 
 
@@ -4045,7 +4058,11 @@ def rebuild_all_insights():
 def rebuild_ml_insights():
     """Recompute ML workload/attribution/thermal profiles only."""
     with app.app_context():
-        n = analyze_ml_profiles()
+        with insights_rebuild_lock(block=False) as acquired:
+            if not acquired:
+                print("Insights rebuild already in progress; skipping.")
+                return
+            n = analyze_ml_profiles()
         print(f"ML profiles updated for {n} analysis record(s).")
 
 

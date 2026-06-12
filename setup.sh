@@ -189,6 +189,13 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     ./install_systemd_ob_cache_timer.sh
 
   echo
+  echo "Installing periodic insights rebuild timer (every 1h; safe while benchviz is running)..."
+  BENCHVIZ_PROJECT_ROOT="$PROJECT_ROOT" \
+    BENCHVIZ_DEFAULT_SERVICE_USER="$SERVICE_USER" \
+    BENCHVIZ_INSIGHTS_REBUILD_INTERVAL_HOURS="1" \
+    ./install_systemd_insights_timer.sh
+
+  echo
   echo "Starting benchviz.service..."
   systemctl start benchviz.service || true
 
@@ -196,7 +203,9 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   echo "Service setup complete."
   echo "  sudo systemctl status benchviz.service"
   echo "  sudo systemctl status benchviz-sync-ob-cache.timer"
-  echo "  sudo systemctl start benchviz-sync-ob-cache.service   # manual refresh"
+  echo "  sudo systemctl status benchviz-rebuild-insights.timer"
+  echo "  sudo systemctl start benchviz-sync-ob-cache.service      # manual OB refresh"
+  echo "  sudo systemctl start benchviz-rebuild-insights.service   # manual insights rebuild"
 else
   echo
   echo "Skipping systemd service installation."
