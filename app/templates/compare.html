@@ -1061,7 +1061,7 @@
             const titleEl = document.createElement('div');
             titleEl.style.cssText = 'font-size:0.9rem;font-weight:600;color:var(--text-secondary);margin-top:1rem;margin-bottom:0.35rem;';
             titleEl.textContent = chartOpts.title || 'Subtest relative deltas';
-            parent.appendChild(titleEl);
+            if (!chartOpts.hideTitle) parent.appendChild(titleEl);
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
@@ -1272,6 +1272,37 @@
             }
             requestAnimationFrame(() => create());
             return null;
+        }
+
+        /** Collapsible subtest relative-delta panel (lazy-renders chart when expanded). */
+        function appendCollapsibleSubtestDeltasPanel(parent, rows, systems, systemLabels, stateKey, chartOpts) {
+            chartOpts = chartOpts || {};
+            if (!rows.length || systems.length < 2) return;
+            const details = document.createElement('details');
+            details.style.cssText = 'margin-top:1rem;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.35rem 0.5rem;';
+            const summary = document.createElement('summary');
+            summary.style.cssText = 'cursor:pointer;color:var(--text-secondary);font-size:0.82rem;font-weight:600;';
+            summary.textContent = chartOpts.summaryLabel || `Subtest relative deltas (${rows.length} rows)`;
+            details.appendChild(summary);
+            const deltaHost = document.createElement('div');
+            deltaHost.style.cssText = 'margin-top:0.35rem;';
+            details.appendChild(deltaHost);
+            details.open = !!subtestDeltaOpenState[stateKey];
+            const renderDelta = () => {
+                deltaHost.innerHTML = '';
+                if (details.open) {
+                    createGroupedDivergingMarginChart(deltaHost, rows, systems, systemLabels, {
+                        ...chartOpts,
+                        hideTitle: true,
+                    });
+                }
+            };
+            details.addEventListener('toggle', () => {
+                subtestDeltaOpenState[stateKey] = details.open;
+                renderDelta();
+            });
+            parent.appendChild(details);
+            if (details.open) renderDelta();
         }
 
         function geometricMean(arr) {
@@ -3697,42 +3728,20 @@
                     }
 
                     if (overallMarginRows.length) {
-                        const deltaToggle = document.createElement('button');
-                        deltaToggle.type = 'button';
-                        deltaToggle.style.cssText = 'margin-top:1rem;margin-bottom:0.25rem;font-size:0.75rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.35);color:var(--text-secondary);padding:0.25rem 0.7rem;cursor:pointer;';
-                        const deltaHost = document.createElement('div');
-                        deltaHost.style.display = 'none';
-                        globalSection.appendChild(deltaToggle);
-                        globalSection.appendChild(deltaHost);
-                        const overallDeltaKey = '__overall__';
-                        const deltaOpen = subtestDeltaOpenState[overallDeltaKey] !== false;
-                        const overallDeltaOpts = systems.length === 2 ? {
-                            title: 'All subtest relative deltas',
-                            caption2: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Bars sorted by |delta|; ~0% rows omitted. Same raw-value delta semantics as per-benchmark panels.`,
-                        } : {
-                            title: 'All subtest relative deltas',
-                            captionMulti: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Signed delta (%) vs geometric-mean baseline; strongest first.`,
-                        };
-                        const renderOverallDelta = () => {
-                            deltaHost.innerHTML = '';
-                            if (deltaHost.style.display !== 'none') {
-                                createGroupedDivergingMarginChart(deltaHost, overallMarginRows, systems, systemLabels, overallDeltaOpts);
-                            }
-                        };
-                        const syncOverallDeltaToggle = () => {
-                            const open = deltaHost.style.display !== 'none';
-                            deltaToggle.textContent = open ? 'Hide all subtest relative deltas' : 'Show all subtest relative deltas';
-                        };
-                        deltaHost.style.display = deltaOpen ? 'block' : 'none';
-                        syncOverallDeltaToggle();
-                        renderOverallDelta();
-                        deltaToggle.addEventListener('click', () => {
-                            const open = deltaHost.style.display !== 'none';
-                            deltaHost.style.display = open ? 'none' : 'block';
-                            subtestDeltaOpenState[overallDeltaKey] = !open;
-                            syncOverallDeltaToggle();
-                            renderOverallDelta();
-                        });
+                        appendCollapsibleSubtestDeltasPanel(
+                            globalSection,
+                            overallMarginRows,
+                            systems,
+                            systemLabels,
+                            '__overall__',
+                            systems.length === 2 ? {
+                                summaryLabel: `All subtest relative deltas (${overallMarginRows.length} rows)`,
+                                caption2: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Bars sorted by |delta|; ~0% rows omitted. Same raw-value delta semantics as per-benchmark panels.`,
+                            } : {
+                                summaryLabel: `All subtest relative deltas (${overallMarginRows.length} rows)`,
+                                captionMulti: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Signed delta (%) vs geometric-mean baseline; strongest first.`,
+                            },
+                        );
                     }
 
                     chartsContainer.appendChild(globalSection);
@@ -4199,34 +4208,14 @@
                 }
 
                 if (systems.length >= 2 && marginRows.length) {
-                    const deltaToggle = document.createElement('button');
-                    deltaToggle.type = 'button';
-                    deltaToggle.style.cssText = 'margin-top:0.5rem;margin-bottom:0.25rem;font-size:0.75rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.35);color:var(--text-secondary);padding:0.25rem 0.7rem;cursor:pointer;';
-                    const deltaHost = document.createElement('div');
-                    deltaHost.style.display = 'none';
-                    aggSection.appendChild(deltaToggle);
-                    aggSection.appendChild(deltaHost);
-                    const deltaOpen = !!subtestDeltaOpenState[bGroup.benchmarkName];
-                    const renderDelta = () => {
-                        deltaHost.innerHTML = '';
-                        if (deltaHost.style.display !== 'none') {
-                            createGroupedDivergingMarginChart(deltaHost, marginRows, systems, systemLabels);
-                        }
-                    };
-                    const syncDeltaToggle = () => {
-                        const open = deltaHost.style.display !== 'none';
-                        deltaToggle.textContent = open ? 'Hide subtest relative deltas' : 'Show subtest relative deltas';
-                    };
-                    deltaHost.style.display = deltaOpen ? 'block' : 'none';
-                    syncDeltaToggle();
-                    renderDelta();
-                    deltaToggle.addEventListener('click', () => {
-                        const open = deltaHost.style.display !== 'none';
-                        deltaHost.style.display = open ? 'none' : 'block';
-                        subtestDeltaOpenState[bGroup.benchmarkName] = !open;
-                        syncDeltaToggle();
-                        renderDelta();
-                    });
+                    appendCollapsibleSubtestDeltasPanel(
+                        aggSection,
+                        marginRows,
+                        systems,
+                        systemLabels,
+                        bGroup.benchmarkName,
+                        { summaryLabel: `Subtest relative deltas (${marginRows.length} rows)` },
+                    );
                 }
 
                 if (aggSection.childNodes.length) {
