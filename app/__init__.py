@@ -1,9 +1,22 @@
 from flask import Flask
 import os
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
+from sqlalchemy.engine import Engine
 
 db = SQLAlchemy()
+
+
+@event.listens_for(Engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, connection_record):
+    """Allow concurrent reads during background writes (WAL + busy wait)."""
+    if connection_record.dialect.name != "sqlite":
+        return
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 
 def ensure_schema_compatibility():
     """Backfill lightweight schema changes for existing local SQLite DBs."""
@@ -109,7 +122,10 @@ def create_app():
     db_path = os.path.join(instance_dir, 'benchmarks.db')
     app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'connect_args': {'timeout': 30},
+    }
+
     db.init_app(app)
 
     with app.app_context():

@@ -387,8 +387,10 @@ def upload_benchmarks():
                     analyze_benchmarks()
                 except Exception as e:
                     print(f"Error in background benchmark analysis: {e}")
-                    
-        threading.Thread(target=run_analysis_with_context, args=(app.app_context(),)).start()
+                finally:
+                    db.session.remove()
+
+        threading.Thread(target=run_analysis_with_context, args=(app.app_context(),), daemon=True).start()
         
         if extracted_xml_count > 0:
             flash(f'Successfully ingested {extracted_xml_count} benchmark records.', 'success')

@@ -205,8 +205,10 @@ def analyze_benchmarks():
             for analysis_record in existing_records:
                 analysis_record.analysis_json = payload
                 analysis_record.last_updated = db.func.now()
-            
-    db.session.commit()
+
+            # Commit per benchmark group so uploads can read the DB while analysis runs.
+            db.session.commit()
+
     print("Background benchmark analysis complete.")
 
 if __name__ == '__main__':
