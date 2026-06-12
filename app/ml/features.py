@@ -17,8 +17,7 @@ from typing import Any
 from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, System
 from app.ml.sensor_baselines import HardwareSensorBaselineIndex
-from app.profile_snapshot import format_observation_label
-from app.result_merge import bar_run_values, observation_batch_id
+from app.result_merge import bar_run_values
 from app.sensor_quality import is_noisy_sensor_series, numeric_series, peak_series_value, sensor_kind
 from app.workload_profile import (
     counter_signal_key,
@@ -93,9 +92,6 @@ class SystemRunFeatures:
     run_count: int
     run_stdev: float
     run_cv: float
-    import_batch_id: str = ""
-    profile_snapshot: dict[str, Any] = field(default_factory=dict)
-    observation_label: str = ""
     perf: dict[str, float] = field(default_factory=dict)
     sensors: SensorFeatures = field(default_factory=SensorFeatures)
     hardware: dict[str, str] = field(default_factory=dict)
@@ -142,26 +138,11 @@ def _proportion_is_lower_better(proportion: str | None) -> bool:
     return "lower" in pl and "better" in pl
 
 
-def _result_matches_batch(res: BenchmarkResult, import_batch_id: str | None) -> bool:
-    if not import_batch_id:
-        return True
-    if (res.import_batch_id or "").strip() == import_batch_id:
-        return True
-    if import_batch_id.startswith("legacy-"):
-        try:
-            return res.id == int(import_batch_id.split("-", 1)[1])
-        except (ValueError, IndexError):
-            return False
-    return False
-
-
 def _collect_perf_for_system(
     title: str,
     app_version: str,
     config_args_db: str,
     system_id: int,
-    *,
-    import_batch_id: str | None = None,
 ) -> dict[str, float]:
     perf_q = Benchmark.query.filter(
         Benchmark.title == title,
@@ -178,8 +159,6 @@ def _collect_perf_for_system(
         if not key:
             continue
         for res in BenchmarkResult.query.filter_by(benchmark_id=bm.id, system_id=system_id).all():
-            if not _result_matches_batch(res, import_batch_id):
-                continue
             if not _monitor_result_matches_config(res.arguments, config_args_db):
                 continue
             if res.value is None:
@@ -239,7 +218,6 @@ def _collect_sensors_for_system(
     *,
     hardware: dict[str, str] | None = None,
     baseline_index: HardwareSensorBaselineIndex | None = None,
-    import_batch_id: str | None = None,
 ) -> SensorFeatures:
     sensor_q = Benchmark.query.filter(
         Benchmark.title == title,
@@ -270,8 +248,6 @@ def _collect_sensors_for_system(
         bucket = _label_bucket(s_bm.description or "", s_bm.scale or "")
         kind = sensor_kind(s_bm.description, s_bm.scale)
         for res in BenchmarkResult.query.filter_by(benchmark_id=s_bm.id, system_id=system_id).all():
-            if not _result_matches_batch(res, import_batch_id):
-                continue
             if not _monitor_result_matches_config(res.arguments, config_args_db):
                 continue
             if not res.data_json:
@@ -364,9 +340,8 @@ def extract_system_run_features(
     primary_bm_ids: list[int] | None = None,
     is_lower_better: bool = False,
     baseline_index: HardwareSensorBaselineIndex | None = None,
-    import_batch_id: str | None = None,
 ) -> SystemRunFeatures | None:
-    """One ML feature row for (system, benchmark config, upload batch)."""
+    """One row of ML features for (system, benchmark config), aggregated across upload runs."""
     config_args_db = "" if (not config_args or config_args == "default") else config_args
 
     q = BenchmarkResult.query.filter(
@@ -396,17 +371,8 @@ def extract_system_run_features(
     q = q.filter(BenchmarkResult.arguments == config_args_db)
 
     run_vals: list[float] = []
-    profile_snapshot: dict[str, Any] = {}
-    imported_at = None
-    batch_key = import_batch_id or ""
     for res in q.all():
-        if not _result_matches_batch(res, import_batch_id):
-            continue
         run_vals.extend(bar_run_values(res.data_json, res.value))
-        if res.profile_snapshot and not profile_snapshot:
-            profile_snapshot = dict(res.profile_snapshot)
-        if imported_at is None:
-            imported_at = res.imported_at
 
     if not run_vals:
         return None
@@ -428,42 +394,14 @@ def extract_system_run_features(
         run_count=len(run_vals),
         run_stdev=run_stdev,
         run_cv=run_cv,
-        import_batch_id=batch_key,
-        profile_snapshot=profile_snapshot,
-        observation_label=format_observation_label(system, profile_snapshot, imported_at),
-        perf=_collect_perf_for_system(
-            title, app_version, config_args_db, system.id,
-            import_batch_id=import_batch_id,
-        ),
+        perf=_collect_perf_for_system(title, app_version, config_args_db, system.id),
         sensors=_collect_sensors_for_system(
             title, app_version, config_args_db, system.id,
             hardware=hw,
             baseline_index=baseline_index,
-            import_batch_id=import_batch_id,
         ),
         hardware=hw,
     )
-
-
-def list_upload_observations(
-    primary_bm_ids: list[int],
-    config_args_db: str,
-) -> list[tuple[int, str]]:
-    """Distinct (system_id, import_batch_id) upload observations for one config."""
-    seen: set[tuple[int, str]] = set()
-    out: list[tuple[int, str]] = []
-    for res in BenchmarkResult.query.filter(
-        BenchmarkResult.benchmark_id.in_(primary_bm_ids),
-        BenchmarkResult.arguments == config_args_db,
-        BenchmarkResult.value.isnot(None),
-    ).all():
-        batch = (res.import_batch_id or "").strip() or observation_batch_id(res)
-        key = (res.system_id, batch)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(key)
-    return sorted(out, key=lambda x: (x[0], x[1]))
 
 
 def pool_perf_signals(rows: list[SystemRunFeatures]) -> dict[str, float]:
