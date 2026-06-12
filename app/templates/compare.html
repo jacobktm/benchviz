@@ -1560,7 +1560,7 @@
                 raw,
                 relative,
                 obP1Baseline: true,
-                balancedOverall: aggregate === 'mean',
+                balancedOverall: opts.balancedOverall != null ? !!opts.balancedOverall : aggregate === 'mean',
                 referenceSystemId: '',
                 subtestCount,
                 excludedOutliers: excluded,
@@ -2586,7 +2586,12 @@
                 })
                 : null;
             const overallObP1Mean = systems.length
-                ? buildObP1AggregateResult(geoEntries, systems, { aggregate: 'mean', scale: 'Overall average' })
+                ? buildObP1BalancedAggregateResult(geoEntries, systems, {
+                    aggregate: 'mean',
+                    scale: 'Overall average',
+                    balancedOverall: false,
+                    ...balancedOpts,
+                })
                 : null;
             const overallGeometric = systems.length
                 ? buildObP1BalancedAggregateResult(geoEntries, systems, {
@@ -2685,7 +2690,9 @@
                     compositeLabel = `Balanced average vs OB baseline (${bmPart}; ${p1Hint}${excl}${capHint}${allSubtestsHint})`;
                 } else if (meanData.homogeneousMean || isAverage) {
                     const scaleHint = scaleName && scaleName !== 'Overall average' ? `, ${scaleName}` : '';
-                    compositeLabel = `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint}; outlier-sensitive)`;
+                    compositeLabel = isOutlierFiltered
+                        ? `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint}${excl}${capHint}${allSubtestsHint})`
+                        : `Average vs OB baseline (${bmPart}${scaleHint}; ${p1Hint}${allSubtestsHint || '; all subtests included'})`;
                 } else if (isHarmonic && meanData.crossScale) {
                     compositeLabel = `Harmonic mean vs OB baseline (${bmPart}; ${p1Hint}${outlierHint}${allSubtestsHint})`;
                 } else if (isGeometric) {
@@ -3408,7 +3415,12 @@
                 globalLosses.forEach((_, i) => { globalLosses[i] += (losses[i] || 0); });
             });
 
-            const obOverall = buildObP1AggregateResult(allEntries, systems, { aggregate: 'mean' });
+            const obOverall = buildObP1BalancedAggregateResult(allEntries, systems, {
+                aggregate: 'mean',
+                scale: 'Overall average',
+                balancedOverall: false,
+                includeOutliers: includeOverallOutliers,
+            });
             const globalComposite = systems.map(sid => {
                 if (obOverall && obOverall.relative) return obOverall.relative[sid] ?? null;
                 return null;
@@ -4561,7 +4573,7 @@
                         };
                         
                         toggleRow.appendChild(mkToggle('Include outlier subtests in overall bars', 'includeOverallOutliers'));
-                        toggleRow.appendChild(mkToggle('Also show overall geometric & raw arithmetic mean', 'showCompositeBar'));
+                        toggleRow.appendChild(mkToggle('Also show overall geometric & arithmetic mean', 'showCompositeBar'));
                         toggleRow.appendChild(mkToggle('Also show overall harmonic mean (OB baseline)', 'showHarmonicMean'));
                         toggleRow.appendChild(mkToggle('Show overall wins/losses charts', 'showWinsLossCharts'));
                         toggleRow.appendChild(mkToggle('Hide sensors unrelated to workload (perf/MONITOR)', 'filterRelevantSensors'));
