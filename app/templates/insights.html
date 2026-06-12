@@ -163,7 +163,7 @@
     {% for analysis in analyses %}
         {% set a_ns = namespace(result_available=false) %}
         {% for arg, feature_stats in analysis.analysis_json.items() %}
-            {% if arg.startswith('_') %}{% continue %}{% endif %}
+            {% if not arg.startswith('_') %}
             {# Check if there is actual data inside vs just "Insufficient data" logs #}
             {% for feature_values in feature_stats.values() %}
                 {% if not feature_values[0].get("error") %}
@@ -171,6 +171,7 @@
                     {% set ns.has_data = true %}
                 {% endif %}
             {% endfor %}
+            {% endif %}
         {% endfor %}
         
         {% if a_ns.result_available %}
@@ -184,7 +185,7 @@
             <p class="card-meta" style="margin-bottom: 1.5rem;">Last analyzed: {{ analysis.last_updated.strftime('%Y-%m-%d %H:%M') }}</p>
             
             {% for arg, feature_stats in analysis.analysis_json.items() %}
-            {% if arg.startswith('_') %}{% continue %}{% endif %}
+            {% if not arg.startswith('_') %}
                 {% if arg != 'default' %}
                     <h3 style="font-size: 1rem; color: var(--text-secondary); margin-bottom: 1rem;">Configuration: <span style="font-family: monospace;">{{ arg }}</span></h3>
                 {% endif %}
@@ -213,6 +214,7 @@
                     {% endif %}
                 {% endfor %}
                 </div>
+            {% endif %}
             {% endfor %}
         </div>
         {% endif %}
