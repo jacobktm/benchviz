@@ -1,5 +1,6 @@
 from flask import Flask
 import os
+import sqlite3
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
@@ -10,7 +11,7 @@ db = SQLAlchemy()
 @event.listens_for(Engine, "connect")
 def _configure_sqlite_connection(dbapi_connection, connection_record):
     """Allow concurrent reads during background writes (WAL + busy wait)."""
-    if connection_record.dialect.name != "sqlite":
+    if not isinstance(dbapi_connection, sqlite3.Connection):
         return
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
