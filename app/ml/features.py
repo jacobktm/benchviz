@@ -14,8 +14,9 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from app.components import get_system_components
+from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, System
+from app.ml.sensor_baselines import HardwareSensorBaselineIndex
 from app.sensor_quality import is_noisy_sensor_series, numeric_series, peak_series_value, sensor_kind
 from app.workload_profile import (
     counter_signal_key,
@@ -74,6 +75,9 @@ class SensorFeatures:
     thermal: ThermalSensorFeatures = field(default_factory=ThermalSensorFeatures)
     usage: UsageSensorFeatures = field(default_factory=UsageSensorFeatures)
     has_monitor_data: bool = False
+    """Hardware-normalized load fractions (0≈idle for this model, 1≈typical load)."""
+    normalized: dict[str, float] = field(default_factory=dict)
+    hardware_match_keys: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -165,11 +169,54 @@ def _collect_perf_for_system(
     return {k: statistics.median(vs) for k, vs in out.items() if vs}
 
 
+def _apply_sensor_baselines(
+    sensors: SensorFeatures,
+    hardware: dict[str, str],
+    baseline_index: HardwareSensorBaselineIndex | None,
+) -> None:
+    if not baseline_index:
+        return
+    proc_mk = hardware_rank_match_key("processor", hardware.get("processor") or "")
+    gpu_mk = hardware_rank_match_key("graphics", hardware.get("graphics") or "")
+    sensors.hardware_match_keys = {
+        "processor": proc_mk,
+        "graphics": gpu_mk,
+    }
+    norm: dict[str, float] = {}
+
+    def _set(out_key: str, part: str, mk: str, signal_key: str, raw: float | None) -> None:
+        frac = baseline_index.normalize(part, mk, signal_key, raw)
+        if frac is not None:
+            norm[out_key] = round(frac, 3)
+
+    t = sensors.thermal
+    u = sensors.usage
+    _set("cpu_usage_load_frac", "processor", proc_mk, "cpu.usage_peak", u.cpu_usage_peak)
+    _set("gpu_usage_load_frac", "graphics", gpu_mk, "gpu.usage_peak", u.gpu_usage_peak)
+    _set("cpu_temp_load_frac", "processor", proc_mk, "cpu.temp_peak", t.cpu_temp_peak)
+    _set("gpu_temp_load_frac", "graphics", gpu_mk, "gpu.temp_peak", t.gpu_temp_peak)
+    _set("cpu_power_load_frac", "processor", proc_mk, "cpu.power_mean", t.cpu_power_mean)
+    _set("gpu_power_load_frac", "graphics", gpu_mk, "gpu.power_mean", t.gpu_power_mean)
+    if t.cpu_freq_peak is not None:
+        _set("cpu_freq_load_frac", "processor", proc_mk, "cpu.freq_peak", t.cpu_freq_peak)
+    if t.gpu_freq_peak is not None:
+        _set("gpu_freq_load_frac", "graphics", gpu_mk, "gpu.freq_peak", t.gpu_freq_peak)
+    if t.cpu_freq_peak is not None and t.cpu_freq_min is not None:
+        _set("cpu_freq_droop_frac", "processor", proc_mk, "cpu.freq_droop", t.cpu_freq_peak - t.cpu_freq_min)
+    if t.cpu_temp_slope is not None:
+        _set("cpu_temp_slope_frac", "processor", proc_mk, "cpu.temp_slope", t.cpu_temp_slope)
+
+    sensors.normalized = norm
+
+
 def _collect_sensors_for_system(
     title: str,
     app_version: str,
     config_args_db: str,
     system_id: int,
+    *,
+    hardware: dict[str, str] | None = None,
+    baseline_index: HardwareSensorBaselineIndex | None = None,
 ) -> SensorFeatures:
     sensor_q = Benchmark.query.filter(
         Benchmark.title == title,
@@ -204,22 +251,25 @@ def _collect_sensors_for_system(
                 continue
             if not res.data_json:
                 continue
-            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
-                continue
             nums = numeric_series(res.data_json)
             if not nums:
                 continue
-            has_data = True
 
             if kind == "usage":
+                # Always record usage peaks — idle GPU/CPU is meaningful workload evidence.
                 peak = peak_series_value(res.data_json)
                 if peak is None:
                     continue
+                has_data = True
                 if bucket == "gpu":
                     gpu_usage_peaks.append(peak)
                 elif bucket == "cpu":
                     cpu_usage_peaks.append(peak)
                 continue
+
+            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
+                continue
+            has_data = True
 
             if kind == "frequency":
                 peak = peak_series_value(res.data_json)
@@ -274,7 +324,10 @@ def _collect_sensors_for_system(
     if gpu_usage_peaks:
         usage.gpu_usage_peak = max(gpu_usage_peaks)
 
-    return SensorFeatures(thermal=thermal, usage=usage, has_monitor_data=has_data)
+    sensors = SensorFeatures(thermal=thermal, usage=usage, has_monitor_data=has_data)
+    if hardware and baseline_index:
+        _apply_sensor_baselines(sensors, hardware, baseline_index)
+    return sensors
 
 
 def extract_system_run_features(
@@ -285,6 +338,7 @@ def extract_system_run_features(
     *,
     primary_bm_ids: list[int] | None = None,
     is_lower_better: bool = False,
+    baseline_index: HardwareSensorBaselineIndex | None = None,
 ) -> SystemRunFeatures | None:
     """One row of ML features for (system, benchmark config)."""
     config_args_db = "" if (not config_args or config_args == "default") else config_args
@@ -348,7 +402,11 @@ def extract_system_run_features(
         run_stdev=run_stdev,
         run_cv=run_cv,
         perf=_collect_perf_for_system(title, app_version, config_args_db, system.id),
-        sensors=_collect_sensors_for_system(title, app_version, config_args_db, system.id),
+        sensors=_collect_sensors_for_system(
+            title, app_version, config_args_db, system.id,
+            hardware=hw,
+            baseline_index=baseline_index,
+        ),
         hardware=hw,
     )
 
@@ -362,13 +420,21 @@ def pool_perf_signals(rows: list[SystemRunFeatures]) -> dict[str, float]:
 
 
 def pool_sensor_features(rows: list[SystemRunFeatures]) -> dict[str, float | None]:
-    """Flatten pooled sensor/thermal metrics across systems (medians)."""
+    """Flatten pooled sensor metrics; includes hardware-normalized load fractions when available."""
 
     def _pool(getter) -> float | None:
         vals = [getter(r) for r in rows if getter(r) is not None]
         return statistics.median(vals) if vals else None
 
-    return {
+    def _pool_norm(key: str) -> float | None:
+        vals = [
+            r.sensors.normalized[key]
+            for r in rows
+            if r.sensors.normalized.get(key) is not None
+        ]
+        return statistics.median(vals) if vals else None
+
+    raw = {
         "cpu_usage_peak": _pool(lambda r: r.sensors.usage.cpu_usage_peak),
         "gpu_usage_peak": _pool(lambda r: r.sensors.usage.gpu_usage_peak),
         "cpu_temp_peak": _pool(lambda r: r.sensors.thermal.cpu_temp_peak),
@@ -382,4 +448,30 @@ def pool_sensor_features(rows: list[SystemRunFeatures]) -> dict[str, float | Non
             ),
         ),
         "gpu_temp_peak": _pool(lambda r: r.sensors.thermal.gpu_temp_peak),
+        "cpu_power_mean": _pool(lambda r: r.sensors.thermal.cpu_power_mean),
+        "gpu_power_mean": _pool(lambda r: r.sensors.thermal.gpu_power_mean),
+        "cpu_freq_peak": _pool(lambda r: r.sensors.thermal.cpu_freq_peak),
     }
+    normalized = {
+        "cpu_usage_load_frac": _pool_norm("cpu_usage_load_frac"),
+        "gpu_usage_load_frac": _pool_norm("gpu_usage_load_frac"),
+        "cpu_temp_load_frac": _pool_norm("cpu_temp_load_frac"),
+        "gpu_temp_load_frac": _pool_norm("gpu_temp_load_frac"),
+        "cpu_power_load_frac": _pool_norm("cpu_power_load_frac"),
+        "gpu_power_load_frac": _pool_norm("gpu_power_load_frac"),
+        "cpu_freq_load_frac": _pool_norm("cpu_freq_load_frac"),
+        "gpu_freq_load_frac": _pool_norm("gpu_freq_load_frac"),
+        "cpu_freq_droop_frac": _pool_norm("cpu_freq_droop_frac"),
+        "cpu_temp_slope_frac": _pool_norm("cpu_temp_slope_frac"),
+    }
+    out = dict(raw)
+    for k, v in normalized.items():
+        if v is not None:
+            out[k] = v
+    out["has_cpu_usage"] = any(r.sensors.usage.cpu_usage_peak is not None for r in rows)
+    out["has_gpu_usage"] = any(r.sensors.usage.gpu_usage_peak is not None for r in rows)
+    out["has_cpu_temp"] = any(r.sensors.thermal.cpu_temp_peak is not None for r in rows)
+    out["has_gpu_temp"] = any(r.sensors.thermal.gpu_temp_peak is not None for r in rows)
+    out["has_cpu_power"] = any(r.sensors.thermal.cpu_power_mean is not None for r in rows)
+    out["has_gpu_power"] = any(r.sensors.thermal.gpu_power_mean is not None for r in rows)
+    return out

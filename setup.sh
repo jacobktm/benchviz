@@ -167,15 +167,18 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   fi
 
   echo
-  echo "Rebuilding performance & ML insights (cohort stats + workload profiles)..."
+  echo "Rebuilding performance insights (legacy cohort η² + ML workload profiles)..."
   if ! sudo -u "${SERVICE_USER}" bash -c "
     cd \"${PROJECT_ROOT}\" &&
     export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
-    \"${PROJECT_ROOT}/venv/bin/python\" -m flask rebuild-performance-insights
+    \"${PROJECT_ROOT}/venv/bin/python\" -m flask rebuild-performance-insights &&
+    \"${PROJECT_ROOT}/venv/bin/python\" -m flask rebuild-ml-insights
   "; then
     echo "Warning: Insights rebuild failed (database may be empty, locked, or missing ML dependencies)."
     echo "Retry after uploads with:"
     echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask rebuild-performance-insights'"
+    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask rebuild-ml-insights'"
+    echo "Or both: venv/bin/python -m flask rebuild-all-insights"
   fi
 
   echo

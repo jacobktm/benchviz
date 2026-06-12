@@ -106,7 +106,7 @@
         ML workload profiles
     </summary>
     <p class="card-meta" style="margin-bottom: 1rem;">
-        Fingerprinted from perf counters + MONITOR sensors (usage and temperature kept separate). Attribution uses elastic-net with leave-one-system-out CV when ≥4 systems are available.
+        Fingerprinted from perf counters + MONITOR sensors (usage and temperature kept separate). When enough MONITOR history exists, usage/temp/power are normalized against per-model idle (p10) vs load (p90) ranges so a 65°C Ryzen and 85°C Xeon can both read as “moderately loaded.” Attribution uses elastic-net with leave-one-system-out CV when ≥4 systems are available.
     </p>
     {% set ns_ml = namespace(has=false) %}
     {% for analysis in analyses %}
@@ -128,10 +128,12 @@
                     <div style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.25rem;">
                         Scope: <strong style="color:var(--text-primary);">{{ wl.scope or 'general' }}</strong>
                         · source: {{ wl.source or '?' }}
+                        {% if wl.hardware_normalized %} · hardware-normalized sensors{% endif %}
+                        {% if wl.load_proxy_used %} · thermal/power proxy{% endif %}
                         · confidence: {{ (wl.confidence * 100)|round(0) if wl.confidence is not none else '?' }}%
                         · {{ prof.n_systems or '?' }} systems
                     </div>
-                    {% if props %}
+                    {% if props and not wl.insufficient_signal %}
                     <div class="ml-workload-bar">
                         {% for dim, pct in props.items() if pct and pct > 0.02 %}
                         <div class="ml-workload-seg" style="width: {{ (pct * 100)|round(1) }}%; background: {{ ml_colors.get(dim, '#888') }};" title="{{ dim }} {{ (pct * 100)|round(0) }}%"></div>
@@ -144,6 +146,10 @@
                         {% if wl.thermal_notable or (wl.thermal_score and wl.thermal_score >= 1) %}
                         <span class="ml-tag" style="border-color: #f8514955; background: #f8514922;">thermal notable</span>
                         {% endif %}
+                    </div>
+                    {% elif wl.insufficient_signal %}
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        No definitive workload split — need MONITOR usage/perf data or more benchmark history.
                     </div>
                     {% endif %}
                     {% if wl.evidence %}
@@ -170,7 +176,12 @@
                     {% if th.available %}
                     <div style="font-weight: 600; font-size: 0.85rem; margin: 0.65rem 0 0.25rem;">Thermal sensitivity</div>
                     <div style="font-size: 0.78rem; color: var(--text-secondary);">
-                        {{ th.sensitivity|capitalize }} — peak CPU temp median {{ th.median_cpu_temp_peak }}°C
+                        {{ th.sensitivity|capitalize }}
+                        {% if th.uses_hardware_normalized_temps %}
+                        · hardware-normalized thermal load median {{ th.median_cpu_temp_peak }}
+                        {% else %}
+                        — peak CPU temp median {{ th.median_cpu_temp_peak }}°C
+                        {% endif %}
                         {% if th.temp_residual_r2 is not none %} · temp residual R²={{ th.temp_residual_r2 }}{% endif %}
                         {% if th.evidence %} · {{ th.evidence|join(' · ') }}{% endif %}
                     </div>

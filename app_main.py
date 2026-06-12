@@ -3985,11 +3985,19 @@ def backfill_perf_counters():
 
 @app.cli.command("rebuild-performance-insights")
 def rebuild_performance_insights():
-    """Recompute Performance Insights (BenchmarkAnalysis) for all BAR_GRAPH benchmarks."""
+    """Recompute legacy Performance Insights (BenchmarkAnalysis cohort η²)."""
     with app.app_context():
         analyze_benchmarks()
-        analyze_ml_profiles()
-        print("Performance Insights rebuilt.")
+        print("Legacy performance insights rebuilt.")
+
+
+@app.cli.command("rebuild-all-insights")
+def rebuild_all_insights():
+    """Recompute legacy cohort stats and ML workload/attribution/thermal profiles."""
+    with app.app_context():
+        analyze_benchmarks()
+        n = analyze_ml_profiles()
+        print(f"Performance insights rebuilt (legacy + ML profiles for {n} record(s)).")
 
 
 @app.cli.command("rebuild-ml-insights")

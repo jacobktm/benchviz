@@ -14,6 +14,7 @@ from app.ml.features import (
     pool_perf_signals,
     pool_sensor_features,
 )
+from app.ml.sensor_baselines import HardwareSensorBaselineIndex, build_hardware_sensor_baseline_index
 from app.ml.thermal import compute_thermal_sensitivity
 from app.ml.workload import compute_workload_fingerprint
 from app.models import Benchmark, BenchmarkAnalysis, BenchmarkResult
@@ -24,6 +25,8 @@ def _analyze_config(
     app_version: str,
     config_args: str,
     primary_bms: list[Benchmark],
+    *,
+    baseline_index: HardwareSensorBaselineIndex | None = None,
 ) -> dict:
     args_key = "default" if (not config_args or config_args == "default") else config_args
     args_db = "" if args_key == "default" else config_args
@@ -53,6 +56,7 @@ def _analyze_config(
             args_key,
             primary_bm_ids=primary_bm_ids,
             is_lower_better=is_lower_better,
+            baseline_index=baseline_index,
         )
         if feat:
             rows.append(feat)
@@ -72,6 +76,31 @@ def _analyze_config(
     attribution = compute_attribution(rows)
     thermal = compute_thermal_sensitivity(rows)
 
+    hardware_baselines: dict[str, list] = {}
+    if baseline_index:
+        seen: set[str] = set()
+        for row in rows:
+            for part in ("processor", "graphics"):
+                mk = row.sensors.hardware_match_keys.get(part, "")
+                if not mk:
+                    continue
+                label = f"{part}:{mk}"
+                if label in seen:
+                    continue
+                seen.add(label)
+                summary = baseline_index.summary_for_hardware(part, mk)
+                if summary:
+                    hardware_baselines[label] = summary
+
+    sensor_signals = {
+        k: v for k, v in sensor_pool.items()
+        if v is not None and not isinstance(v, bool)
+    }
+    sensor_normalized = {
+        k: v for k, v in sensor_pool.items()
+        if v is not None and ("_frac" in k or k.endswith("_load_frac"))
+    }
+
     return {
         "version": 1,
         "config_args": args_key,
@@ -79,9 +108,11 @@ def _analyze_config(
         "workload": workload,
         "attribution": attribution,
         "thermal": thermal,
+        "hardware_sensor_baselines": hardware_baselines,
         "signals": {
             "perf": perf,
-            "sensors": {k: v for k, v in sensor_pool.items() if v is not None},
+            "sensors": sensor_signals,
+            "sensors_normalized": sensor_normalized,
         },
     }
 
@@ -92,6 +123,12 @@ def analyze_ml_profiles() -> int:
     Returns number of analysis records updated.
     """
     print("Starting ML benchmark analysis...")
+    baseline_index = build_hardware_sensor_baseline_index()
+    baseline_summary = baseline_index.to_dict()
+    print(
+        f"Built hardware sensor baselines: {baseline_summary.get('n_baselines', 0)} ranges "
+        f"across {baseline_summary.get('n_models', 0)} model(s)."
+    )
     primary_bms = Benchmark.query.filter(
         Benchmark.display_format == "BAR_GRAPH",
         Benchmark.is_primary.is_(True),
@@ -118,7 +155,10 @@ def analyze_ml_profiles() -> int:
 
         by_args = {}
         for args_key in args_set:
-            profile = _analyze_config(title, app_version, args_key, bm_list)
+            profile = _analyze_config(
+                title, app_version, args_key, bm_list,
+                baseline_index=baseline_index,
+            )
             if profile:
                 by_args[args_key] = profile
 
@@ -130,6 +170,7 @@ def analyze_ml_profiles() -> int:
             "benchmark_title": title,
             "app_version": app_version,
             "by_args": by_args,
+            "_hardware_sensor_baselines": baseline_summary,
         }
         if len(by_args) == 1:
             ml_payload["default"] = next(iter(by_args.values()))
