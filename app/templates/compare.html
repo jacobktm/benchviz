@@ -1475,8 +1475,8 @@
         }
 
         /**
-         * Same-unit, same-direction suite: arithmetic mean of raw values (no normalization).
-         * Used when OB p1 references are unavailable for this benchmark.
+         * Same-unit, same-direction suite: arithmetic mean of raw values in native units.
+         * OB baseline normalization applies at the overall / mixed-unit level only.
          */
         function buildHomogeneousRawMeanResult(configEntries, systems, suite, opts) {
             opts = opts || {};
@@ -2096,8 +2096,7 @@
         }
 
         /**
-         * Same unit + same direction (HIB/LIB): always arithmetic mean.
-         * Prefer OB baseline-relative scores; fall back to raw average when OB p1 is missing.
+         * Same unit + same direction (HIB/LIB): arithmetic mean of raw subtest values.
          */
         function computePtsHomogeneousMeanForBGroup(bGroup, systems) {
             if (!systems.length || !(bGroup.configs || []).length) return null;
@@ -2109,20 +2108,14 @@
                 .filter(config => configMatchesSuiteScale(config, bGroup, suite.commonScaleKey))
                 .map(config => ({ config, bGroup }));
 
-            const obResult = buildObP1AggregateResult(entries, systems, {
-                aggregate: 'mean',
-                scale: suite.commonScaleDisplay,
-            });
-            if (obResult) {
-                return {
-                    ...obResult,
-                    homogeneousMean: true,
-                    HIB: suite.commonHib,
-                    libInverted: false,
-                };
-            }
-
-            return buildHomogeneousRawMeanResult(entries, systems, suite);
+            const result = buildHomogeneousRawMeanResult(entries, systems, suite);
+            if (!result) return null;
+            return {
+                ...result,
+                homogeneousMean: true,
+                HIB: suite.commonHib,
+                libInverted: false,
+            };
         }
 
         function buildPtsGeoMeanResult(configEntries, systems) {
