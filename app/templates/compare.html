@@ -986,7 +986,8 @@
          * - 2 systems: Phoronix-style horizontal signed-delta bars.
          * - 3+ systems: radial chart of signed deltas vs geometric-mean baseline.
          */
-        function createGroupedDivergingMarginChart(parent, rows, systems, systemDisplayNames) {
+        function createGroupedDivergingMarginChart(parent, rows, systems, systemDisplayNames, chartOpts) {
+            chartOpts = chartOpts || {};
             const rowLabels = rows.map(r => r.label);
             const n = rowLabels.length;
             const m = systems.length;
@@ -1059,16 +1060,19 @@
 
             const titleEl = document.createElement('div');
             titleEl.style.cssText = 'font-size:0.9rem;font-weight:600;color:var(--text-secondary);margin-top:1rem;margin-bottom:0.35rem;';
-            titleEl.textContent = 'Subtest relative deltas';
+            titleEl.textContent = chartOpts.title || 'Subtest relative deltas';
             parent.appendChild(titleEl);
             const cap = document.createElement('div');
             cap.style.cssText = 'font-size:0.78rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.45;max-width:52rem;';
             if (m === 2) {
-                cap.textContent = usePtsComposite
-                    ? 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead.'
-                    : 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = capped median blend across options; see “Composite basis check”.)';
+                cap.textContent = chartOpts.caption2 != null ? chartOpts.caption2 : (
+                    usePtsComposite
+                        ? 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead.'
+                        : 'Each row is one scored subtest (one config). Bars sorted by |delta|; ~0% rows omitted. Right means ' + sysNames[dom2] + ' ahead; left means ' + sysNames[oth2] + ' ahead. (Headline composite = capped median blend across options; see “Composite basis check”.)'
+                );
             } else {
-                cap.textContent = 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
+                cap.textContent = chartOpts.captionMulti != null ? chartOpts.captionMulti
+                    : 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
             }
             parent.appendChild(cap);
 
@@ -1857,6 +1861,96 @@
             return null;
         }
 
+        /** Human-readable title for a primary BAR (e.g. "Compression Rating" from Phoronix descriptions). */
+        function primaryChartPanelTitle(chartData) {
+            let t = (chartData.metric || chartData.description || chartData.scale || 'Result').trim();
+            t = t.replace(/^Test:\s*/i, '').trim();
+            return t || 'Result';
+        }
+
+        /**
+         * One row per config (subtest). Pair-balanced grouping applies only to the headline composite.
+         */
+        function collectBenchmarkSubtestMarginRows(bGroup, systems, configLabelsMap) {
+            if (!Array.isArray(systems) || systems.length < 2) return [];
+            const rows = [];
+            const shortOptLabel = (config) => {
+                const raw = (config.args_label != null && config.args_label !== '') ? String(config.args_label)
+                    : (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined)
+                        ? String(configLabelsMap[bGroup.benchmarkName][config.args])
+                        : (config.args != null && String(config.args).trim()) ? String(config.args) : '';
+                const s = raw.length > 72 ? raw.slice(0, 69) + '…' : raw;
+                return s || '(default)';
+            };
+
+            const addRow = (ch, HIB, vals, optPart, multiOpt) => {
+                const nums = vals.map(v => (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null);
+                const present = nums.filter(n => n != null);
+                if (present.length < 2) return;
+                const G = geometricMean(present);
+                if (G == null || !isFinite(G) || G <= 0) return;
+                const pcts = nums.map(v => {
+                    if (v == null) return null;
+                    return HIB ? ((v / G) - 1) * 100 : ((G / v) - 1) * 100;
+                });
+                const a = nums[0];
+                const b = nums[1];
+                const deltaPct = (a != null && b != null)
+                    ? (HIB ? ((a / b) - 1) * 100 : ((b / a) - 1) * 100)
+                    : null;
+                const nonZero = pcts.some(p => p != null && isFinite(p) && Math.abs(p) >= 1e-6);
+                if (!nonZero) return;
+                const metricPart = ch ? primaryChartPanelTitle(ch) : 'Primary metric';
+                const label = multiOpt ? `${optPart} · ${metricPart}` : metricPart;
+                rows.push({ label, deltaPct, pcts });
+            };
+
+            const multiArgs = new Set(bGroup.configs.map(c => String(c.args != null ? c.args : ''))).size > 1;
+            bGroup.configs.forEach(config => {
+                const ch = config.primaryChart || getConfigPrimaryChart(config, bGroup);
+                const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
+                const vals = systems.map(s => configValueForSystem(config, s));
+                addRow(ch, HIB, vals, shortOptLabel(config), multiArgs);
+            });
+            if (systems.length === 2) {
+                rows.sort((a, b) => Math.abs((b.deltaPct || 0)) - Math.abs((a.deltaPct || 0)));
+            } else {
+                const rowStrength = (r) => {
+                    const vals = (r.pcts || []).filter(v => v != null && isFinite(v));
+                    if (!vals.length) return 0;
+                    return Math.max(...vals.map(v => Math.abs(v)));
+                };
+                rows.sort((a, b) => rowStrength(b) - rowStrength(a));
+            }
+            return rows;
+        }
+
+        /** All subtests across every benchmark, prefixed with benchmark name when multiple suites. */
+        function collectAllSubtestMarginRows(benchmarkGroups, systems, configLabelsMap) {
+            if (!Array.isArray(benchmarkGroups) || !benchmarkGroups.length || systems.length < 2) return [];
+            const rows = [];
+            const multiBench = benchmarkGroups.length > 1;
+            benchmarkGroups.forEach(bGroup => {
+                collectBenchmarkSubtestMarginRows(bGroup, systems, configLabelsMap).forEach(r => {
+                    rows.push({
+                        ...r,
+                        label: multiBench ? `${bGroup.benchmarkName} · ${r.label}` : r.label,
+                    });
+                });
+            });
+            if (systems.length === 2) {
+                rows.sort((a, b) => Math.abs((b.deltaPct || 0)) - Math.abs((a.deltaPct || 0)));
+            } else {
+                const rowStrength = (r) => {
+                    const vals = (r.pcts || []).filter(v => v != null && isFinite(v));
+                    if (!vals.length) return 0;
+                    return Math.max(...vals.map(v => Math.abs(v)));
+                };
+                rows.sort((a, b) => rowStrength(b) - rowStrength(a));
+            }
+            return rows;
+        }
+
         function resolveConfigProportion(config, bGroup) {
             const ch = getConfigPrimaryChart(config, bGroup);
             if (ch && ch.proportion != null && String(ch.proportion).trim() !== '') return ch.proportion;
@@ -2613,6 +2707,21 @@
             }
             if (sortHigherIsBetter == null) {
                 sortHigherIsBetter = obP1 || !!meanData.headToHead || isHarmonic || !!meanData.homogeneousMean;
+            }
+            let directionText = null;
+            if (meanData.rawMean && meanData.homogeneousMean) {
+                directionText = (meanData.HIB !== false) ? 'Higher is better' : 'Lower is better';
+            } else if (obP1 || meanData.headToHead) {
+                directionText = 'Higher is better';
+            }
+            if (directionText && meanData.rawMean && meanData.homogeneousMean) {
+                compositeLabel = `${compositeLabel} — ${directionText}`;
+            }
+            if (directionText) {
+                const directionEl = document.createElement('div');
+                directionEl.style.cssText = 'font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.25rem;text-align:center;';
+                directionEl.textContent = directionText;
+                parent.appendChild(directionEl);
             }
             const sortedAgg = sortLabelsValuesSystemIdsBestFirst(systemLabels, aggVals, systems, sortHigherIsBetter);
             createBarChart(
@@ -3456,8 +3565,12 @@
             }
 
             // Global summary across all benchmarks — primary bar is always OB p1 average (not head-to-head).
-            if (benchmarkGroups.length && (overallObP1Balanced || overallObP1Mean || showCompositeBar || showHarmonicMean || showWinsLossCharts)) {
-                const systems = pageSystems;
+            const pageSystemsForOverall = pageSystems;
+            const overallMarginRows = pageSystemsForOverall.length >= 2
+                ? collectAllSubtestMarginRows(benchmarkGroups, pageSystemsForOverall, configLabelsMap)
+                : [];
+            if (benchmarkGroups.length && (overallObP1Balanced || overallObP1Mean || showCompositeBar || showHarmonicMean || showWinsLossCharts || overallMarginRows.length)) {
+                const systems = pageSystemsForOverall;
                 const systemLabels = getSystemDisplayNames(systems);
                 const { globalWins, globalLosses } = computeGlobalSummary(benchmarkGroups, systems);
 
@@ -3510,7 +3623,7 @@
                 const overallSensors = computeOverallSensorMeans(currentComparisonGroups, systems);
                 const sensorsToShow = overallSensors.filter(({ metric }) => showOverallSensor[metric]);
 
-                if (hasCompositeCharts || hasPies || sensorsToShow.length) {
+                if (hasCompositeCharts || hasPies || sensorsToShow.length || overallMarginRows.length) {
                     const globalSection = document.createElement('div');
                     globalSection.style.cssText = 'width:100%;max-width:100%;margin-bottom:2rem;padding:1rem 1.25rem;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);box-sizing:border-box;overflow:hidden;';
                     const globalTitle = document.createElement('h3');
@@ -3568,6 +3681,45 @@
                             }
                             const sortedSensor = sortLabelsValuesSystemIdsBestFirst(systemLabels, values, systems, normalizeComposite || HIB);
                             createBarChart(wrap, sortedSensor.labels, sortedSensor.values, xLabel, formatter, 'overall-sensor', sortedSensor.systemIds);
+                        });
+                    }
+
+                    if (overallMarginRows.length) {
+                        const deltaToggle = document.createElement('button');
+                        deltaToggle.type = 'button';
+                        deltaToggle.style.cssText = 'margin-top:1rem;margin-bottom:0.25rem;font-size:0.75rem;border-radius:999px;border:1px solid rgba(255,255,255,0.18);background:rgba(0,0,0,0.35);color:var(--text-secondary);padding:0.25rem 0.7rem;cursor:pointer;';
+                        const deltaHost = document.createElement('div');
+                        deltaHost.style.display = 'none';
+                        globalSection.appendChild(deltaToggle);
+                        globalSection.appendChild(deltaHost);
+                        const overallDeltaKey = '__overall__';
+                        const deltaOpen = subtestDeltaOpenState[overallDeltaKey] !== false;
+                        const overallDeltaOpts = systems.length === 2 ? {
+                            title: 'All subtest relative deltas',
+                            caption2: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Bars sorted by |delta|; ~0% rows omitted. Same raw-value delta semantics as per-benchmark panels.`,
+                        } : {
+                            title: 'All subtest relative deltas',
+                            captionMulti: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Signed delta (%) vs geometric-mean baseline; strongest first.`,
+                        };
+                        const renderOverallDelta = () => {
+                            deltaHost.innerHTML = '';
+                            if (deltaHost.style.display !== 'none') {
+                                createGroupedDivergingMarginChart(deltaHost, overallMarginRows, systems, systemLabels, overallDeltaOpts);
+                            }
+                        };
+                        const syncOverallDeltaToggle = () => {
+                            const open = deltaHost.style.display !== 'none';
+                            deltaToggle.textContent = open ? 'Hide all subtest relative deltas' : 'Show all subtest relative deltas';
+                        };
+                        deltaHost.style.display = deltaOpen ? 'block' : 'none';
+                        syncOverallDeltaToggle();
+                        renderOverallDelta();
+                        deltaToggle.addEventListener('click', () => {
+                            const open = deltaHost.style.display !== 'none';
+                            deltaHost.style.display = open ? 'none' : 'block';
+                            subtestDeltaOpenState[overallDeltaKey] = !open;
+                            syncOverallDeltaToggle();
+                            renderOverallDelta();
                         });
                     }
 
@@ -3653,70 +3805,6 @@
                 });
                 wrap.appendChild(legendEl);
                 return ch;
-            }
-
-            /** Human-readable title for a primary BAR (e.g. "Compression Rating" from Phoronix descriptions). */
-            function primaryChartPanelTitle(chartData) {
-                let t = (chartData.metric || chartData.description || chartData.scale || 'Result').trim();
-                t = t.replace(/^Test:\s*/i, '').trim();
-                return t || 'Result';
-            }
-
-            /**
-             * One row per config (subtest). Pair-balanced grouping applies only to the headline composite.
-             */
-            function collectBenchmarkSubtestMarginRows(bGroup, systems) {
-                if (!Array.isArray(systems) || systems.length < 2) return [];
-                const rows = [];
-                const shortOptLabel = (config) => {
-                    const raw = (config.args_label != null && config.args_label !== '') ? String(config.args_label)
-                        : (configLabelsMap[bGroup.benchmarkName] && configLabelsMap[bGroup.benchmarkName][config.args] !== undefined)
-                            ? String(configLabelsMap[bGroup.benchmarkName][config.args])
-                            : (config.args != null && String(config.args).trim()) ? String(config.args) : '';
-                    const s = raw.length > 72 ? raw.slice(0, 69) + '…' : raw;
-                    return s || '(default)';
-                };
-
-                const addRow = (ch, HIB, vals, optPart, multiOpt) => {
-                    const nums = vals.map(v => (v != null && !isNaN(v) && Number(v) > 0) ? Number(v) : null);
-                    const present = nums.filter(n => n != null);
-                    if (present.length < 2) return;
-                    const G = geometricMean(present);
-                    if (G == null || !isFinite(G) || G <= 0) return;
-                    const pcts = nums.map(v => {
-                        if (v == null) return null;
-                        return HIB ? ((v / G) - 1) * 100 : ((G / v) - 1) * 100;
-                    });
-                    const a = nums[0];
-                    const b = nums[1];
-                    const deltaPct = (a != null && b != null)
-                        ? (HIB ? ((a / b) - 1) * 100 : ((b / a) - 1) * 100)
-                        : null;
-                    const nonZero = pcts.some(p => p != null && isFinite(p) && Math.abs(p) >= 1e-6);
-                    if (!nonZero) return;
-                    const metricPart = ch ? primaryChartPanelTitle(ch) : 'Primary metric';
-                    const label = multiOpt ? `${optPart} · ${metricPart}` : metricPart;
-                    rows.push({ label, deltaPct, pcts });
-                };
-
-                const multiArgs = new Set(bGroup.configs.map(c => String(c.args != null ? c.args : ''))).size > 1;
-                bGroup.configs.forEach(config => {
-                    const ch = config.primaryChart || getConfigPrimaryChart(config, bGroup);
-                    const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
-                    const vals = systems.map(s => configValueForSystem(config, s));
-                    addRow(ch, HIB, vals, shortOptLabel(config), multiArgs);
-                });
-                if (systems.length === 2) {
-                    rows.sort((a, b) => Math.abs((b.deltaPct || 0)) - Math.abs((a.deltaPct || 0)));
-                } else {
-                    const rowStrength = (r) => {
-                        const vals = (r.pcts || []).filter(v => v != null && isFinite(v));
-                        if (!vals.length) return 0;
-                        return Math.max(...vals.map(v => Math.abs(v)));
-                    };
-                    rows.sort((a, b) => rowStrength(b) - rowStrength(a));
-                }
-                return rows;
             }
 
             function sensorRelevantForOption(chartData, optionKey) {
@@ -3956,7 +4044,7 @@
 
                 const systems = pageSystems;
                 const systemLabels = getSystemDisplayNames(systems);
-                const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems) : [];
+                const marginRows = systems.length >= 2 ? collectBenchmarkSubtestMarginRows(bGroup, systems, configLabelsMap) : [];
                 const scoredConfigs = uniqueScoredConfigs(bGroup, systems);
                 const scoredSubtestCount = scoredConfigs.length;
                 const hasSuiteComposite = scoredSubtestCount >= 2;
