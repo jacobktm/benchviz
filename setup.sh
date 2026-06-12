@@ -135,6 +135,10 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     ./install_systemd_service.sh
 
   echo
+  echo "Pausing benchviz.service for database maintenance (avoids SQLite locks)..."
+  systemctl stop benchviz.service || true
+
+  echo
   echo "Seeding OpenBenchmarking cache (git mirror + index; live OB fetch runs on compare/timer)..."
   # Prior failed runs may have left root-owned files under instance/ (git dubious ownership).
   mkdir -p "${PROJECT_ROOT}/instance/pts-user"
@@ -163,11 +167,27 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   fi
 
   echo
+  echo "Rebuilding performance & ML insights (cohort stats + workload profiles)..."
+  if ! sudo -u "${SERVICE_USER}" bash -c "
+    cd \"${PROJECT_ROOT}\" &&
+    export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
+    \"${PROJECT_ROOT}/venv/bin/python\" -m flask rebuild-performance-insights
+  "; then
+    echo "Warning: Insights rebuild failed (database may be empty, locked, or missing ML dependencies)."
+    echo "Retry after uploads with:"
+    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask rebuild-performance-insights'"
+  fi
+
+  echo
   echo "Installing periodic OpenBenchmarking cache sync timer (every 24h)..."
   BENCHVIZ_PROJECT_ROOT="$PROJECT_ROOT" \
     BENCHVIZ_DEFAULT_SERVICE_USER="$SERVICE_USER" \
     BENCHVIZ_OB_SYNC_INTERVAL_HOURS="24" \
     ./install_systemd_ob_cache_timer.sh
+
+  echo
+  echo "Starting benchviz.service..."
+  systemctl start benchviz.service || true
 
   echo
   echo "Service setup complete."

@@ -3,10 +3,40 @@
 {% block content %}
 <div class="animate-in delay-1" style="margin-bottom: 2rem;">
     <h1 style="margin-top: 1rem;">Performance Insights</h1>
-    <p class="card-meta">Statistical insights into how hardware and software configurations impact benchmark performance. Workload class (CPU / GPU / memory / storage) is inferred from LINUX_PERF counters and MONITOR sensors when present, so component rankings focus on parts that plausibly matter for that test.</p>
+    <p class="card-meta">Statistical insights into how hardware and software configurations impact benchmark performance. <strong>ML workload profiles</strong> (below) infer CPU/GPU/cache/memory/thermal dominance from LINUX_PERF counters and MONITOR sensors. Legacy cohort η² views remain available further down.</p>
 </div>
 
 <style>
+    .ml-workload-bar {
+        display: flex;
+        height: 10px;
+        border-radius: 6px;
+        overflow: hidden;
+        background: rgba(255,255,255,0.06);
+        margin: 0.5rem 0 0.75rem;
+    }
+    .ml-workload-seg {
+        height: 100%;
+        min-width: 2px;
+    }
+    .ml-driver-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.35rem 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        font-size: 0.86rem;
+    }
+    .ml-tag {
+        display: inline-block;
+        font-size: 0.72rem;
+        padding: 0.15rem 0.45rem;
+        border-radius: 999px;
+        background: rgba(99,102,241,0.15);
+        border: 1px solid rgba(99,102,241,0.3);
+        color: #c4b5fd;
+        margin-right: 0.35rem;
+    }
     .feature-card {
         padding: 1.5rem;
         border-radius: 12px;
@@ -68,6 +98,94 @@
         gap: 1.25rem;
     }
 </style>
+
+{% set ml_colors = {'cpu': '#58a6ff', 'gpu': '#f0883e', 'cache': '#a371f7', 'memory': '#3fb950', 'storage': '#d29922', 'thermal': '#f85149'} %}
+
+<details class="glass animate-in delay-2" open style="margin-bottom: 1.5rem; padding: 1.25rem 1.5rem;">
+    <summary style="cursor: pointer; font-weight: 700; color: var(--gradient-start); font-size: 1.05rem; margin-bottom: 0.75rem;">
+        ML workload profiles
+    </summary>
+    <p class="card-meta" style="margin-bottom: 1rem;">
+        Fingerprinted from perf counters + MONITOR sensors (usage and temperature kept separate). Attribution uses elastic-net with leave-one-system-out CV when ≥4 systems are available.
+    </p>
+    {% set ns_ml = namespace(has=false) %}
+    {% for analysis in analyses %}
+        {% set ml = analysis.analysis_json.get('_ml_profile') if analysis.analysis_json else none %}
+        {% if ml and ml.by_args %}
+            {% set ns_ml.has = true %}
+            <div class="feature-card" style="margin-bottom: 1.25rem;">
+                <h3 style="margin: 0 0 0.35rem; color: var(--text-primary);">
+                    {{ analysis.benchmark_title }}
+                    {% if analysis.benchmark_app_version %}<span style="font-weight:400;color:var(--text-secondary);">(v{{ analysis.benchmark_app_version }})</span>{% endif %}
+                </h3>
+                {% for args_key, prof in ml.by_args.items() %}
+                {% set wl = prof.workload or {} %}
+                {% set props = wl.proportions or {} %}
+                <div style="margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid rgba(255,255,255,0.07);">
+                    {% if ml.by_args|length > 1 %}
+                    <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.35rem;">Config: <code>{{ args_key }}</code></div>
+                    {% endif %}
+                    <div style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.25rem;">
+                        Scope: <strong style="color:var(--text-primary);">{{ wl.scope or 'general' }}</strong>
+                        · source: {{ wl.source or '?' }}
+                        · confidence: {{ (wl.confidence * 100)|round(0) if wl.confidence is not none else '?' }}%
+                        · {{ prof.n_systems or '?' }} systems
+                    </div>
+                    {% if props %}
+                    <div class="ml-workload-bar">
+                        {% for dim, pct in props.items() if pct and pct > 0.02 %}
+                        <div class="ml-workload-seg" style="width: {{ (pct * 100)|round(1) }}%; background: {{ ml_colors.get(dim, '#888') }};" title="{{ dim }} {{ (pct * 100)|round(0) }}%"></div>
+                        {% endfor %}
+                    </div>
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        {% for dim, pct in props.items() if pct and pct > 0.02 %}
+                        <span class="ml-tag" style="border-color: {{ ml_colors.get(dim, '#888') }}55; background: {{ ml_colors.get(dim, '#888') }}22;">{{ dim }} {{ (pct * 100)|round(0) }}%</span>
+                        {% endfor %}
+                        {% if wl.thermal_notable or (wl.thermal_score and wl.thermal_score >= 1) %}
+                        <span class="ml-tag" style="border-color: #f8514955; background: #f8514922;">thermal notable</span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    {% if wl.evidence %}
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); line-height: 1.45; margin-bottom: 0.5rem;">
+                        {{ wl.evidence|join(' · ') }}
+                    </div>
+                    {% endif %}
+                    {% set attr = prof.attribution or {} %}
+                    {% if attr.available and attr.drivers %}
+                    <div style="font-weight: 600; font-size: 0.85rem; margin: 0.5rem 0 0.25rem;">Model-backed drivers</div>
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 0.35rem;">
+                        CV R²={{ attr.cv_r2_mean if attr.cv_r2_mean is not none else '—' }} · tier={{ attr.confidence_tier }} · run noise CV≈{{ attr.median_run_cv }}
+                    </div>
+                    {% for d in attr.drivers[:6] %}
+                    <div class="ml-driver-row">
+                        <span>{{ d.feature }}</span>
+                        <span style="font-variant-numeric: tabular-nums; color: #7bed9f;">importance {{ d.importance }}</span>
+                    </div>
+                    {% endfor %}
+                    {% elif attr.reason %}
+                    <div style="font-size: 0.78rem; color: var(--text-secondary);">Attribution: {{ attr.reason }}</div>
+                    {% endif %}
+                    {% set th = prof.thermal or {} %}
+                    {% if th.available %}
+                    <div style="font-weight: 600; font-size: 0.85rem; margin: 0.65rem 0 0.25rem;">Thermal sensitivity</div>
+                    <div style="font-size: 0.78rem; color: var(--text-secondary);">
+                        {{ th.sensitivity|capitalize }} — peak CPU temp median {{ th.median_cpu_temp_peak }}°C
+                        {% if th.temp_residual_r2 is not none %} · temp residual R²={{ th.temp_residual_r2 }}{% endif %}
+                        {% if th.evidence %} · {{ th.evidence|join(' · ') }}{% endif %}
+                    </div>
+                    {% elif th.reason %}
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.35rem;">Thermal: {{ th.reason }}</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endfor %}
+    {% if not ns_ml.has %}
+    <p class="card-meta" style="margin: 0;">No ML profiles yet. Upload benchmarks (with LINUX_PERF / MONITOR data when possible), then run <code>flask rebuild-ml-insights</code> or wait for background analysis after upload.</p>
+    {% endif %}
+</details>
 
 <div class="glass scatter-explorer animate-in delay-2">
     <h2 style="margin-bottom: 0.35rem; color: var(--gradient-start); font-size: 1.1rem;">

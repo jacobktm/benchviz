@@ -11,6 +11,7 @@ from app.models import (
 from app.parser import parse_benchmark_files, parse_file, pop_import_notes
 from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
 from app.analyzer import analyze_benchmarks
+from app.ml.analyzer import analyze_ml_profiles
 from app.components import get_system_components
 from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
 from urllib.parse import unquote
@@ -385,6 +386,7 @@ def upload_benchmarks():
             with app_context:
                 try:
                     analyze_benchmarks()
+                    analyze_ml_profiles()
                 except Exception as e:
                     print(f"Error in background benchmark analysis: {e}")
                 finally:
@@ -3986,7 +3988,16 @@ def rebuild_performance_insights():
     """Recompute Performance Insights (BenchmarkAnalysis) for all BAR_GRAPH benchmarks."""
     with app.app_context():
         analyze_benchmarks()
+        analyze_ml_profiles()
         print("Performance Insights rebuilt.")
+
+
+@app.cli.command("rebuild-ml-insights")
+def rebuild_ml_insights():
+    """Recompute ML workload/attribution/thermal profiles only."""
+    with app.app_context():
+        n = analyze_ml_profiles()
+        print(f"ML profiles updated for {n} analysis record(s).")
 
 
 @app.cli.command("debug-insights-coverage")
