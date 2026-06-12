@@ -9,6 +9,8 @@ from app.models import (
     HardwareTheoreticalRank,
 )
 from app.parser import parse_benchmark_files, parse_file, pop_import_notes
+from app.result_merge import bar_run_values
+from app.profile_snapshot import format_observation_label
 from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
 from app.analyzer import analyze_benchmarks
 from app.ml.analyzer import analyze_ml_profiles
@@ -1706,29 +1708,38 @@ def api_compare():
                         continue
                     primary_traces = []
                     for sys_id in sys_id_ints:
-                        res = next((r for r in results_for_bm if r.system_id == sys_id), None)
-                        if not res:
-                            continue
                         system = db.session.get(System, sys_id)
                         if not system:
                             continue
-                        system_label = format_system_profile_label(system)
-                        short_name = system.identifier
-                        trace = {
-                            "name": short_name,
-                            "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
-                            "customdata": [system_label],
-                            "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if bm.display_format == "BAR_GRAPH" else None
-                        }
-                        if bm.display_format == "BAR_GRAPH":
-                            trace["x"] = [short_name]
-                            trace["y"] = [res.value]
-                        elif bm.display_format == "LINE_GRAPH":
-                            y_data = res.data_json or []
-                            trace["x"] = list(range(len(y_data)))
-                            trace["y"] = y_data
-                            trace["mode"] = "lines"
-                        primary_traces.append(trace)
+                        matching = [r for r in results_for_bm if r.system_id == sys_id]
+                        if not matching:
+                            continue
+                        for res in sorted(matching, key=lambda r: (r.imported_at or "", r.id)):
+                            obs_label = format_observation_label(
+                                system, res.profile_snapshot, res.imported_at,
+                            )
+                            system_label = format_system_profile_label(system)
+                            trace = {
+                                "name": obs_label,
+                                "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
+                                "customdata": [[system_label, obs_label]],
+                                "hovertemplate": (
+                                    "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{x}<extra></extra>"
+                                    if bm.display_format == "BAR_GRAPH"
+                                    else "%{customdata[0][0]}<br>%{customdata[0][1]}<extra></extra>"
+                                ),
+                                "import_batch_id": res.import_batch_id,
+                            }
+                            if bm.display_format == "BAR_GRAPH":
+                                trace["x"] = [obs_label]
+                                trace["y"] = [res.value]
+                            elif bm.display_format == "LINE_GRAPH":
+                                from app.sensor_quality import numeric_series
+                                y_data = numeric_series(res.data_json)
+                                trace["x"] = list(range(len(y_data)))
+                                trace["y"] = y_data
+                                trace["mode"] = "lines"
+                            primary_traces.append(trace)
                     if primary_traces:
                         metric_label = (bm.description or "").strip() or (bm.scale or "Primary Result")
                         charts.append({
@@ -1841,47 +1852,65 @@ def api_compare():
 
                     if not matching_s_res:
                         continue
-                    s_res = matching_s_res[0]
-                    system_label = format_system_profile_label(system)
-                    short_name = system.identifier
+                    # Pair sensors with the same upload batch when multiple runs exist.
+                    batches = sorted({
+                        (r.import_batch_id or f"legacy-{r.id}") for r in matching_s_res
+                    })
+                    for batch_key in batches:
+                        batch_rows = [
+                            r for r in matching_s_res
+                            if (r.import_batch_id or f"legacy-{r.id}") == batch_key
+                        ]
+                        if not batch_rows:
+                            continue
+                        s_res = batch_rows[0]
+                        obs_label = format_observation_label(
+                            system, s_res.profile_snapshot, s_res.imported_at,
+                        )
+                        system_label = format_system_profile_label(system)
+                        short_name = obs_label
 
-                    trace = {
-                        "name": short_name,
-                        "type": "bar" if s_bm.display_format == "BAR_GRAPH" else "scatter",
-                        "customdata": [system_label],
-                        "hovertemplate": "%{customdata[0]}<br>%{x}<extra></extra>" if s_bm.display_format == "BAR_GRAPH" else None
-                    }
-                    if s_bm.display_format == "BAR_GRAPH":
-                        trace["x"] = [short_name]
-                        trace["y"] = [s_res.value]
-                    elif s_bm.display_format == "LINE_GRAPH":
-                        y_data = s_res.data_json or []
-                        trace["x"] = list(range(len(y_data)))
-                        trace["y"] = y_data
-                        trace["mode"] = "lines"
+                        trace = {
+                            "name": short_name,
+                            "type": "bar" if s_bm.display_format == "BAR_GRAPH" else "scatter",
+                            "customdata": [[system_label, obs_label]],
+                            "hovertemplate": (
+                                "%{customdata[0][0]}<br>%{customdata[0][1]}<extra></extra>"
+                            ),
+                            "import_batch_id": s_res.import_batch_id,
+                        }
+                        if s_bm.display_format == "BAR_GRAPH":
+                            trace["x"] = [short_name]
+                            trace["y"] = [s_res.value]
+                        elif s_bm.display_format == "LINE_GRAPH":
+                            from app.sensor_quality import numeric_series
+                            y_data = numeric_series(s_res.data_json)
+                            trace["x"] = list(range(len(y_data)))
+                            trace["y"] = y_data
+                            trace["mode"] = "lines"
 
-                        if y_data:
-                            clean_y = [val for val in y_data if isinstance(val, (int, float))]
-                            if clean_y:
-                                stats_dict = {
-                                    "min": min(clean_y),
-                                    "max": max(clean_y),
-                                    "mean": statistics.mean(clean_y),
-                                    "median": statistics.median(clean_y)
-                                }
-                                try:
-                                    qs = statistics.quantiles(clean_y, n=4, method="inclusive")
-                                    if len(qs) >= 3:
-                                        stats_dict["q1"] = qs[0]
-                                        stats_dict["q3"] = qs[2]
-                                except (statistics.StatisticsError, ValueError):
-                                    pass
-                                q = series_quality(clean_y, s_bm.description, s_bm.scale)
-                                stats_dict["quality"] = q
-                                trace["quality"] = q
-                                trace["stats"] = stats_dict
+                            if y_data:
+                                clean_y = [val for val in y_data if isinstance(val, (int, float))]
+                                if clean_y:
+                                    stats_dict = {
+                                        "min": min(clean_y),
+                                        "max": max(clean_y),
+                                        "mean": statistics.mean(clean_y),
+                                        "median": statistics.median(clean_y)
+                                    }
+                                    try:
+                                        qs = statistics.quantiles(clean_y, n=4, method="inclusive")
+                                        if len(qs) >= 3:
+                                            stats_dict["q1"] = qs[0]
+                                            stats_dict["q3"] = qs[2]
+                                    except (statistics.StatisticsError, ValueError):
+                                        pass
+                                    q = series_quality(clean_y, s_bm.description, s_bm.scale)
+                                    stats_dict["quality"] = q
+                                    trace["quality"] = q
+                                    trace["stats"] = stats_dict
 
-                    s_traces.append(trace)
+                        s_traces.append(trace)
 
                 has_signal, noise_reason = chart_has_usable_signal(
                     s_traces, s_bm.description or "", s_bm.scale or "",
@@ -2784,19 +2813,7 @@ def api_variance_feature_map():
     #   - within-system run variability (stddev of runs)
     by_system_run_vals = defaultdict(list)
     for r in all_results:
-        run_vals = []
-        if isinstance(r.data_json, list):
-            for v in r.data_json:
-                if v is None:
-                    continue
-                try:
-                    run_vals.append(float(v))
-                except (ValueError, TypeError):
-                    pass
-        if not run_vals and r.value is not None:
-            run_vals = [float(r.value)]
-        if run_vals:
-            by_system_run_vals[r.system_id].extend(run_vals)
+        by_system_run_vals[r.system_id].extend(bar_run_values(r.data_json, r.value))
 
     if not by_system_run_vals:
         return {"points": [], "meta": {"y_label": y_label_base, "x_label": "within-system run variability (stdev)"}}, 200

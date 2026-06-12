@@ -113,6 +113,61 @@ def ensure_schema_compatibility():
                     "WHERE rank_value_spec IS NULL"
                 ))
 
+    inspector3 = inspect(db.engine)
+    if 'benchmark_results' in inspector3.get_table_names():
+        with db.engine.begin() as connection:
+            _migrate_benchmark_results_v2(connection, inspector3)
+
+
+def _migrate_benchmark_results_v2(connection, inspector) -> None:
+    """
+    Allow multiple upload runs per (system, benchmark, arguments).
+    Adds import_batch_id + profile_snapshot; drops legacy unique constraint.
+    """
+    if 'benchmark_results' not in inspector.get_table_names():
+        return
+    br_cols = {c['name'] for c in inspector.get_columns('benchmark_results')}
+    if 'import_batch_id' in br_cols:
+        return
+
+    connection.execute(text(
+        """
+        CREATE TABLE benchmark_results_new (
+            id INTEGER PRIMARY KEY,
+            system_id INTEGER NOT NULL,
+            benchmark_id INTEGER NOT NULL,
+            arguments TEXT,
+            value FLOAT,
+            data_json JSON,
+            imported_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            import_batch_id VARCHAR(36),
+            profile_snapshot JSON,
+            FOREIGN KEY(system_id) REFERENCES systems (id),
+            FOREIGN KEY(benchmark_id) REFERENCES benchmarks (id)
+        )
+        """
+    ))
+    connection.execute(text(
+        """
+        INSERT INTO benchmark_results_new (
+            id, system_id, benchmark_id, arguments, value, data_json,
+            imported_at, import_batch_id, profile_snapshot
+        )
+        SELECT
+            id, system_id, benchmark_id, arguments, value, data_json,
+            CURRENT_TIMESTAMP,
+            'legacy-' || id,
+            NULL
+        FROM benchmark_results
+        """
+    ))
+    connection.execute(text("DROP TABLE benchmark_results"))
+    connection.execute(text("ALTER TABLE benchmark_results_new RENAME TO benchmark_results"))
+    connection.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_results_import_batch_id "
+        "ON benchmark_results (import_batch_id)"
+    ))
+
 def create_app():
     app = Flask(__name__)
     # Use an absolute path so the DB is consistent regardless of current working directory

@@ -67,13 +67,12 @@ class BenchmarkResult(db.Model):
     arguments = db.Column(db.Text)
     value = db.Column(db.Float, nullable=True) # For BAR_GRAPH (scalar values)
     data_json = db.Column(db.JSON, nullable=True) # For LINE_GRAPH (arrays/lists of values)
+    imported_at = db.Column(db.DateTime, server_default=db.func.now(), nullable=False)
+    import_batch_id = db.Column(db.String(36), nullable=True, index=True)
+    profile_snapshot = db.Column(db.JSON, nullable=True)
     
     system = db.relationship('System', back_populates='results')
     benchmark = db.relationship('Benchmark', back_populates='results')
-
-    __table_args__ = (
-        db.UniqueConstraint('system_id', 'benchmark_id', 'arguments', name='_system_benchmark_uc'),
-    )
 
 class BenchmarkAnalysis(db.Model):
     __tablename__ = 'benchmark_analyses'

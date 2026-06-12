@@ -11,6 +11,7 @@ from app.ml.attribution import compute_attribution
 from app.ml.features import (
     _proportion_is_lower_better,
     extract_system_run_features,
+    list_upload_observations,
     pool_perf_signals,
     pool_sensor_features,
 )
@@ -33,19 +34,12 @@ def _analyze_config(
     is_lower_better = any(_proportion_is_lower_better(b.proportion) for b in primary_bms)
     primary_bm_ids = [b.id for b in primary_bms]
 
-    system_ids = sorted({
-        r.system_id
-        for r in BenchmarkResult.query.filter(
-            BenchmarkResult.benchmark_id.in_(primary_bm_ids),
-            BenchmarkResult.arguments == args_db,
-            BenchmarkResult.value.isnot(None),
-        ).all()
-    })
+    observations = list_upload_observations(primary_bm_ids, args_db)
 
     from app.models import System
 
     rows = []
-    for sid in system_ids:
+    for sid, batch_id in observations:
         system = db.session.get(System, sid)
         if not system:
             continue
@@ -57,8 +51,10 @@ def _analyze_config(
             primary_bm_ids=primary_bm_ids,
             is_lower_better=is_lower_better,
             baseline_index=baseline_index,
+            import_batch_id=batch_id,
         )
         if feat:
+            feat.import_batch_id = batch_id
             rows.append(feat)
 
     if not rows:
@@ -105,6 +101,8 @@ def _analyze_config(
         "version": 1,
         "config_args": args_key,
         "n_systems": len(rows),
+        "n_observations": len(rows),
+        "n_distinct_systems": len({r.system_id for r in rows}),
         "workload": workload,
         "attribution": attribution,
         "thermal": thermal,

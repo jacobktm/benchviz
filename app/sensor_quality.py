@@ -45,15 +45,33 @@ def sensor_kind(description: str | None, scale: str | None = None) -> str:
 
 
 def numeric_series(values: Any) -> list[float]:
+    """Return numeric samples for one series (latest upload when multiple are stored)."""
+    runs = series_runs(values)
+    return runs[-1] if runs else []
+
+
+def series_runs(values: Any) -> list[list[float]]:
+    """
+    MONITOR rows may store one time series (flat list) or several uploads (list of lists).
+    BAR_GRAPH rows use a flat list of run scalars — treated as a single pseudo-series here.
+    """
     if not values:
         return []
     if isinstance(values, (int, float)):
-        return [float(values)] if math.isfinite(float(values)) else []
-    out: list[float] = []
-    for v in values:
-        if isinstance(v, (int, float)) and math.isfinite(float(v)):
-            out.append(float(v))
-    return out
+        return [[float(values)]] if math.isfinite(float(values)) else []
+    if not isinstance(values, list):
+        return []
+    if values and isinstance(values[0], list):
+        runs: list[list[float]] = []
+        for run in values:
+            if not isinstance(run, list):
+                continue
+            nums = [float(v) for v in run if isinstance(v, (int, float)) and math.isfinite(float(v))]
+            if nums:
+                runs.append(nums)
+        return runs
+    nums = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    return [nums] if nums else []
 
 
 def series_quality(
@@ -191,6 +209,9 @@ def chart_has_usable_signal(
 
 
 def peak_series_value(values: Any) -> float | None:
-    """Peak value — better than mean for usage/freq workload detection."""
-    nums = numeric_series(values)
-    return max(nums) if nums else None
+    """Peak value — max across uploads/runs (better for usage/freq workload detection)."""
+    peaks = []
+    for run in series_runs(values):
+        if run:
+            peaks.append(max(run))
+    return max(peaks) if peaks else None

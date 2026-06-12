@@ -1,11 +1,13 @@
 import os
 import glob
 import re
-import json
+import uuid
 from lxml import etree
 from . import db
 from .models import System, BenchmarkResult
 from .benchmark_util import get_or_create_benchmark
+from .profile_snapshot import capture_profile_snapshot
+from .result_merge import assign_bar_graph_result, assign_line_graph_result
 from .system_util import resolve_system_for_import
 
 STRING_PROFILE_FIELDS = (
@@ -67,8 +69,8 @@ def parse_benchmark_files(directory, system_profile=None):
 
 def parse_file(file_path, system_profile=None):
     print(f"Processing {file_path}...")
+    import_batch_id = str(uuid.uuid4())
     try:
-        # Phoronix XML can sometimes have malformed chars, so we use lxml with recover=True
         parser = etree.XMLParser(recover=True)
         tree = etree.parse(file_path, parser)
         root = tree.getroot()
@@ -85,7 +87,6 @@ def parse_file(file_path, system_profile=None):
         system_id = system_node.findtext('Identifier', default='')
         main_hardware = system_node.findtext('Hardware', default='')
         
-        # 1. UPSERT SYSTEM (same identifier + different hardware → disambiguated name)
         system_lookup_map = {}
 
         system, _, system_note = resolve_system_for_import(
@@ -101,17 +102,12 @@ def parse_file(file_path, system_profile=None):
 
         apply_system_profile(system, system_profile)
 
-        # Keep a mapping of entry identifiers to system objects for the run
         system_lookup_map[system_id] = system
 
-        # 2. PROCESS RESULTS
         current_identifier = ""
         for result_node in root.findall('Result'):
             raw_ident = result_node.findtext('Identifier', default='')
             if raw_ident:
-                import re
-                # Match Phoronix format ending in vX.Y.Z or X.Y.Z and strip the Z (patch)
-                # e.g., pts/build-linux-kernel-1.17.1 -> pts/build-linux-kernel-1.17
                 match = re.search(r'-(\d+\.\d+)\.\d+$', raw_ident)
                 if match:
                     current_identifier = raw_ident[:match.start()] + '-' + match.group(1)
@@ -139,7 +135,6 @@ def parse_file(file_path, system_profile=None):
                 scale_l.startswith('perf')
             )
             
-            # Upsert benchmark definition (unique on identifier/title/version/description/scale).
             benchmark = get_or_create_benchmark(
                 identifier=current_identifier,
                 title=title,
@@ -148,13 +143,9 @@ def parse_file(file_path, system_profile=None):
                 scale=scale,
                 proportion=proportion,
                 display_format=display_format,
-                # BAR_GRAPH is usually the primary benchmark result, but Linux perf counters are
-                # "sensor-like" metrics and shouldn't be treated as primary results.
                 is_primary=(display_format == 'BAR_GRAPH' and not is_perf_counter),
             )
                 
-            # Extract data. Data could be multiple Entries (e.g., if multiple systems were present in the XML)
-            # But usually it's one Entry for the current system.
             data_node = result_node.find('Data')
             if data_node is not None:
                 for entry_node in data_node.findall('Entry'):
@@ -178,76 +169,28 @@ def parse_file(file_path, system_profile=None):
                         system_lookup_map[entry_identifier] = entry_system
                         
                     value_str = entry_node.findtext('Value')
-                    
-                    # Check if this specific result already exists (System + Benchmark Object + Arguments)
-                    # Benchmark objects are already uniquely keyed by identifier + scale above.
-                    b_result = BenchmarkResult.query.filter_by(
+                    profile_snapshot = capture_profile_snapshot(entry_system)
+
+                    b_result = BenchmarkResult(
                         system_id=entry_system.id,
                         benchmark_id=benchmark.id,
-                        arguments=arguments
-                    ).first()
-                    
-                    if not b_result:
-                        b_result = BenchmarkResult(
-                            system_id=entry_system.id,
-                            benchmark_id=benchmark.id,
-                            arguments=arguments
-                        )
-                        db.session.add(b_result)
+                        arguments=arguments,
+                        import_batch_id=import_batch_id,
+                        profile_snapshot=profile_snapshot,
+                    )
+                    db.session.add(b_result)
                     
                     if benchmark.display_format == 'BAR_GRAPH':
-                        try:
-                            b_result.value = float(value_str)
-                        except (ValueError, TypeError):
-                            b_result.value = None
-                        # Also capture per-run values (variability within system).
-                        # Phoronix often stores colon-separated run values in either:
-                        #  - <RawString>...</RawString>
-                        #  - or <JSON>{"test-run-times":"a:b:c"}</JSON>
-                        raw_run_str = entry_node.findtext('RawString', default='') or ''
-                        run_values = []
-                        if raw_run_str.strip():
-                            # Extract all numeric tokens (supports ints/floats/exponents).
-                            toks = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', raw_run_str)
-                            for t in toks:
-                                try:
-                                    run_values.append(float(t))
-                                except (ValueError, TypeError):
-                                    pass
-                        if not run_values:
-                            json_text = entry_node.findtext('JSON', default='') or ''
-                            if json_text.strip():
-                                try:
-                                    parsed = json.loads(json_text)
-                                    if isinstance(parsed, dict):
-                                        # Prefer the canonical key when present.
-                                        candidate_keys = [
-                                            k for k in parsed.keys()
-                                            if isinstance(k, str) and ('test-run-times' in k or 'run-times' in k or 'run_times' in k)
-                                        ]
-                                        for ck in candidate_keys:
-                                            v = parsed.get(ck)
-                                            if isinstance(v, str) and v.strip():
-                                                toks = re.findall(r'[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?', v)
-                                                for t in toks:
-                                                    try:
-                                                        run_values.append(float(t))
-                                                    except (ValueError, TypeError):
-                                                        pass
-                                                if run_values:
-                                                    break
-                                except Exception:
-                                    pass
-                        # Persist run values only if we extracted something useful.
-                        if run_values:
-                            b_result.data_json = run_values
+                        assign_bar_graph_result(b_result, entry_node, value_str)
                     elif benchmark.display_format == 'LINE_GRAPH':
-                        # Line graphs are comma separated values
                         try:
-                            values = [float(v.strip()) for v in value_str.split(',') if v.strip()]
-                            b_result.data_json = values
+                            values = [float(v.strip()) for v in (value_str or '').split(',') if v.strip()]
                         except (ValueError, TypeError, AttributeError):
-                            b_result.data_json = None
+                            values = []
+                        if values:
+                            assign_line_graph_result(b_result, values)
+
+        print(f"  Import batch {import_batch_id[:8]}… stored as distinct observation run(s).")
 
     except Exception as e:
         print(f"Error parsing {file_path}: {e}")
