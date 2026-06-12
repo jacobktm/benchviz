@@ -4008,6 +4008,83 @@ def rebuild_ml_insights():
         print(f"ML profiles updated for {n} analysis record(s).")
 
 
+@app.cli.command("debug-ml-sensors")
+@click.option("--title", required=True, help="Benchmark title (exact or substring).")
+@click.option("--app-version", default="", help="Benchmark app_version (optional).")
+@click.option("--args", "args_value", default="default", help="Config args key (default = empty config).")
+def debug_ml_sensors(title, app_version, args_value):
+    """
+    Print whether MONITOR/perf data links to a benchmark config for ML workload fingerprinting.
+    Run on the system that hosts the database (not necessarily your dev checkout).
+    """
+    from sqlalchemy import func as _func
+    from app.ml.analyzer import _analyze_config
+    from app.ml.sensor_baselines import build_hardware_sensor_baseline_index
+    from app.models import Benchmark
+
+    title_q = (title or "").strip()
+    app_ver = (app_version or "").strip()
+    args_key = (args_value or "default").strip()
+    if args_key == "default":
+        args_key = "default"
+
+    with app.app_context():
+        bm_q = Benchmark.query.filter(
+            Benchmark.display_format == "BAR_GRAPH",
+            Benchmark.is_primary.is_(True),
+        )
+        if title_q:
+            bm_q = bm_q.filter(_func.lower(Benchmark.title).like(f"%{title_q.lower()}%"))
+        if app_ver:
+            bm_q = bm_q.filter(Benchmark.app_version == app_ver)
+        primaries = bm_q.all()
+        if not primaries:
+            print("No matching primary BAR_GRAPH benchmarks.")
+            return
+
+        rep = primaries[0]
+        title_exact = rep.title
+        av = rep.app_version or ""
+        print(f"Benchmark: {title_exact} (v{av})")
+        print(f"Primary BAR rows: {len(primaries)}")
+
+        args_db = "" if args_key == "default" else args_key
+        sensor_q = Benchmark.query.filter_by(title=title_exact, display_format="LINE_GRAPH")
+        if av:
+            sensor_q = sensor_q.filter_by(app_version=av)
+        kw = ("temperature", "frequency", "usage", "power", "utilization")
+        sensors = [
+            s for s in sensor_q.all()
+            if s.description and any(k in s.description.lower() for k in kw)
+        ]
+        print(f"MONITOR sensor definitions: {len(sensors)}")
+        for s in sensors[:12]:
+            n = BenchmarkResult.query.filter_by(benchmark_id=s.id).count()
+            print(f"  - {s.description[:70]}  (results={n})")
+
+        idx = build_hardware_sensor_baseline_index()
+        meta = idx.to_dict()
+        print(
+            f"Fleet baselines: {meta.get('n_baselines', 0)} ranges, "
+            f"{meta.get('n_models', 0)} hardware model(s)"
+        )
+        print(f"Global signals: {', '.join(meta.get('global_signals') or []) or '(none)'}")
+
+        prof = _analyze_config(title_exact, av, args_key, primaries, baseline_index=idx)
+        if not prof:
+            print("No ML profile for this config (no primary results?).")
+            return
+
+        wl = prof.get("workload") or {}
+        sig = prof.get("signals") or {}
+        print(f"\nML workload source: {wl.get('source')}")
+        print(f"Insufficient signal: {wl.get('insufficient_signal')}")
+        print(f"Evidence: {wl.get('evidence')}")
+        print(f"Pooled sensors: {sig.get('sensors')}")
+        print(f"Normalized: {sig.get('sensors_normalized')}")
+        print(f"Perf counters: {list((sig.get('perf') or {}).keys()) or '(none)'}")
+
+
 @app.cli.command("debug-insights-coverage")
 @click.option("--title", default="", help="Benchmark title substring (case-insensitive). Example: 'ONNX Runtime'")
 @click.option("--app-version", default="", help="Exact benchmark app_version. Example: '1.24.1'")

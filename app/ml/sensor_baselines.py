@@ -304,13 +304,13 @@ def iter_system_sensor_scalars(
     if app_version:
         sensor_q = sensor_q.filter(Benchmark.app_version == app_version)
 
-    from app.workload_profile import _args_matches_config
+    from app.workload_profile import _monitor_result_matches_config
 
     for s_bm in sensor_q.all():
         if not s_bm.description or not any(k in s_bm.description.lower() for k in _SENSOR_KEYWORDS):
             continue
         for res in BenchmarkResult.query.filter_by(benchmark_id=s_bm.id, system_id=system_id).all():
-            if not _args_matches_config(res.arguments, config_args_db):
+            if not _monitor_result_matches_config(res.arguments, config_args_db):
                 continue
             for sk, val in extract_sensor_scalars(s_bm, res.data_json):
                 yield sk, val

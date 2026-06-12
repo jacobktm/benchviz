@@ -21,7 +21,7 @@ from app.sensor_quality import is_noisy_sensor_series, numeric_series, peak_seri
 from app.workload_profile import (
     counter_signal_key,
     is_perf_counter_benchmark,
-    _args_matches_config,
+    _monitor_result_matches_config,
     _norm_text,
 )
 
@@ -158,7 +158,7 @@ def _collect_perf_for_system(
         if not key:
             continue
         for res in BenchmarkResult.query.filter_by(benchmark_id=bm.id, system_id=system_id).all():
-            if not _args_matches_config(res.arguments, config_args_db):
+            if not _monitor_result_matches_config(res.arguments, config_args_db):
                 continue
             if res.value is None:
                 continue
@@ -247,7 +247,7 @@ def _collect_sensors_for_system(
         bucket = _label_bucket(s_bm.description or "", s_bm.scale or "")
         kind = sensor_kind(s_bm.description, s_bm.scale)
         for res in BenchmarkResult.query.filter_by(benchmark_id=s_bm.id, system_id=system_id).all():
-            if not _args_matches_config(res.arguments, config_args_db):
+            if not _monitor_result_matches_config(res.arguments, config_args_db):
                 continue
             if not res.data_json:
                 continue

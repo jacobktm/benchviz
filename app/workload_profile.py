@@ -131,6 +131,23 @@ def _args_matches_config(result_args: str | None, config_args: str) -> bool:
     return ra.endswith(ca) or ca in ra
 
 
+def _monitor_result_matches_config(result_args: str | None, config_args: str) -> bool:
+    """
+    Match MONITOR / perf time-series rows to a primary BAR_GRAPH config.
+
+    PTS prefixes sensor arguments (e.g. ``CPU Usage (Summary) <option> -P``) while the
+    primary score row often uses just ``<option>`` or an empty default config.
+    """
+    ra = (result_args or "").strip()
+    ca = (config_args or "").strip()
+    if ra == ca:
+        return True
+    if not ca:
+        # Default/empty config — accept any MONITOR row for this title/version/system.
+        return True
+    return ra.endswith(ca) or ca in ra
+
+
 def option_profile_key(description: str | None, scale: str | None = None) -> str:
     """Stable key for a primary BAR_GRAPH option within a config."""
     desc = (description or "").strip() or "primary"
