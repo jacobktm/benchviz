@@ -4184,7 +4184,7 @@
                         aggSection.appendChild(details);
                     }
                 }
-                if (systems.length >= 2) {
+                if (systems.length >= 2 && hasSuiteComposite) {
                     const winsToggle = document.createElement('button');
                     winsToggle.type = 'button';
                     winsToggle.textContent = 'Show wins/losses breakdown';
@@ -4207,7 +4207,7 @@
                     aggSection.appendChild(oneSystemNote);
                 }
 
-                if (systems.length >= 2 && marginRows.length) {
+                if (hasSuiteComposite && systems.length >= 2 && marginRows.length) {
                     appendCollapsibleSubtestDeltasPanel(
                         aggSection,
                         marginRows,
@@ -4427,6 +4427,17 @@
                             renderConfigOptionCharts(soleConfig, detailSection, soleConfig.option_key || '');
                         }
                         finishSensorBlock(detailSection, onlyPrimary && onlyPrimary.option_key ? onlyPrimary.option_key : '');
+                    }
+
+                    if (!hasSuiteComposite && systems.length >= 2 && marginRows.length) {
+                        appendCollapsibleSubtestDeltasPanel(
+                            detailSection,
+                            marginRows,
+                            systems,
+                            systemLabels,
+                            bGroup.benchmarkName,
+                            { summaryLabel: `Subtest relative deltas (${marginRows.length} rows)` },
+                        );
                     }
 
                     groupWrapper.appendChild(detailSection);
