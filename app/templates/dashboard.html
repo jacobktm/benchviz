@@ -62,8 +62,10 @@
                                 {% for sys in group.profiles %}
                                 <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
                                     <td style="padding: 0.75rem 0; font-size: 0.9rem;">
-                                        <div style="font-weight: 600;">{{ sys.identifier }}</div>
-                                        <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.15rem;">{{ sys.profile_label }}</div>
+                                        <div style="font-weight: 600;">{{ sys.profile_label }}</div>
+                                        {% if sys.primary_group_name and sys.primary_group_name != group.group_name %}
+                                        <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.15rem;">{{ sys.primary_group_name }}</div>
+                                        {% endif %}
                                     </td>
                                     <td style="padding: 0.75rem 0; color: var(--text-secondary); font-size: 0.85rem;">{{ sys.timestamp }}</td>
                                     <td style="padding: 0.75rem 0; font-size: 0.85rem; color: var(--text-secondary); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">

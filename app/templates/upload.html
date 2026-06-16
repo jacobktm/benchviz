@@ -7,10 +7,13 @@
     <details style="margin-top: 0.75rem; max-width: 52rem; font-size: 0.88rem; color: var(--text-secondary);">
         <summary style="cursor: pointer; color: var(--text-primary); font-weight: 500;">Recovering results after a mistaken overwrite</summary>
         <p style="margin: 0.65rem 0 0; line-height: 1.55;">
-            Imports now create a separate system (e.g. <code>name (2)</code>) when the XML identifier matches but hardware differs.
-            If an older machine was overwritten before that fix, its scores are not kept in the database unless you still have the original XML export —
-            re-upload those files here and BenchViz will add them back as a sibling profile. Without the XML (or a copy of
-            <code>instance/benchmarks.db</code> from before the overwrite), that data cannot be reconstructed from BenchViz alone.
+            Imports keep the same XML identifier when hardware differs and add an
+            <strong>alternate hardware profile</strong> under that name (dashboard → Systems).
+            Cooler/PSU-only changes on the same machine stay on one profile; each upload still
+            records a frozen <code>profile_snapshot</code> on results for compare traces.
+            If an older machine was overwritten before that fix, re-upload the original XML —
+            without the XML (or a copy of <code>instance/benchmarks.db</code> from before the overwrite),
+            that data cannot be reconstructed from BenchViz alone.
         </p>
     </details>
 </div>

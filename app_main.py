@@ -15,7 +15,13 @@ from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark
 from app.analyzer import analyze_benchmarks
 from app.ml.analyzer import analyze_ml_profiles
 from app.insights_lock import insights_rebuild_lock
-from app.components import get_system_components
+from app.components import (
+    extract_hardware_component,
+    get_system_components,
+    normalize_graphics_name,
+    normalize_processor_name,
+)
+from app.system_util import base_system_identifier
 from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
 from urllib.parse import unquote
 import os
@@ -207,6 +213,19 @@ def get_profile_badges(system):
 def format_system_profile_label(system):
     base_name = system.identifier
     badges = get_profile_badges(system)
+    proc = normalize_processor_name(
+        extract_hardware_component(system.hardware or '', 'Processor')
+        or extract_hardware_component(system.hardware or '', 'CPU')
+        or ''
+    )
+    gpu = normalize_graphics_name(
+        extract_hardware_component(system.hardware or '', 'Graphics')
+        or extract_hardware_component(system.hardware or '', 'GPU')
+        or ''
+    )
+    for bit in (proc, gpu):
+        if bit and not any(bit in b for b in badges):
+            badges.append(bit)
     if not badges:
         return base_name
     return f"{base_name} | {' | '.join(badges)}"
@@ -245,18 +264,19 @@ def dashboard():
     # Group systems by the primary system family name and keep profile variations underneath.
     grouped_systems_dict = {}
     for sys in systems_raw:
+        group_key = base_system_identifier(sys.identifier)
         sys.primary_group_name = get_primary_group_name(sys)
         sys.profile_label = format_system_profile_label(sys)
         sys.search_tags = get_system_search_tags(sys)
 
-        if sys.primary_group_name not in grouped_systems_dict:
-            grouped_systems_dict[sys.primary_group_name] = {
-                'group_name': sys.primary_group_name,
+        if group_key not in grouped_systems_dict:
+            grouped_systems_dict[group_key] = {
+                'group_name': group_key,
                 'profiles': [],
                 'search_tags': set()
             }
             
-        group = grouped_systems_dict[sys.primary_group_name]
+        group = grouped_systems_dict[group_key]
         group['profiles'].append(sys)
         group['search_tags'].update(sys.search_tags)
             

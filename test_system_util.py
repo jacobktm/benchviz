@@ -2,7 +2,7 @@ import unittest
 
 from app import create_app, db
 from app.models import System
-from app.system_util import hardware_fingerprint, resolve_system_for_import
+from app.system_util import base_system_identifier, hardware_fingerprint, resolve_system_for_import
 
 
 class SystemUtilTest(unittest.TestCase):
@@ -41,7 +41,7 @@ class SystemUtilTest(unittest.TestCase):
         self.assertEqual(first.id, second.id)
         self.assertEqual(System.query.count(), 1)
 
-    def test_same_identifier_different_hardware_creates_suffix(self):
+    def test_same_identifier_different_hardware_adds_profile(self):
         resolve_system_for_import(
             'qa-meer10',
             'Processor: AMD Ryzen 9 9950X',
@@ -61,9 +61,13 @@ class SystemUtilTest(unittest.TestCase):
         db.session.commit()
 
         self.assertTrue(created)
-        self.assertEqual(second.identifier, 'qa-meer10 (2)')
-        self.assertIn('Hardware differs', note or '')
+        self.assertEqual(second.identifier, 'qa-meer10')
+        self.assertIn('another hardware profile', note or '')
         self.assertEqual(System.query.count(), 2)
+
+    def test_base_system_identifier_strips_legacy_suffix(self):
+        self.assertEqual(base_system_identifier('qa-meer10 (2)'), 'qa-meer10')
+        self.assertEqual(base_system_identifier('qa-meer10'), 'qa-meer10')
 
     def test_hardware_fingerprint_normalizes_whitespace(self):
         self.assertEqual(
