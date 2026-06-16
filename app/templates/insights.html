@@ -194,7 +194,7 @@
         {% endif %}
     {% endfor %}
     {% if not ns_ml.has %}
-    <p class="card-meta" style="margin: 0;">No ML profiles yet. Upload benchmarks (with LINUX_PERF / MONITOR data when possible). Profiles rebuild automatically after upload and on the periodic insights timer when BenchViz is installed as a service; you can also run <code>flask rebuild-ml-insights</code> manually.</p>
+    <p class="card-meta" style="margin: 0;">No ML profiles yet. Upload benchmarks (with LINUX_PERF / MONITOR data when possible). Profiles rebuild automatically after upload and on the periodic insights timer while BenchViz stays up; you can also run <code>flask rebuild-ml-insights</code> or <code>sudo systemctl start benchviz-rebuild-insights.service</code> manually. Use <code>--full</code> to recompute every benchmark group.</p>
     {% endif %}
 </details>
 

@@ -61,7 +61,6 @@
             </div>
             <div>
                 <label for="primary_system_name" style="display: block; margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.9rem;">Primary System Name</label>
-                <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 0.5rem;">Groups this profile with others on the Dashboard and Compare pickers.</p>
                 <input type="text" id="primary_system_name" name="primary_system_name" list="primary_system_name_list" value="{{ system.primary_group_name }}" placeholder="e.g. Thelio Mira R4">
                 <datalist id="primary_system_name_list">
                     {% for val in unique_values.get('primary_system_name', []) %}<option value="{{ val }}">{% endfor %}

@@ -135,11 +135,11 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     ./install_systemd_service.sh
 
   echo
-  echo "Pausing benchviz.service for database maintenance (avoids SQLite locks)..."
+  echo "Pausing benchviz.service briefly for instance directory maintenance..."
   systemctl stop benchviz.service || true
 
   echo
-  echo "Seeding OpenBenchmarking cache (git mirror + index; live OB fetch runs on compare/timer)..."
+  echo "Preparing instance directory ownership..."
   # Prior failed runs may have left root-owned files under instance/ (git dubious ownership).
   mkdir -p "${PROJECT_ROOT}/instance/pts-user"
   chown -R "${SERVICE_USER}:${SERVICE_USER}" "${PROJECT_ROOT}/instance"
@@ -156,6 +156,13 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     pts-useruser-config.xml; do
     rm -rf "${PROJECT_ROOT}/instance/${stale}" 2>/dev/null || true
   done
+
+  echo
+  echo "Starting benchviz.service (insights rebuild runs alongside it via SQLite WAL)..."
+  systemctl start benchviz.service || true
+
+  echo
+  echo "Seeding OpenBenchmarking cache (git mirror + index; live OB fetch runs on compare/timer)..."
   if ! sudo -u "${SERVICE_USER}" bash -c "
     cd \"${PROJECT_ROOT}\" &&
     export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
@@ -167,18 +174,13 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
   fi
 
   echo
-  echo "Rebuilding performance insights (legacy cohort η² + ML workload profiles)..."
-  if ! sudo -u "${SERVICE_USER}" bash -c "
-    cd \"${PROJECT_ROOT}\" &&
-    export FLASK_APP=\"${PROJECT_ROOT}/app_main.py\" &&
-    \"${PROJECT_ROOT}/venv/bin/python\" -m flask rebuild-performance-insights &&
-    \"${PROJECT_ROOT}/venv/bin/python\" -m flask rebuild-ml-insights
-  "; then
+  echo "Rebuilding performance insights (incremental; runs alongside benchviz.service)..."
+  if ! sudo -u "${SERVICE_USER}" nice -n 10 bash "${PROJECT_ROOT}/scripts/rebuild_insights.sh"; then
     echo "Warning: Insights rebuild failed (database may be empty, locked, or missing ML dependencies)."
     echo "Retry after uploads with:"
-    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask rebuild-performance-insights'"
-    echo "  sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && FLASK_APP=app_main.py venv/bin/python -m flask rebuild-ml-insights'"
-    echo "Or both: venv/bin/python -m flask rebuild-all-insights"
+    echo "  sudo systemctl start benchviz-rebuild-insights.service"
+    echo "Or: sudo -u ${SERVICE_USER} bash -c 'cd ${PROJECT_ROOT} && venv/bin/python -m flask rebuild-all-insights'"
+    echo "Full rebuild: add --full or set BENCHVIZ_INSIGHTS_REBUILD_FULL=1"
   fi
 
   echo
@@ -194,10 +196,6 @@ if [[ "$INSTALL_AS_SERVICE" =~ ^[Yy]$ ]]; then
     BENCHVIZ_DEFAULT_SERVICE_USER="$SERVICE_USER" \
     BENCHVIZ_INSIGHTS_REBUILD_INTERVAL_HOURS="1" \
     ./install_systemd_insights_timer.sh
-
-  echo
-  echo "Starting benchviz.service..."
-  systemctl start benchviz.service || true
 
   echo
   echo "Service setup complete."

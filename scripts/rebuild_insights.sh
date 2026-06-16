@@ -23,6 +23,11 @@ fi
 export FLASK_APP="${PROJECT_ROOT}/app_main.py"
 export PYTHONUNBUFFERED=1
 
-echo "[$(date -Is)] Starting scheduled insights rebuild..."
-"$PYTHON_BIN" -m flask rebuild-all-insights
+REBUILD_ARGS=()
+if [ "${BENCHVIZ_INSIGHTS_REBUILD_FULL:-}" = "1" ]; then
+  REBUILD_ARGS+=(--full)
+fi
+
+echo "[$(date -Is)] Starting scheduled insights rebuild (incremental by default)..."
+nice -n 10 "$PYTHON_BIN" -m flask rebuild-all-insights "${REBUILD_ARGS[@]}"
 echo "[$(date -Is)] Insights rebuild complete."

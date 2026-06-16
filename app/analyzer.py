@@ -4,6 +4,7 @@ from app import db, create_app
 from app.models import Benchmark, BenchmarkResult, BenchmarkAnalysis, System
 from app.components import get_system_components
 from app.workload_profile import build_workload_profile, option_profile_key
+from app.insights_util import benchmark_group_needs_rebuild
 
 # Minimum distinct systems required across all cohort values for a given feature.
 # This allows you to get insights when you have (say) 3 distinct systems with 3 different
@@ -41,9 +42,10 @@ INSIGHT_COMPONENT_KEYS = [
     "thermal_pad_sandwich_nvme",
 ]
 
-def analyze_benchmarks():
+def analyze_benchmarks(*, incremental: bool = True):
     """Runs the background statistical analysis."""
-    print("Starting background benchmark analysis...")
+    mode = "incremental" if incremental else "full"
+    print(f"Starting background benchmark analysis ({mode})...")
     
     # We only analyze scalar primary BAR_GRAPH results for simplicity of the
     # correlation engine. Perf counters are BAR_GRAPH too, but non-primary.
@@ -63,6 +65,8 @@ def analyze_benchmarks():
         groups[key].append(bm)
         
     for (title, app_version), bm_list in groups.items():
+        if not benchmark_group_needs_rebuild(title, app_version, bm_list, incremental=incremental):
+            continue
         # Representative benchmark for metadata
         rep_bm = bm_list[0]
         identifier = rep_bm.identifier or ''
@@ -206,8 +210,9 @@ def analyze_benchmarks():
                 analysis_record.analysis_json = payload
                 analysis_record.last_updated = db.func.now()
 
-            # Commit per benchmark group so uploads can read the DB while analysis runs.
+            # Commit per benchmark group so the web app can read the DB while analysis runs.
             db.session.commit()
+            db.session.remove()
 
     print("Background benchmark analysis complete.")
 

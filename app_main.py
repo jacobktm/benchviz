@@ -15,6 +15,7 @@ from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark
 from app.analyzer import analyze_benchmarks
 from app.ml.analyzer import analyze_ml_profiles
 from app.insights_lock import insights_rebuild_lock
+from app.insights_runner import schedule_insights_rebuild
 from app.components import (
     extract_hardware_component,
     get_system_components,
@@ -434,23 +435,23 @@ def upload_benchmarks():
 
         db.session.commit()
         
-        # Trigger background analysis in a new thread so we don't block the UI
-        # We need to pass the app context to the thread so it can query the DB natively
-        def run_analysis_with_context(app_context):
-            with app_context:
-                try:
-                    with insights_rebuild_lock(block=False) as acquired:
-                        if not acquired:
-                            print("Insights rebuild already in progress; upload will be picked up by the next scheduled run.")
-                            return
-                        analyze_benchmarks()
-                        analyze_ml_profiles()
-                except Exception as e:
-                    print(f"Error in background benchmark analysis: {e}")
-                finally:
-                    db.session.remove()
+        # Run insights rebuild out-of-process (low priority) so the web UI stays responsive.
+        if not schedule_insights_rebuild():
+            def run_analysis_with_context(app_context):
+                with app_context:
+                    try:
+                        with insights_rebuild_lock(block=False) as acquired:
+                            if not acquired:
+                                print("Insights rebuild already in progress; upload will be picked up by the next scheduled run.")
+                                return
+                            analyze_benchmarks()
+                            analyze_ml_profiles()
+                    except Exception as e:
+                        print(f"Error in background benchmark analysis: {e}")
+                    finally:
+                        db.session.remove()
 
-        threading.Thread(target=run_analysis_with_context, args=(app.app_context(),), daemon=True).start()
+            threading.Thread(target=run_analysis_with_context, args=(app.app_context(),), daemon=True).start()
         
         if extracted_xml_count > 0:
             flash(f'Successfully ingested {extracted_xml_count} benchmark records.', 'success')
@@ -4083,39 +4084,42 @@ def backfill_perf_counters():
 
 
 @app.cli.command("rebuild-performance-insights")
-def rebuild_performance_insights():
+@click.option("--full", is_flag=True, help="Recompute every benchmark group (not only groups with new uploads).")
+def rebuild_performance_insights(full):
     """Recompute legacy Performance Insights (BenchmarkAnalysis cohort η²)."""
     with app.app_context():
         with insights_rebuild_lock(block=False) as acquired:
             if not acquired:
                 print("Insights rebuild already in progress; skipping.")
                 return
-            analyze_benchmarks()
+            analyze_benchmarks(incremental=not full)
         print("Legacy performance insights rebuilt.")
 
 
 @app.cli.command("rebuild-all-insights")
-def rebuild_all_insights():
+@click.option("--full", is_flag=True, help="Recompute every benchmark group (not only groups with new uploads).")
+def rebuild_all_insights(full):
     """Recompute legacy cohort stats and ML workload/attribution/thermal profiles."""
     with app.app_context():
         with insights_rebuild_lock(block=False) as acquired:
             if not acquired:
                 print("Insights rebuild already in progress; skipping.")
                 return
-            analyze_benchmarks()
-            n = analyze_ml_profiles()
+            analyze_benchmarks(incremental=not full)
+            n = analyze_ml_profiles(incremental=not full)
         print(f"Performance insights rebuilt (legacy + ML profiles for {n} record(s)).")
 
 
 @app.cli.command("rebuild-ml-insights")
-def rebuild_ml_insights():
+@click.option("--full", is_flag=True, help="Recompute every benchmark group (not only groups with new uploads).")
+def rebuild_ml_insights(full):
     """Recompute ML workload/attribution/thermal profiles only."""
     with app.app_context():
         with insights_rebuild_lock(block=False) as acquired:
             if not acquired:
                 print("Insights rebuild already in progress; skipping.")
                 return
-            n = analyze_ml_profiles()
+            n = analyze_ml_profiles(incremental=not full)
         print(f"ML profiles updated for {n} analysis record(s).")
 
 

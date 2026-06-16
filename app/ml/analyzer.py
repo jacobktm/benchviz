@@ -18,6 +18,7 @@ from app.ml.sensor_baselines import HardwareSensorBaselineIndex, build_hardware_
 from app.ml.thermal import compute_thermal_sensitivity
 from app.ml.workload import compute_workload_fingerprint
 from app.models import Benchmark, BenchmarkAnalysis, BenchmarkResult
+from app.insights_util import benchmark_group_needs_rebuild
 
 
 def _analyze_config(
@@ -117,18 +118,13 @@ def _analyze_config(
     }
 
 
-def analyze_ml_profiles() -> int:
+def analyze_ml_profiles(*, incremental: bool = True) -> int:
     """
     Compute ML profiles for all primary benchmark groups; merge into BenchmarkAnalysis.analysis_json.
     Returns number of analysis records updated.
     """
-    print("Starting ML benchmark analysis...")
-    baseline_index = build_hardware_sensor_baseline_index()
-    baseline_summary = baseline_index.to_dict()
-    print(
-        f"Built hardware sensor baselines: {baseline_summary.get('n_baselines', 0)} ranges "
-        f"across {baseline_summary.get('n_models', 0)} model(s)."
-    )
+    mode = "incremental" if incremental else "full"
+    print(f"Starting ML benchmark analysis ({mode})...")
     primary_bms = Benchmark.query.filter(
         Benchmark.display_format == "BAR_GRAPH",
         Benchmark.is_primary.is_(True),
@@ -138,8 +134,24 @@ def analyze_ml_profiles() -> int:
     for bm in primary_bms:
         groups[(bm.title, bm.app_version or "")].append(bm)
 
+    pending_groups = [
+        ((title, app_version), bm_list)
+        for (title, app_version), bm_list in groups.items()
+        if benchmark_group_needs_rebuild(title, app_version, bm_list, incremental=incremental)
+    ]
+    if not pending_groups:
+        print("No ML profile groups need rebuild.")
+        return 0
+
+    baseline_index = build_hardware_sensor_baseline_index()
+    baseline_summary = baseline_index.to_dict()
+    print(
+        f"Built hardware sensor baselines: {baseline_summary.get('n_baselines', 0)} ranges "
+        f"across {baseline_summary.get('n_models', 0)} model(s)."
+    )
+
     updated = 0
-    for (title, app_version), bm_list in groups.items():
+    for (title, app_version), bm_list in pending_groups:
         rep = bm_list[0]
         all_results = []
         for bm in bm_list:
@@ -197,6 +209,7 @@ def analyze_ml_profiles() -> int:
 
         updated += len(existing)
         db.session.commit()
+        db.session.remove()
 
     print(f"ML benchmark analysis complete ({updated} record(s) updated).")
     return updated
