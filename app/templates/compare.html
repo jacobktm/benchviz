@@ -981,6 +981,31 @@
             return null;
         }
 
+        /** Short label for crowded radar / bar axes; full string stays in tooltips. */
+        function abbreviateSubtestChartLabel(full, maxLen) {
+            const cap = maxLen == null ? 26 : maxLen;
+            if (!full) return '';
+            const raw = String(full).trim();
+            if (raw.length <= cap) return raw;
+            let s = raw.replace(/\s*\(\d+(?:\.\d+)*\)/g, '').replace(/\s+/g, ' ').trim();
+            const pieces = s.split(/\s*[-·]\s*/).map(p => p.trim()).filter(Boolean);
+            if (pieces.length >= 2) {
+                const trimTail = (t, n) => (t.length > n ? t.slice(0, Math.max(4, n - 1)) + '…' : t);
+                const bench = pieces[0].replace(/\s+Compression$/i, '').trim();
+                const shortBench = trimTail(bench, 11);
+                const mid = pieces.length > 2 ? pieces[1] : '';
+                const shortMid = (mid && (mid.length <= 10 || /^[a-z]?\d+[a-z]?$/i.test(mid))) ? mid : '';
+                const metric = pieces[pieces.length - 1];
+                const shortMetric = trimTail(metric, 13);
+                const bits = [shortBench];
+                if (shortMid) bits.push(shortMid);
+                if (shortMetric && shortMetric !== shortBench && shortMetric !== shortMid) bits.push(shortMetric);
+                s = bits.join(' · ');
+            }
+            if (s.length > cap) s = s.slice(0, Math.max(4, cap - 1)) + '…';
+            return s;
+        }
+
         /**
          * Relative subtest deltas:
          * - 2 systems: Phoronix-style horizontal signed-delta bars.
@@ -988,9 +1013,10 @@
          */
         function createGroupedDivergingMarginChart(parent, rows, systems, systemDisplayNames, chartOpts) {
             chartOpts = chartOpts || {};
-            const rowLabels = rows.map(r => r.label);
-            const n = rowLabels.length;
+            const rowFullLabels = rows.map(r => r.label);
             const m = systems.length;
+            const rowShortLabels = rowFullLabels.map(l => abbreviateSubtestChartLabel(l, m === 2 ? 44 : 22));
+            const n = rowFullLabels.length;
             if (n < 1 || m < 2) return null;
             const sysNames = systems.map((s, i) => systemDisplayNames[i] != null ? systemDisplayNames[i] : String(s));
 
@@ -1072,7 +1098,7 @@
                 );
             } else {
                 cap.textContent = chartOpts.captionMulti != null ? chartOpts.captionMulti
-                    : 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Legend order: least often ahead (left) → most often ahead (right).';
+                    : 'Each spoke is one scored subtest; signed delta (%) vs geometric-mean baseline. ~0% rows omitted; strongest first. Spoke labels are abbreviated — hover for the full name. Legend order: least often ahead (left) → most often ahead (right).';
             }
             parent.appendChild(cap);
 
@@ -1154,7 +1180,7 @@
             const cOth2 = systemColorAt(oth2);
             const chartData = m === 2
                 ? {
-                    labels: rowLabels,
+                    labels: rowShortLabels,
                     datasets: [{
                         label: `${sysNames[dom2]} vs ${sysNames[oth2]}`,
                         data: rows.map(r => displayDelta2(r)),
@@ -1178,7 +1204,7 @@
                     }]
                 }
                 : {
-                    labels: rowLabels,
+                    labels: rowShortLabels,
                     datasets: legendIndices.map((si) => {
                         const base = systemColorAt(si);
                         return {
@@ -1229,7 +1255,16 @@
                             formatter: (v) => (v == null || isNaN(v)) ? '' : ((v > 0 ? '+' : '') + Number(v).toFixed(0) + '%'),
                             clip: true,
                             font: { size: 9, weight: '600' }
-                        }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title(items) {
+                                    if (!items || !items.length) return '';
+                                    const idx = items[0].dataIndex;
+                                    return rowFullLabels[idx] || '';
+                                },
+                            },
+                        },
                     }
                 }
                 : {
@@ -1247,7 +1282,8 @@
                             },
                             pointLabels: {
                                 color: BAR_CHART_TICK_COLOR,
-                                font: { size: 10 }
+                                font: { size: 9 },
+                                padding: 6,
                             },
                             angleLines: { color: 'rgba(201,209,217,0.18)' },
                             grid: { color: 'rgba(201,209,217,0.14)' }
@@ -1255,7 +1291,22 @@
                     },
                     plugins: {
                         legend: { display: false },
-                        datalabels: { display: false }
+                        datalabels: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title(items) {
+                                    if (!items || !items.length) return '';
+                                    const idx = items[0].dataIndex;
+                                    return rowFullLabels[idx] || '';
+                                },
+                                label(ctx) {
+                                    const v = ctx.parsed.r;
+                                    if (v == null || isNaN(v)) return `${ctx.dataset.label}: —`;
+                                    const sign = v > 0 ? '+' : '';
+                                    return `${ctx.dataset.label}: ${sign}${Number(v).toFixed(1)}%`;
+                                },
+                            },
+                        },
                     }
                 };
 
@@ -3739,7 +3790,7 @@
                                 caption2: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Bars sorted by |delta|; ~0% rows omitted. Same raw-value delta semantics as per-benchmark panels.`,
                             } : {
                                 summaryLabel: `All subtest relative deltas (${overallMarginRows.length} rows)`,
-                                captionMulti: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Signed delta (%) vs geometric-mean baseline; strongest first.`,
+                                captionMulti: `Every scored subtest across all benchmarks (${overallMarginRows.length} rows). Signed delta (%) vs geometric-mean baseline; strongest first. Spoke labels abbreviated — hover for full names.`,
                             },
                         );
                     }
