@@ -8,6 +8,7 @@ from app.profile_snapshot import capture_profile_snapshot, profile_fingerprint
 class _FakeSystem:
     hardware = "Processor: AMD Ryzen 7 7800X3D\nGraphics: NVIDIA RTX 4080"
     primary_system_name = "test-rig"
+    serial_number = ""
     chassis_version = ""
     custom_hardware = ""
     cooler_model = "Noctua NH-D15"
@@ -25,6 +26,15 @@ class TestProfileSnapshot(unittest.TestCase):
         a = _FakeSystem()
         b = _FakeSystem()
         b.cooler_model = "Stock cooler"
+        fa = profile_fingerprint(capture_profile_snapshot(a))
+        fb = profile_fingerprint(capture_profile_snapshot(b))
+        self.assertNotEqual(fa, fb)
+
+
+    def test_fingerprint_changes_with_serial(self):
+        a = _FakeSystem()
+        b = _FakeSystem()
+        b.serial_number = "ABC123"
         fa = profile_fingerprint(capture_profile_snapshot(a))
         fb = profile_fingerprint(capture_profile_snapshot(b))
         self.assertNotEqual(fa, fb)

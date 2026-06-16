@@ -38,6 +38,7 @@
 <div class="glass animate-in delay-2" style="padding: 1.5rem; border-radius: 12px; margin-bottom: 2rem;">
     <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
         <span class="tag">{{ system.primary_group_name }}</span>
+        {% if system.serial_number %}<span class="tag">SN {{ system.serial_number }}</span>{% endif %}
         {% if system.chassis_version %}<span class="tag">{{ system.chassis_version }}</span>{% endif %}
         {% if system.cooler_model %}<span class="tag">{{ system.cooler_model }}</span>{% endif %}
         {% if system.psu_model or system.psu_wattage %}<span class="tag">{{ system.psu_wattage }} {{ system.psu_model }}</span>{% endif %}
@@ -60,9 +61,17 @@
             </div>
             <div>
                 <label for="primary_system_name" style="display: block; margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.9rem;">Primary System Name</label>
+                <p style="font-size: 0.8rem; color: var(--text-secondary); margin: 0 0 0.5rem;">Groups this profile with others on the Dashboard and Compare pickers.</p>
                 <input type="text" id="primary_system_name" name="primary_system_name" list="primary_system_name_list" value="{{ system.primary_group_name }}" placeholder="e.g. Thelio Mira R4">
                 <datalist id="primary_system_name_list">
                     {% for val in unique_values.get('primary_system_name', []) %}<option value="{{ val }}">{% endfor %}
+                </datalist>
+            </div>
+            <div>
+                <label for="serial_number" style="display: block; margin-bottom: 0.5rem; color: var(--text-secondary); font-size: 0.9rem;">Serial Number</label>
+                <input type="text" id="serial_number" name="serial_number" list="serial_number_list" value="{{ system.serial_number or '' }}" placeholder="e.g. chassis or board S/N">
+                <datalist id="serial_number_list">
+                    {% for val in unique_values.get('serial_number', []) %}<option value="{{ val }}">{% endfor %}
                 </datalist>
             </div>
             <div>

@@ -25,17 +25,6 @@
             <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
                 <select id="systemSelect" style="flex: 1;">
                     <option value="">-- Choose a system profile --</option>
-                    {% for sys in systems %}
-                    <option 
-                        value="{{ sys.id }}"
-                        data-short-name="{{ sys.identifier }}"
-                        data-primary-name="{{ sys.primary_group_name }}"
-                        data-label="{{ sys.profile_label }}"
-                        data-components='{{ (sys.components or {}) | tojson }}'
-                    >
-                        {{ sys.primary_group_name }} — {{ sys.profile_label }}
-                    </option>
-                    {% endfor %}
                 </select>
                 <button type="button" id="addSystemBtn" class="btn-primary-sm">Add</button>
             </div>
@@ -168,6 +157,7 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+<script id="compare-system-groups-data" type="application/json">{{ compare_system_groups_json | safe }}</script>
 <script>
     window.COMPARE_BY_OPTIONS = {{ compare_by_options | default([]) | tojson | safe }};
     document.addEventListener('DOMContentLoaded', () => {
@@ -336,24 +326,29 @@
         let availableBenchmarks = []; // from /api/common_benchmarks (each has .configs)
         const savedComparisonId = "{{ saved_comp_id|default('') }}";
 
-        // Capture all system options up-front so we can rebuild the dropdown
-        // and hide already-selected systems.
-        const allSystemOptions = Array.from(systemSelect.options)
-            .filter(opt => opt.value)
-            .map(opt => {
-                let components = {};
-                try {
-                    if (opt.dataset.components) components = JSON.parse(opt.dataset.components);
-                } catch (e) { console.warn('[compareBy] parse components for', opt.value, e); }
-                return {
-                    value: opt.value,
-                    text: opt.textContent,
-                    shortName: opt.dataset.shortName || '',
-                    primaryName: opt.dataset.primaryName || '',
-                    label: opt.dataset.label || '',
-                    components,
-                };
+        let compareSystemGroups = [];
+        try {
+            compareSystemGroups = JSON.parse(
+                document.getElementById('compare-system-groups-data').textContent || '[]'
+            );
+        } catch (e) {
+            console.error('Could not parse compare system groups', e);
+        }
+
+        const allSystemOptions = [];
+        compareSystemGroups.forEach(group => {
+            (group.profiles || []).forEach(profile => {
+                allSystemOptions.push({
+                    value: String(profile.id),
+                    text: profile.profile_label || profile.identifier || String(profile.id),
+                    groupName: group.group_name || 'Systems',
+                    shortName: profile.identifier || '',
+                    primaryName: profile.primary_group_name || group.group_name || '',
+                    label: profile.profile_label || '',
+                    components: profile.components || {},
+                });
             });
+        });
         console.log('[compareBy] allSystemOptions at load:', allSystemOptions.length, 'first components keys=', allSystemOptions[0] ? Object.keys(allSystemOptions[0].components || {}) : 'none');
 
         function refreshGenerateButtonState() {
@@ -528,18 +523,35 @@
             placeholder.textContent = '-- Choose a system profile --';
             systemSelect.appendChild(placeholder);
 
+            const grouped = new Map();
             allSystemOptions.forEach(sys => {
                 if (selectedIds.has(String(sys.value))) return;
                 if (allowedSystemIds != null && !allowedSystemIds.has(String(sys.value))) return;
-                const opt = document.createElement('option');
-                opt.value = sys.value;
-                opt.textContent = sys.text;
-                opt.dataset.shortName = sys.shortName;
-                opt.dataset.primaryName = sys.primaryName;
-                opt.dataset.label = sys.label;
-                systemSelect.appendChild(opt);
+                const groupName = sys.groupName || 'Systems';
+                if (!grouped.has(groupName)) grouped.set(groupName, []);
+                grouped.get(groupName).push(sys);
             });
+
+            Array.from(grouped.entries())
+                .sort((a, b) => a[0].localeCompare(b[0]))
+                .forEach(([groupName, profiles]) => {
+                    const optgroup = document.createElement('optgroup');
+                    optgroup.label = `${groupName} (${profiles.length} profile${profiles.length === 1 ? '' : 's'})`;
+                    profiles.forEach(sys => {
+                        const opt = document.createElement('option');
+                        opt.value = sys.value;
+                        opt.textContent = sys.text;
+                        opt.dataset.shortName = sys.shortName;
+                        opt.dataset.primaryName = sys.primaryName;
+                        opt.dataset.label = sys.label;
+                        opt.dataset.components = JSON.stringify(sys.components || {});
+                        optgroup.appendChild(opt);
+                    });
+                    systemSelect.appendChild(optgroup);
+                });
         }
+
+        refreshSystemSelectOptions();
 
         function renderSelectedSystems() {
             selectedSystemsEl.innerHTML = '';

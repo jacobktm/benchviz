@@ -60,11 +60,23 @@
                         Primary System Name
                     </label>
                     <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
-                        Used for dashboard grouping across hardware and software profile variants.
+                        Fleet / model name for dashboard and compare grouping (e.g. set <code>Mira R4</code> for every <code>Mira-R4-N*</code> unit). Profiles still keep their own storage identifiers.
                     </p>
                     <input type="text" id="primary_system_name" name="primary_system_name" list="primary_system_name_list" placeholder="e.g. Thelio Mira R4" style="width: 100%;">
                     <datalist id="primary_system_name_list">
                         {% for val in unique_values.get('primary_system_name', []) %}<option value="{{ val }}">{% endfor %}
+                    </datalist>
+                </div>
+                <div>
+                    <label for="serial_number" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #fff;">
+                        Serial Number
+                    </label>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem;">
+                        Distinguishes multiple units with the same XML identifier / model. Required to keep separate profiles when hardware matches.
+                    </p>
+                    <input type="text" id="serial_number" name="serial_number" list="serial_number_list" placeholder="e.g. chassis or board S/N" style="width: 100%;">
+                    <datalist id="serial_number_list">
+                        {% for val in unique_values.get('serial_number', []) %}<option value="{{ val }}">{% endfor %}
                     </datalist>
                 </div>
                 <div>
@@ -181,6 +193,7 @@
         // DOM elements cache block
         const domNodes = {
             'primary_system_name': document.getElementById('primary_system_name'),
+            'serial_number': document.getElementById('serial_number'),
             'chassis_version': document.getElementById('chassis_version'),
             'cooler_model': document.getElementById('cooler_model'),
             'psu_model': document.getElementById('psu_model'),
@@ -203,7 +216,7 @@
             if (!profile) return;
             
             // Map text fields cleanly
-            const textKeys = ['primary_system_name', 'chassis_version', 'cooler_model', 'psu_model', 'psu_wattage', 'custom_hardware', 'manual_notes'];
+            const textKeys = ['primary_system_name', 'serial_number', 'chassis_version', 'cooler_model', 'psu_model', 'psu_wattage', 'custom_hardware', 'manual_notes'];
             textKeys.forEach(k => {
                 if(domNodes[k]) domNodes[k].value = profile[k] || '';
             });

@@ -10,6 +10,7 @@ class System(db.Model):
     user = db.Column(db.String(100))
     timestamp = db.Column(db.String(100))
     primary_system_name = db.Column(db.String(255), nullable=True)
+    serial_number = db.Column(db.String(128), nullable=True)
     chassis_version = db.Column(db.String(100), nullable=True) # Manually updateable
     custom_hardware = db.Column(db.String(255), nullable=True) # Manually updateable (e.g. CPU Coolers)
     cooler_model = db.Column(db.String(255), nullable=True)

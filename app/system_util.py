@@ -3,9 +3,11 @@
 import re
 
 from . import db
+from .hardware_slug import build_hardware_slug, profile_identifier
 from .models import System
 
 _LEGACY_SUFFIX_RE = re.compile(r'^(.+) \((\d+)\)$')
+_HARDWARE_SUFFIX_RE = re.compile(r'^(.+)__(.+)$')
 
 
 def hardware_fingerprint(hardware: str) -> str:
@@ -14,16 +16,26 @@ def hardware_fingerprint(hardware: str) -> str:
     return re.sub(r'\s+', ' ', text)
 
 
+def normalize_serial_number(serial: str | None) -> str:
+    """Case-insensitive serial match key (whitespace stripped)."""
+    return re.sub(r'\s+', '', (serial or '').strip().lower())
+
+
 def base_system_identifier(identifier: str) -> str:
     """
     Canonical grouping key for a system identifier.
 
-    Legacy imports used ``name (2)`` suffixes; strip those so older rows still
-    group with the base identifier on the dashboard.
+    Legacy imports used ``name (2)`` suffixes; hardware-distinguished profiles
+    use ``name__cpu-mem-gpu`` — strip both so rows group on the dashboard.
     """
     ident = (identifier or '').strip() or 'unknown-system'
     m = _LEGACY_SUFFIX_RE.match(ident)
-    return m.group(1) if m else ident
+    if m:
+        return m.group(1)
+    m = _HARDWARE_SUFFIX_RE.match(ident)
+    if m:
+        return m.group(1)
+    return ident
 
 
 def _disambiguated_identifier(base_id: str) -> str:
@@ -38,6 +50,7 @@ def _disambiguated_identifier(base_id: str) -> str:
             db.or_(
                 System.identifier == base_id,
                 System.identifier.like(f'{base_id} (%)'),
+                System.identifier.like(f'{base_id}__%'),
             )
         ).all()
     }
@@ -52,16 +65,52 @@ def _disambiguated_identifier(base_id: str) -> str:
 
 
 def _candidate_systems(identifier: str) -> list[System]:
-    """All profile rows for an XML identifier (includes legacy suffixed imports)."""
-    identifier = (identifier or '').strip()
-    if not identifier:
+    """All profile rows for an XML/base identifier."""
+    base = base_system_identifier(identifier)
+    if not base:
         return []
     return System.query.filter(
         db.or_(
-            System.identifier == identifier,
-            System.identifier.like(f'{identifier} (%)'),
+            System.identifier == base,
+            System.identifier.like(f'{base} (%)'),
+            System.identifier.like(f'{base}__%'),
+            System.primary_system_name == base,
         )
     ).all()
+
+
+def _unique_profile_identifier(base_id: str, hardware_slug: str) -> str:
+    """Pick a free storage identifier for a new profile variant."""
+    candidate = profile_identifier(base_id, hardware_slug)
+    taken = {
+        row[0]
+        for row in db.session.query(System.identifier).filter(
+            db.or_(
+                System.identifier == candidate,
+                System.identifier.like(f'{candidate}-%'),
+            )
+        ).all()
+    }
+    if candidate not in taken:
+        return candidate
+
+    n = 2
+    while f'{candidate}-{n}' in taken:
+        n += 1
+    return f'{candidate}-{n}'
+
+
+def _profile_matches(system: System, hw_fp: str, serial_number: str | None) -> bool:
+    """Hardware must match; when a serial is set on either side, both must agree."""
+    if hardware_fingerprint(system.hardware) != hw_fp:
+        return False
+    want = normalize_serial_number(serial_number)
+    have = normalize_serial_number(getattr(system, 'serial_number', None) or '')
+    if want and have:
+        return want == have
+    if want or have:
+        return False
+    return True
 
 
 def resolve_system_for_import(
@@ -72,40 +121,66 @@ def resolve_system_for_import(
     timestamp: str,
     *,
     fallback_hardware: str | None = None,
+    serial_number: str | None = None,
 ) -> tuple[System, bool, str | None]:
     """
     Find an existing system record or create one.
 
-    Same identifier + same hardware fingerprint → reuse (update metadata).
-    Same identifier + different hardware → additional profile row with the
-    **same** identifier (grouped on the dashboard under that name).
+    Same base identifier + same hardware fingerprint → reuse (update metadata).
+    When serial numbers are provided, they must also match.
+    Additional profiles under the same XML identifier get a storage identifier
+    augmented with compact hardware tags (``qa-lemp13__ci5-136k-1x32g56``).
 
     Returns (system, created_new, note_for_log).
     """
     identifier = (identifier or '').strip()
+    serial_number = (serial_number or '').strip() or None
     hw_fp = hardware_fingerprint(hardware or fallback_hardware)
+    base_id = base_system_identifier(identifier) if identifier else ''
 
     for system in _candidate_systems(identifier):
-        if hardware_fingerprint(system.hardware) == hw_fp:
-            system.hardware = hardware or system.hardware or ''
-            system.software = software or system.software or ''
-            system.user = user or system.user or ''
-            system.timestamp = timestamp or system.timestamp or ''
-            return system, False, None
+        if not _profile_matches(system, hw_fp, serial_number):
+            continue
+        system.hardware = hardware or system.hardware or ''
+        system.software = software or system.software or ''
+        system.user = user or system.user or ''
+        system.timestamp = timestamp or system.timestamp or ''
+        if serial_number:
+            system.serial_number = serial_number
+        return system, False, None
 
     exact = System.query.filter_by(identifier=identifier).first() if identifier else None
     if exact and hw_fp and not hardware_fingerprint(exact.hardware):
-        # Existing row with empty hardware — treat first upload with hardware as the same machine.
-        exact.hardware = hardware or exact.hardware or ''
-        exact.software = software or exact.software or ''
-        exact.user = user or exact.user or ''
-        exact.timestamp = timestamp or exact.timestamp or ''
-        return exact, False, None
+        if _profile_matches(exact, hw_fp, serial_number):
+            exact.hardware = hardware or exact.hardware or ''
+            exact.software = software or exact.software or ''
+            exact.user = user or exact.user or ''
+            exact.timestamp = timestamp or exact.timestamp or ''
+            if serial_number:
+                exact.serial_number = serial_number
+            return exact, False, None
 
-    storage_id = identifier or _disambiguated_identifier('unknown-system')
+    candidates = _candidate_systems(identifier) if identifier else []
+    if identifier and candidates:
+        slug = build_hardware_slug(hardware or fallback_hardware or '', serial_number=serial_number)
+        storage_id = _unique_profile_identifier(base_id, slug)
+    else:
+        storage_id = identifier or _disambiguated_identifier('unknown-system')
+
     created_new = True
     note = None
-    if identifier and exact and hw_fp and hardware_fingerprint(exact.hardware) != hw_fp:
+    if identifier and storage_id != identifier:
+        note = (
+            f'Added profile "{storage_id}" under family "{base_id}" '
+            f'(hardware-distinguished identifier).'
+        )
+    elif identifier and serial_number and any(
+        hardware_fingerprint(s.hardware) == hw_fp for s in candidates
+    ):
+        note = (
+            f'Added profile for serial {serial_number!r} under identifier "{identifier}".'
+        )
+    elif identifier and exact and hw_fp and hardware_fingerprint(exact.hardware) != hw_fp:
         note = (
             f'Hardware differs from an existing "{identifier}" profile; '
             f'added another hardware profile under the same identifier.'
@@ -119,7 +194,8 @@ def resolve_system_for_import(
         software=software or '',
         user=user or '',
         timestamp=timestamp or '',
-        primary_system_name=identifier or storage_id,
+        primary_system_name=base_id or storage_id,
+        serial_number=serial_number,
     )
     db.session.add(system)
     db.session.flush()

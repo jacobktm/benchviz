@@ -12,6 +12,7 @@ from .system_util import resolve_system_for_import
 
 STRING_PROFILE_FIELDS = (
     'primary_system_name',
+    'serial_number',
     'chassis_version',
     'custom_hardware',
     'cooler_model',
@@ -89,12 +90,15 @@ def parse_file(file_path, system_profile=None):
         
         system_lookup_map = {}
 
+        import_serial = (system_profile or {}).get('serial_number') if system_profile else None
+
         system, _, system_note = resolve_system_for_import(
             system_id,
             main_hardware,
             system_node.findtext('Software', default=''),
             system_node.findtext('User', default=''),
             system_node.findtext('TimeStamp', default=''),
+            serial_number=import_serial,
         )
         if system_note:
             print(system_note)
@@ -161,6 +165,7 @@ def parse_file(file_path, system_profile=None):
                             '',
                             '',
                             fallback_hardware=main_hardware,
+                            serial_number=import_serial,
                         )
                         if entry_note:
                             print(entry_note)

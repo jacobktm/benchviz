@@ -38,6 +38,7 @@ def ensure_schema_compatibility():
         'memory_fans': "ALTER TABLE systems ADD COLUMN memory_fans BOOLEAN NOT NULL DEFAULT 0",
         'nvme_fans': "ALTER TABLE systems ADD COLUMN nvme_fans BOOLEAN NOT NULL DEFAULT 0",
         'manual_notes': "ALTER TABLE systems ADD COLUMN manual_notes TEXT",
+        'serial_number': "ALTER TABLE systems ADD COLUMN serial_number VARCHAR(128)",
     }
 
     with db.engine.begin() as connection:

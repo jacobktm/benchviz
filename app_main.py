@@ -43,6 +43,7 @@ app.secret_key = 'super-secret-benchmark-key'
 
 PROFILE_STRING_FIELDS = (
     'primary_system_name',
+    'serial_number',
     'chassis_version',
     'custom_hardware',
     'cooler_model',
@@ -185,6 +186,9 @@ def get_primary_group_name(system):
 
 def get_profile_badges(system):
     badges = []
+    serial = clean_text(getattr(system, 'serial_number', None))
+    if serial:
+        badges.append(f'SN {serial}')
     if system.chassis_version:
         badges.append(system.chassis_version)
     if system.cooler_model:
@@ -233,6 +237,7 @@ def format_system_profile_label(system):
 def get_system_search_tags(system):
     tags = {
         clean_text(system.identifier).lower(),
+        clean_text(getattr(system, 'serial_number', None)).lower(),
         clean_text(get_primary_group_name(system)).lower(),
         clean_text(system.hardware).lower(),
         clean_text(system.software).lower(),
@@ -253,6 +258,54 @@ def get_system_search_tags(system):
         tags.add('nvme fans')
     return {tag for tag in tags if tag}
 
+
+def group_system_profiles(systems_raw):
+    """Group profile rows under primary system name for dashboard and compare pickers."""
+    grouped_systems_dict = {}
+    for sys in systems_raw:
+        display_name = get_primary_group_name(sys) or sys.identifier or 'unknown-system'
+        group_key = base_system_identifier(display_name).lower()
+        sys.primary_group_name = display_name
+        sys.profile_label = format_system_profile_label(sys)
+        sys.search_tags = get_system_search_tags(sys)
+
+        if group_key not in grouped_systems_dict:
+            grouped_systems_dict[group_key] = {
+                'group_name': display_name,
+                'profiles': [],
+                'search_tags': set(),
+            }
+
+        group = grouped_systems_dict[group_key]
+        group['profiles'].append(sys)
+        group['search_tags'].update(sys.search_tags)
+
+    for group in grouped_systems_dict.values():
+        group['profiles'].sort(key=lambda s: (s.identifier or '').lower())
+        group['search_tags_str'] = ' '.join(group['search_tags'])
+
+    return sorted(grouped_systems_dict.values(), key=lambda g: g['group_name'].lower())
+
+
+def serialize_compare_system_groups(grouped_systems):
+    """JSON-safe grouped systems for the compare page picker."""
+    out = []
+    for group in grouped_systems:
+        out.append({
+            'group_name': group['group_name'],
+            'profiles': [
+                {
+                    'id': sys.id,
+                    'identifier': sys.identifier,
+                    'primary_group_name': sys.primary_group_name,
+                    'profile_label': sys.profile_label,
+                    'components': get_system_components(sys),
+                }
+                for sys in group['profiles']
+            ],
+        })
+    return out
+
 @app.route('/')
 def dashboard():
     removed_orphans = delete_orphan_benchmarks()
@@ -260,30 +313,7 @@ def dashboard():
         db.session.commit()
 
     systems_raw = System.query.all()
-    
-    # Group systems by the primary system family name and keep profile variations underneath.
-    grouped_systems_dict = {}
-    for sys in systems_raw:
-        group_key = base_system_identifier(sys.identifier)
-        sys.primary_group_name = get_primary_group_name(sys)
-        sys.profile_label = format_system_profile_label(sys)
-        sys.search_tags = get_system_search_tags(sys)
-
-        if group_key not in grouped_systems_dict:
-            grouped_systems_dict[group_key] = {
-                'group_name': group_key,
-                'profiles': [],
-                'search_tags': set()
-            }
-            
-        group = grouped_systems_dict[group_key]
-        group['profiles'].append(sys)
-        group['search_tags'].update(sys.search_tags)
-            
-    for group in grouped_systems_dict.values():
-        group['search_tags_str'] = " ".join(group['search_tags'])
-        
-    grouped_systems = list(grouped_systems_dict.values())
+    grouped_systems = group_system_profiles(systems_raw)
 
     # Perf counters are stored as BAR_GRAPH benchmarks too, but marked non-primary.
     # We exclude them from the dashboard "benchmarks" listing for clarity.
@@ -349,6 +379,7 @@ def upload_benchmarks():
                 profile_data = {
                     'label': label,
                     'primary_system_name': sys.primary_system_name or '',
+                    'serial_number': sys.serial_number or '',
                     'chassis_version': sys.chassis_version or '',
                     'cooler_model': sys.cooler_model or '',
                     'psu_model': sys.psu_model or '',
@@ -551,6 +582,7 @@ def update_system(id):
     system = System.query.get_or_404(id)
     system.identifier = clean_text(request.form.get('identifier')) or system.identifier
     system.primary_system_name = clean_text(request.form.get('primary_system_name')) or system.identifier
+    system.serial_number = clean_text(request.form.get('serial_number'))
     system.chassis_version = clean_text(request.form.get('chassis_version'))
     system.cooler_model = clean_text(request.form.get('cooler_model'))
     system.psu_model = clean_text(request.form.get('psu_model'))
@@ -967,28 +999,29 @@ def _insights_eta_squared_norm_buckets(value_to_y_norm_lists):
 @app.route('/compare')
 def compare():
     systems_raw = System.query.all()
-    systems = []
-    for sys in systems_raw:
-        sys.primary_group_name = get_primary_group_name(sys)
-        sys.profile_label = format_system_profile_label(sys)
-        sys.components = get_system_components(sys)
-        systems.append(sys)
-    systems.sort(key=lambda s: s.identifier)
-    return render_template('compare.html', systems=systems, compare_by_options=COMPARE_BY_OPTIONS)
+    grouped_systems = group_system_profiles(systems_raw)
+    compare_system_groups_json = json.dumps(serialize_compare_system_groups(grouped_systems))
+    return render_template(
+        'compare.html',
+        grouped_systems=grouped_systems,
+        compare_system_groups_json=compare_system_groups_json,
+        compare_by_options=COMPARE_BY_OPTIONS,
+    )
 
 
 @app.route('/compare/s/<string:comp_id>')
 def compare_saved(comp_id):
     """Render compare page; frontend will fetch the saved comparison payload."""
     systems_raw = System.query.all()
-    systems = []
-    for sys in systems_raw:
-        sys.primary_group_name = get_primary_group_name(sys)
-        sys.profile_label = format_system_profile_label(sys)
-        sys.components = get_system_components(sys)
-        systems.append(sys)
-    systems.sort(key=lambda s: s.identifier)
-    return render_template('compare.html', systems=systems, compare_by_options=COMPARE_BY_OPTIONS, saved_comp_id=comp_id)
+    grouped_systems = group_system_profiles(systems_raw)
+    compare_system_groups_json = json.dumps(serialize_compare_system_groups(grouped_systems))
+    return render_template(
+        'compare.html',
+        grouped_systems=grouped_systems,
+        compare_system_groups_json=compare_system_groups_json,
+        compare_by_options=COMPARE_BY_OPTIONS,
+        saved_comp_id=comp_id,
+    )
 
 
 @app.route('/compare/saved')
