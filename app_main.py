@@ -22,7 +22,7 @@ from app.components import (
     normalize_graphics_name,
     normalize_processor_name,
 )
-from app.system_util import base_system_identifier
+from app.system_util import base_system_identifier, hardware_fingerprint
 from flask import render_template, request, redirect, url_for, flash, send_file, jsonify
 from urllib.parse import unquote
 import os
@@ -228,7 +228,13 @@ def format_system_profile_label(system):
         or extract_hardware_component(system.hardware or '', 'GPU')
         or ''
     )
-    for bit in (proc, gpu):
+    memory = extract_hardware_component(system.hardware or '', 'Memory') \
+        or extract_hardware_component(system.hardware or '', 'RAM') \
+        or ''
+    motherboard = extract_hardware_component(system.hardware or '', 'Motherboard') \
+        or extract_hardware_component(system.hardware or '', 'Mainboard') \
+        or ''
+    for bit in (proc, gpu, memory, motherboard):
         if bit and not any(bit in b for b in badges):
             badges.append(bit)
     if not badges:
@@ -267,7 +273,6 @@ def group_system_profiles(systems_raw):
         display_name = get_primary_group_name(sys) or sys.identifier or 'unknown-system'
         group_key = base_system_identifier(display_name).lower()
         sys.primary_group_name = display_name
-        sys.profile_label = format_system_profile_label(sys)
         sys.search_tags = get_system_search_tags(sys)
 
         if group_key not in grouped_systems_dict:
@@ -282,7 +287,41 @@ def group_system_profiles(systems_raw):
         group['search_tags'].update(sys.search_tags)
 
     for group in grouped_systems_dict.values():
-        group['profiles'].sort(key=lambda s: (s.identifier or '').lower())
+        profiles = group['profiles']
+        group_name = group['group_name']
+
+        if len(profiles) > 1:
+            comps = [get_system_components(p) for p in profiles]
+            all_keys = set()
+            for c in comps:
+                all_keys.update(c.keys())
+            varying = set()
+            for key in all_keys:
+                if len({c.get(key, '') for c in comps}) > 1:
+                    varying.add(key)
+            hw_order = ['processor', 'graphics', 'memory', 'motherboard', 'chipset']
+            sw_order = ['os', 'kernel_version', 'nvidia_driver', 'mesa_version']
+            order = hw_order + [k for k in sw_order if k in varying]
+            for p, c in zip(profiles, comps):
+                parts = []
+                for key in order:
+                    if key in varying:
+                        val = c.get(key, '')
+                        if val:
+                            parts.append(val)
+                for badge_key in ['chassis_version', 'cooler_model', 'psu', 'custom_hardware']:
+                    if badge_key in varying:
+                        val = c.get(badge_key, '')
+                        if val:
+                            parts.append(val)
+                if parts:
+                    p.profile_label = f"{group_name} | {' | '.join(parts)}"
+                else:
+                    p.profile_label = group_name
+        else:
+            profiles[0].profile_label = group_name
+
+        profiles.sort(key=lambda s: (s.identifier or '').lower())
         group['search_tags_str'] = ' '.join(group['search_tags'])
 
     return sorted(grouped_systems_dict.values(), key=lambda g: g['group_name'].lower())
@@ -578,11 +617,75 @@ def system_detail(id):
         unique_values=unique_values,
     )
 
+def _reconcile_primary_name_conflict(primary_name):
+    """
+    After a primary_system_name change, check if multiple systems share the same name.
+    - If hardware + software match exactly: merge results into one, delete duplicates.
+    - If hardware or software differ: rename identifiers with distinguishing suffixes.
+    """
+    from app.hardware_slug import build_hardware_slug, profile_identifier
+
+    systems = System.query.filter(
+        System.primary_system_name == primary_name
+    ).all()
+
+    if len(systems) < 2:
+        return
+
+    groups = defaultdict(list)
+    for sys in systems:
+        fp = (hardware_fingerprint(sys.hardware), hardware_fingerprint(sys.software))
+        groups[fp].append(sys)
+
+    for group in groups.values():
+        if len(group) > 1:
+            target = group[0]
+            for source in group[1:]:
+                BenchmarkResult.query.filter_by(system_id=source.id).update(
+                    {"system_id": target.id},
+                    synchronize_session=False,
+                )
+                db.session.delete(source)
+            delete_orphan_benchmarks()
+
+    remaining = System.query.filter(
+        System.primary_system_name == primary_name
+    ).all()
+
+    if len(remaining) == 1:
+        sys = remaining[0]
+        base = base_system_identifier(primary_name)
+        if sys.identifier != base:
+            sys.identifier = base
+    else:
+        for sys in remaining:
+            base = base_system_identifier(primary_name)
+            slug = build_hardware_slug(sys.hardware, serial_number=getattr(sys, 'serial_number', None))
+            new_id = profile_identifier(base, slug)
+            taken = {
+                row[0] for row in db.session.query(System.identifier)
+                .filter(
+                    db.or_(
+                        System.identifier == new_id,
+                        System.identifier.like(f'{new_id}-%'),
+                    )
+                ).all()
+            }
+            n = 2
+            while new_id in taken:
+                new_id = f'{profile_identifier(base, slug)}-{n}'
+                n += 1
+            if new_id != sys.identifier:
+                sys.identifier = new_id
+
+
 @app.route('/update_system/<int:id>', methods=['POST'])
 def update_system(id):
     system = System.query.get_or_404(id)
     system.identifier = clean_text(request.form.get('identifier')) or system.identifier
-    system.primary_system_name = clean_text(request.form.get('primary_system_name')) or system.identifier
+    new_primary_name = clean_text(request.form.get('primary_system_name')) or system.identifier
+    old_primary_name = system.primary_system_name
+    system.primary_system_name = new_primary_name
     system.serial_number = clean_text(request.form.get('serial_number'))
     system.chassis_version = clean_text(request.form.get('chassis_version'))
     system.cooler_model = clean_text(request.form.get('cooler_model'))
@@ -608,6 +711,11 @@ def update_system(id):
         nvme_config.bottom_thermal_pad = checkbox_value(request.form, f'nvme_bottom_thermal_pad_{nvme_config.id}')
 
     db.session.commit()
+
+    if old_primary_name != new_primary_name:
+        _reconcile_primary_name_conflict(new_primary_name)
+        db.session.commit()
+
     flash('System profile updated.', 'success')
     return redirect(url_for('system_detail', id=system.id))
 
