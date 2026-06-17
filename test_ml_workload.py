@@ -107,13 +107,15 @@ class TestWorkloadFingerprint(unittest.TestCase):
             title="Idle-ish",
         )
         self.assertTrue(wl.get("insufficient_signal"))
-        props = wl["proportions"]
-        self.assertEqual(props.get("gpu", 0), 0.0)
+        self.assertEqual(wl["active_bottlenecks"], [])
+        self.assertEqual(wl["scope"], "general")
 
     def test_no_fake_equal_split_without_signal(self):
         wl = compute_workload_fingerprint({}, {}, title="Unknown Benchmark")
         self.assertTrue(wl.get("insufficient_signal"))
-        self.assertEqual(wl["proportions"].get("cpu", 0), 0.0)
+        # equal-distribution fallback when no signal — active_bottlenecks stays empty
+        self.assertEqual(wl["active_bottlenecks"], [])
+        self.assertEqual(wl["scope"], "general")
 
 
 if __name__ == "__main__":

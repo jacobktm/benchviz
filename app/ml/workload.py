@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.workload_consensus import MIN_ACTIVE_SHARE
+from app.workload_consensus import MIN_ACTIVE_SHARE, active_bottlenecks_from_scores, score_proportions
 
 # Raw % fallbacks when hardware baselines are not yet available.
 _IDLE_GPU_RAW_PCT = 8.0
@@ -34,33 +34,14 @@ _PROXY_SIGNALS: dict[str, list[tuple[str, str, float]]] = {
 }
 
 
-def _score_proportions(scores: dict[str, float]) -> dict[str, float]:
-    keys = ("cpu", "gpu", "cache", "memory", "storage")
-    total = sum(max(0.0, float(scores.get(k, 0) or 0)) for k in keys)
-    if total <= 0:
-        return {k: 0.0 for k in keys}
-    return {k: max(0.0, float(scores.get(k, 0) or 0)) / total for k in keys}
-
-
-def _active_bottlenecks(scores: dict[str, float]) -> list[str]:
-    props = _score_proportions(scores)
-    active = [k for k in props if props[k] >= MIN_ACTIVE_SHARE]
-    if active:
-        return sorted(active, key=lambda k: -props[k])
-    peak = max((float(scores.get(k, 0) or 0) for k in props), default=0.0)
-    if peak <= 0:
-        return []
-    return sorted(
-        [k for k in props if float(scores.get(k, 0) or 0) >= peak * 0.4],
-        key=lambda k: -float(scores.get(k, 0) or 0),
-    )
+_WORKLOAD_KEYS = ("cpu", "gpu", "cache", "memory", "storage")
 
 
 def _title_blob(title: str, description: str = "") -> str:
     return f"{title} {description}".lower()
 
 
-def _title_scope_fallback(blob: str) -> dict[str, float]:
+def _title_score_fallback(blob: str) -> dict[str, float]:
     scores = {"cpu": 0.0, "gpu": 0.0, "cache": 0.0, "memory": 0.0, "storage": 0.0, "thermal": 0.0}
     if any(k in blob for k in ("vulkan", "cuda", "opengl", "render", "graphics", "gpu ")):
         scores["gpu"] += 2.0
@@ -370,7 +351,7 @@ def compute_workload_fingerprint(
         evidence.append(f"CPU freq droop≈{freq_droop:.0f} MHz")
 
     blob = _title_blob(title, description)
-    title_scores = _title_scope_fallback(blob)
+    title_scores = _title_score_fallback(blob)
     if not sensor_observed:
         for k, v in title_scores.items():
             if v > 0 and scores[k] < 0.5:
@@ -378,7 +359,7 @@ def compute_workload_fingerprint(
 
     core_scores = {k: scores[k] for k in ("cpu", "gpu", "cache", "memory", "storage")}
     if max(core_scores.values()) < 0.5:
-        props = _score_proportions(core_scores)
+        props = score_proportions(core_scores, keys=_WORKLOAD_KEYS)
         return {
             "scores": {k: round(scores[k], 3) for k in scores},
             "proportions": {k: round(props[k], 3) for k in props},
@@ -396,8 +377,8 @@ def compute_workload_fingerprint(
             "insufficient_signal": not sensor_observed and not perf,
         }
 
-    props = _score_proportions(core_scores)
-    active = _active_bottlenecks(core_scores)
+    props = score_proportions(core_scores, keys=_WORKLOAD_KEYS)
+    active = active_bottlenecks_from_scores(core_scores, keys=_WORKLOAD_KEYS)
     thermal_notable = scores["thermal"] >= 1.0
 
     if len(active) >= 2:

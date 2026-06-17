@@ -30,11 +30,12 @@ def signals_have_evidence(signals: dict[str, Any] | None) -> bool:
     return bool(signals.get("sensor_categories"))
 
 
-def score_proportions(scores: dict[str, float]) -> dict[str, float]:
-    total = sum(max(0.0, float(scores.get(k, 0) or 0)) for k in _SCORE_KEYS)
+def score_proportions(scores: dict[str, float], *, keys: tuple[str, ...] | None = None) -> dict[str, float]:
+    ks = _SCORE_KEYS if keys is None else keys
+    total = sum(max(0.0, float(scores.get(k, 0) or 0)) for k in ks)
     if total <= 0:
-        return {k: 1.0 / len(_SCORE_KEYS) for k in _SCORE_KEYS}
-    return {k: max(0.0, float(scores.get(k, 0) or 0)) / total for k in _SCORE_KEYS}
+        return {k: 1.0 / len(ks) for k in ks}
+    return {k: max(0.0, float(scores.get(k, 0) or 0)) / total for k in ks}
 
 
 def average_score_dicts(dicts: list[dict[str, float]]) -> dict[str, float]:
@@ -49,18 +50,20 @@ def average_score_dicts(dicts: list[dict[str, float]]) -> dict[str, float]:
 def active_bottlenecks_from_scores(
     scores: dict[str, float],
     *,
+    keys: tuple[str, ...] | None = None,
     min_share: float = MIN_ACTIVE_SHARE,
 ) -> list[str]:
     """Bottleneck dimensions with meaningful measured contribution (e.g. cpu + gpu both active)."""
-    props = score_proportions(scores)
-    active = [k for k in _SCORE_KEYS if props[k] >= min_share]
+    ks = _SCORE_KEYS if keys is None else keys
+    props = score_proportions(scores, keys=ks)
+    active = [k for k in ks if props[k] >= min_share]
     if active:
         return sorted(active, key=lambda k: -props[k])
-    peak = max((float(scores.get(k, 0) or 0) for k in _SCORE_KEYS), default=0.0)
+    peak = max((float(scores.get(k, 0) or 0) for k in ks), default=0.0)
     if peak <= 0:
         return []
     return sorted(
-        [k for k in _SCORE_KEYS if float(scores.get(k, 0) or 0) >= peak * 0.4],
+        [k for k in ks if float(scores.get(k, 0) or 0) >= peak * 0.4],
         key=lambda k: -float(scores.get(k, 0) or 0),
     )
 

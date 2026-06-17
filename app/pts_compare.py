@@ -7,6 +7,7 @@ from typing import Any
 
 from .ob_cache_sync import compare_ob_live_fetch_enabled, load_ob_cache_index, lookup_ob_entry_with_fallback
 from .pts_comparison import (
+    _is_hib,
     comparison_hash_for_benchmark,
     lib_to_hib_value,
     normalize_relative_values,
@@ -22,24 +23,6 @@ from .pts_comparison import (
     strip_test_profile_identifier,
 )
 from .pts_math import geometric_mean
-
-
-def _is_hib(proportion: str | None) -> bool:
-    p = (proportion or "").strip().upper()
-    if p == "HIB":
-        return True
-    if p == "LIB":
-        return False
-    pl = (proportion or "").lower()
-    if "lower" in pl and "better" in pl:
-        return False
-    if "higher" in pl and "better" in pl:
-        return True
-    if "more" in pl and "better" in pl:
-        return True
-    if "lower" in pl:
-        return False
-    return "higher" in pl or "more" in pl
 
 
 def build_pts_context_for_compare_group(

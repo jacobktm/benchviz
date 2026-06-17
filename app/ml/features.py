@@ -7,8 +7,6 @@ so workload classification does not treat °C as utilization %.
 
 from __future__ import annotations
 
-import math
-import re
 import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -18,17 +16,19 @@ from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, System
 from app.ml.sensor_baselines import HardwareSensorBaselineIndex
 from app.result_merge import bar_run_values
-from app.sensor_quality import is_noisy_sensor_series, numeric_series, peak_series_value, sensor_kind
+from app.sensor_quality import (
+    _SENSOR_KEYWORDS,
+    _label_bucket,
+    _series_slope,
+    is_noisy_sensor_series,
+    numeric_series,
+    peak_series_value,
+    sensor_kind,
+)
 from app.workload_profile import (
     counter_signal_key,
     is_perf_counter_benchmark,
     _monitor_result_matches_config,
-    _norm_text,
-)
-
-_SENSOR_KEYWORDS = (
-    "temperature", "frequency", "usage", "power", "celsius", "mhz", "ghz",
-    "watts", "fan", "rpm", "voltage", "energy", "utilization",
 )
 
 ML_HARDWARE_KEYS = (
@@ -99,43 +99,6 @@ class SystemRunFeatures:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         return d
-
-
-def _series_slope(values: list[float]) -> float | None:
-    n = len(values)
-    if n < 3:
-        return None
-    xs = list(range(n))
-    x_mean = statistics.mean(xs)
-    y_mean = statistics.mean(values)
-    num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values))
-    den = sum((x - x_mean) ** 2 for x in xs)
-    if den <= 0:
-        return None
-    return num / den
-
-
-def _label_bucket(description: str, scale: str) -> str | None:
-    blob = _norm_text(description, scale)
-    if "gpu" in blob or "graphics" in blob:
-        return "gpu"
-    if "cpu" in blob or "package" in blob or "core" in blob:
-        return "cpu"
-    if any(k in blob for k in ("nvme", "disk", "ssd", "storage")):
-        return "storage"
-    if any(k in blob for k in ("memory", "ram", "dimm")):
-        return "memory"
-    return None
-
-
-def _proportion_is_lower_better(proportion: str | None) -> bool:
-    p = (proportion or "").strip().upper()
-    if p == "LIB":
-        return True
-    if p == "HIB":
-        return False
-    pl = (proportion or "").lower()
-    return "lower" in pl and "better" in pl
 
 
 def _collect_perf_for_system(

@@ -9,11 +9,11 @@ from collections import defaultdict
 from app import db
 from app.ml.attribution import compute_attribution
 from app.ml.features import (
-    _proportion_is_lower_better,
     extract_system_run_features,
     pool_perf_signals,
     pool_sensor_features,
 )
+from app.pts_comparison import _proportion_is_lower_better
 from app.ml.sensor_baselines import HardwareSensorBaselineIndex, build_hardware_sensor_baseline_index
 from app.ml.thermal import compute_thermal_sensitivity
 from app.ml.workload import compute_workload_fingerprint

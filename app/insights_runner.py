@@ -5,9 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-
-def project_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from app._util import project_root
 
 
 def rebuild_script_path() -> str:

@@ -9,6 +9,28 @@ from typing import Any
 
 from .pts_math import geometric_mean, harmonic_mean, result_to_percentile
 
+
+def _proportion_is_lower_better(proportion: str | None) -> bool:
+    p = (proportion or "").strip().upper()
+    if p == "LIB":
+        return True
+    if p == "HIB":
+        return False
+    pl = (proportion or "").lower()
+    if "lower" in pl and "better" in pl:
+        return True
+    if "higher" in pl and "better" in pl:
+        return False
+    if "more" in pl and "better" in pl:
+        return False
+    if "lower" in pl:
+        return True
+    return not ("higher" in pl or "more" in pl)
+
+
+def _is_hib(proportion: str | None) -> bool:
+    return not _proportion_is_lower_better(proportion)
+
 # Cap matches BenchViz composite cap (PTS itself does not cap geo-mean inputs).
 COMPOSITE_OPTION_CAP_RATIO = 1.5
 

@@ -8,7 +8,13 @@ from app.models import (
     SavedComparison,
     HardwareTheoreticalRank,
 )
-from app.parser import parse_benchmark_files, parse_file, pop_import_notes
+from app.parser import (
+    BOOL_PROFILE_FIELDS,
+    STRING_PROFILE_FIELDS,
+    parse_benchmark_files,
+    parse_file,
+    pop_import_notes,
+)
 from app.result_merge import bar_run_values
 from app.profile_snapshot import format_observation_label
 from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
@@ -17,7 +23,9 @@ from app.ml.analyzer import analyze_ml_profiles
 from app.insights_lock import insights_rebuild_lock
 from app.insights_runner import schedule_insights_rebuild
 from app.components import (
+    clean_text,
     extract_hardware_component,
+    get_primary_group_name,
     get_system_components,
     normalize_graphics_name,
     normalize_processor_name,
@@ -42,26 +50,6 @@ from werkzeug.utils import secure_filename
 app = create_app()
 app.secret_key = 'super-secret-benchmark-key'
 
-PROFILE_STRING_FIELDS = (
-    'primary_system_name',
-    'serial_number',
-    'chassis_version',
-    'custom_hardware',
-    'cooler_model',
-    'psu_model',
-    'psu_wattage',
-    'manual_notes',
-)
-
-PROFILE_BOOL_FIELDS = (
-    'external_off',
-    'gpu_fans',
-    'memory_fans',
-    'nvme_fans',
-)
-
-def clean_text(value):
-    return (value or '').strip()
 
 
 def geometric_mean_positive(values):
@@ -133,7 +121,7 @@ def geometric_mean_by_system_across_arguments(benchmark_rows):
 
 def get_unique_field_values():
     unique_values = {}
-    for field in PROFILE_STRING_FIELDS:
+    for field in STRING_PROFILE_FIELDS:
         if field == 'manual_notes':
             continue
         column = getattr(System, field)
@@ -145,8 +133,8 @@ def checkbox_value(form, key):
     return form.get(key) in {'on', 'true', '1', 'yes'}
 
 def build_system_profile_from_form(form):
-    profile = {field: clean_text(form.get(field)) for field in PROFILE_STRING_FIELDS}
-    for field in PROFILE_BOOL_FIELDS:
+    profile = {field: clean_text(form.get(field)) for field in STRING_PROFILE_FIELDS}
+    for field in BOOL_PROFILE_FIELDS:
         profile[field] = checkbox_value(form, field)
     return profile
 
@@ -181,9 +169,6 @@ def sync_nvme_configs(system):
             changed = True
 
     return detected_drives, changed
-
-def get_primary_group_name(system):
-    return system.primary_system_name or system.identifier
 
 def get_profile_badges(system):
     badges = []
@@ -875,10 +860,6 @@ def _insights_workload_context_from_analysis(
     analysis_json = records[0].analysis_json if records else None
     args_key = "default" if (not args_str or args_str.lower() == "default") else args_str
     return workload_context_for_insights(title, app_version, args_key, analysis_json, text_blob)
-
-
-def _insights_scope_from_analysis(title: str, app_version: str, args_str: str, text_blob: str) -> str:
-    return _insights_workload_context_from_analysis(title, app_version, args_str, text_blob)["scope"]
 
 
 def _insights_allowed_singles_for_scope(

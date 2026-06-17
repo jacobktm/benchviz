@@ -14,11 +14,7 @@ from sqlalchemy.orm import joinedload
 
 from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, HardwareTheoreticalRank
-
-
-def _proportion_is_lower_better(p: str | None) -> bool:
-    x = (p or "").strip().upper()
-    return x == "LIB"
+from app.pts_comparison import _proportion_is_lower_better
 
 
 def _performance_scalar(value: float, lower_better: bool) -> float:

@@ -38,8 +38,8 @@ class ObCachePathTest(unittest.TestCase):
                 del os.environ["BENCHVIZ_PTS_USER_PATH"]
 
     def test_default_pts_clone_under_instance(self):
-        root = project_root()
-        self.assertEqual(default_pts_clone_dir(root), root / "instance" / "phoronix-test-suite")
+        root = Path(project_root())
+        self.assertEqual(default_pts_clone_dir(str(root)), root / "instance" / "phoronix-test-suite")
 
     def test_env_override_pts_clone_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -50,8 +50,8 @@ class ObCachePathTest(unittest.TestCase):
                 del os.environ["BENCHVIZ_PTS_CLONE_DIR"]
 
     def test_default_ob_cache_dir(self):
-        root = project_root()
-        self.assertEqual(default_ob_cache_dir(root), root / "instance" / "ob-cache")
+        root = Path(project_root())
+        self.assertEqual(default_ob_cache_dir(str(root)), root / "instance" / "ob-cache")
 
 
 class EnsurePtsCloneTest(unittest.TestCase):
@@ -144,7 +144,7 @@ class ObCacheVersionFallbackTest(unittest.TestCase):
         self.assertEqual(test_profile_family("pts/compress-7zip-1.10.0"), "pts/compress-7zip")
 
     def test_fallback_to_older_app_version_when_exact_hash_missing(self):
-        idx_path = project_root() / "instance" / "ob_cache_index.json"
+        idx_path = Path(project_root()) / "instance" / "ob_cache_index.json"
         if not idx_path.is_file():
             self.skipTest("ob_cache_index.json not present")
         index = load_ob_cache_index(idx_path)
@@ -184,7 +184,7 @@ class ObCacheVersionFallbackTest(unittest.TestCase):
         self.assertEqual(entry.get("unit"), "MIPS")
 
     def test_build_linux_kernel_1_17_falls_back_to_1_16(self):
-        idx_path = project_root() / "instance" / "ob_cache_index.json"
+        idx_path = Path(project_root()) / "instance" / "ob_cache_index.json"
         if not idx_path.is_file():
             self.skipTest("ob_cache_index.json not present")
 

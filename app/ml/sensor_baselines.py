@@ -16,12 +16,14 @@ from typing import Any, Iterator
 
 from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, System
-from app.sensor_quality import is_noisy_sensor_series, numeric_series, peak_series_value, sensor_kind
-from app.workload_profile import _norm_text
-
-_SENSOR_KEYWORDS = (
-    "temperature", "frequency", "usage", "power", "celsius", "mhz", "ghz",
-    "watts", "fan", "rpm", "voltage", "energy", "utilization",
+from app.sensor_quality import (
+    _SENSOR_KEYWORDS,
+    _label_bucket,
+    _series_slope,
+    is_noisy_sensor_series,
+    numeric_series,
+    peak_series_value,
+    sensor_kind,
 )
 
 MIN_SAMPLES_PER_MODEL = 5
@@ -42,35 +44,12 @@ def _percentile(values: list[float], pct: float) -> float:
     return s[f] * (c - k) + s[c] * (k - f)
 
 
-def _label_bucket(description: str, scale: str) -> str | None:
-    blob = _norm_text(description, scale)
-    if "gpu" in blob or "graphics" in blob:
-        return "gpu"
-    if "cpu" in blob or "package" in blob or "core" in blob:
-        return "cpu"
-    return None
-
-
 def _hardware_part_for_signal(signal_key: str) -> str | None:
     if signal_key.startswith("cpu."):
         return "processor"
     if signal_key.startswith("gpu."):
         return "graphics"
     return None
-
-
-def _series_slope(values: list[float]) -> float | None:
-    n = len(values)
-    if n < 3:
-        return None
-    xs = list(range(n))
-    x_mean = statistics.mean(xs)
-    y_mean = statistics.mean(values)
-    num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values))
-    den = sum((x - x_mean) ** 2 for x in xs)
-    if den <= 0:
-        return None
-    return num / den
 
 
 def extract_sensor_scalars(

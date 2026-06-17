@@ -15,7 +15,7 @@ from typing import Any
 
 from . import db
 from .models import Benchmark, BenchmarkResult
-from .sensor_quality import is_noisy_sensor_series, peak_series_value, sensor_kind
+from .sensor_quality import _sensor_category, is_noisy_sensor_series, peak_series_value, sensor_kind
 from .workload_consensus import (
     MIN_ACTIVE_SHARE,
     MIN_SYSTEMS_WITH_SENSOR_EVIDENCE,
@@ -201,19 +201,6 @@ def _result_matches_option(
 
 def _sensor_label(benchmark: Benchmark) -> str:
     return _norm_text(benchmark.description, benchmark.metric if hasattr(benchmark, "metric") else "", benchmark.scale)
-
-
-def _sensor_category(label: str) -> str | None:
-    l = label.lower()
-    if "gpu" in l:
-        return "gpu"
-    if "cpu" in l:
-        return "cpu"
-    if any(k in l for k in ("nvme", "disk", "ssd", "storage")):
-        return "storage"
-    if any(k in l for k in ("memory", "ram", "dimm")):
-        return "memory"
-    return None
 
 
 def collect_workload_signals(

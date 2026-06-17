@@ -24,9 +24,45 @@ _MIN_ABS_SPAN = {
 # Minimum coefficient of variation (stdev / |mean|) when mean is well above zero.
 _MIN_CV = 0.002
 
+_SENSOR_KEYWORDS = (
+    "temperature", "frequency", "usage", "power", "celsius", "mhz", "ghz",
+    "watts", "fan", "rpm", "voltage", "energy", "utilization",
+)
+
 
 def _norm_blob(*parts: str) -> str:
     return " ".join((p or "").strip().lower() for p in parts if p)
+
+
+def _series_slope(values: list[float]) -> float | None:
+    n = len(values)
+    if n < 3:
+        return None
+    xs = list(range(n))
+    x_mean = statistics.mean(xs)
+    y_mean = statistics.mean(values)
+    num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values))
+    den = sum((x - x_mean) ** 2 for x in xs)
+    if den <= 0:
+        return None
+    return num / den
+
+
+def _sensor_category(label: str) -> str | None:
+    l = label.lower()
+    if "gpu" in l or "graphics" in l:
+        return "gpu"
+    if "cpu" in l or "package" in l or "core" in l:
+        return "cpu"
+    if any(k in l for k in ("nvme", "disk", "ssd", "storage")):
+        return "storage"
+    if any(k in l for k in ("memory", "ram", "dimm")):
+        return "memory"
+    return None
+
+
+def _label_bucket(description: str, scale: str) -> str | None:
+    return _sensor_category(_norm_blob(description, scale))
 
 
 def sensor_kind(description: str | None, scale: str | None = None) -> str:

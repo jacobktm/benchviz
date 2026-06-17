@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.ml.features import _series_slope, _label_bucket
+from app.sensor_quality import _series_slope, _label_bucket
 
 
 class TestFeatureHelpers(unittest.TestCase):

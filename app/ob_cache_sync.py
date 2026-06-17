@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app._util import project_root
+
 from .pts_comparison import (
     generate_comparison_hash,
     hash_identifier_from_test_profile,
@@ -34,13 +36,9 @@ _index_write_lock = threading.Lock()
 ObLookupSource = str  # "", "live", "local", "fallback"
 
 
-def project_root() -> Path:
-    return Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
 def default_pts_clone_dir(project_root_path: str | Path | None = None) -> Path:
     """Full PTS git checkout used for ob-cache updates (under instance/)."""
-    root = Path(project_root_path) if project_root_path else project_root()
+    root = Path(project_root_path) if project_root_path else Path(project_root())
     env = os.environ.get("BENCHVIZ_PTS_CLONE_DIR", "").strip()
     if env:
         return Path(env)
@@ -48,12 +46,12 @@ def default_pts_clone_dir(project_root_path: str | Path | None = None) -> Path:
 
 
 def default_ob_cache_dir(project_root_path: str | Path | None = None) -> Path:
-    root = Path(project_root_path) if project_root_path else project_root()
+    root = Path(project_root_path) if project_root_path else Path(project_root())
     return root / "instance" / "ob-cache"
 
 
 def default_index_path(project_root_path: str | Path | None = None) -> Path:
-    root = Path(project_root_path) if project_root_path else project_root()
+    root = Path(project_root_path) if project_root_path else Path(project_root())
     return root / "instance" / "ob_cache_index.json"
 
 
@@ -62,7 +60,7 @@ def default_pts_user_path(project_root_path: str | Path | None = None) -> Path:
     env = os.environ.get("BENCHVIZ_PTS_USER_PATH", "").strip()
     if env:
         return Path(env.rstrip("/"))
-    root = Path(project_root_path) if project_root_path else project_root()
+    root = Path(project_root_path) if project_root_path else Path(project_root())
     return root / "instance" / "pts-user"
 
 
