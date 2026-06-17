@@ -17,3 +17,6 @@ instance/pts-user/
 
 # Exported slide images
 app/static/exports/
+
+# opencode personal workspace config
+.opencode.json
