@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Pre-commit hook — run all unit tests before allowing a commit.
+# Install with:  git config core.hooksPath .githooks
+
+set -e
+
+echo "Running unit tests…"
+python -m unittest discover -s tests -v

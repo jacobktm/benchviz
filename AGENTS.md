@@ -149,4 +149,6 @@ test_*.py             # Unit tests and test utilities
 - **Import resolution**: `resolve_system_for_import()` uses hardware fingerprinting + serial numbers to match/merge/deduplicate
 - **OB integration**: PTS comparison hash generation, OB cache lookup with live-fetch fallback
 - **Tests**: standard `unittest.TestCase`, run by executing `test_*.py` files directly. Playwright E2E tests use `playwright.sync_api` against `http://127.0.0.1:8765`.
+- **Pre-commit hook** (`.githooks/pre-commit`) runs the full test suite before each commit. Install with:
+  `git config core.hooksPath .githooks`
 - **No linting/formatter configs** are currently present in the repo.
