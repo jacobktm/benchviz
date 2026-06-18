@@ -5,7 +5,7 @@
 <div class="page-section" style="max-width:1200px;margin:0 auto;">
     <h2 style="margin-bottom:1rem;color:var(--text-primary);">Exported comparison slide</h2>
     <div style="margin-bottom:1rem;display:flex;gap:0.5rem;align-items:center;">
-        <a href="{{ url_for('compare') }}" class="btn btn-secondary">← Back to compare</a>
+        <a href="{{ url_for('pages.compare') }}" class="btn btn-secondary">← Back to compare</a>
         <a href="{{ download_url }}" class="btn btn-primary">Download PNG</a>
     </div>
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -25,7 +25,7 @@
             <img src="{{ image_url }}" alt="Benchviz exported comparison" style="max-width:100%;height:auto;display:block;margin:0 auto;">
         </div>
     </div>
-    <form action="{{ url_for('delete_export_slide', export_id=export_id) }}" method="post" style="margin-top:1rem;">
+    <form action="{{ url_for('export.delete_export_slide', export_id=export_id) }}" method="post" style="margin-top:1rem;">
         <button type="submit" class="btn btn-danger">Delete this export</button>
     </form>
 </div>

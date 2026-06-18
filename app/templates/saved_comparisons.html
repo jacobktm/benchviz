@@ -35,11 +35,11 @@
                         {{ comp.benchmarks|join(', ') }}
                     </td>
                     <td style="padding:0.4rem 0.6rem;">
-                        <a href="{{ url_for('compare_saved', comp_id=comp.id) }}" class="btn-primary-sm">Open</a>
+                        <a href="{{ url_for('pages.compare_saved', comp_id=comp.id) }}" class="btn-primary-sm">Open</a>
                     </td>
                     <td style="padding:0.4rem 0.6rem;">
                         <form method="post"
-                              action="{{ url_for('delete_saved_comparison', comp_id=comp.id) }}"
+                              action="{{ url_for('pages.delete_saved_comparison', comp_id=comp.id) }}"
                               class="delete-comparison-form"
                               data-comp-id="{{ comp.id }}"
                               style="display:inline;">

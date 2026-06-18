@@ -51,7 +51,7 @@
 </div>
 
 <div class="animate-in delay-3">
-    <form action="{{ url_for('update_system', id=system.id) }}" method="POST" class="glass" style="padding: 1.5rem; border-radius: 12px;">
+    <form action="{{ url_for('pages.update_system', id=system.id) }}" method="POST" class="glass" style="padding: 1.5rem; border-radius: 12px;">
         <h2 style="margin-bottom: 1.5rem;">Editable System Profile</h2>
 
         <div class="profile-grid" style="margin-bottom: 1.5rem;">
@@ -187,7 +187,7 @@
 
     <details style="margin-top: 2rem;">
         <summary style="cursor: pointer; color: #ff6b81; font-weight: 600;">Danger Zone: Delete System</summary>
-        <form action="{{ url_for('delete_system', id=system.id) }}" method="POST" class="glass" style="margin-top: 1rem; padding: 1.5rem; border-color: rgba(255, 60, 60, 0.2);">
+        <form action="{{ url_for('pages.delete_system', id=system.id) }}" method="POST" class="glass" style="margin-top: 1rem; padding: 1.5rem; border-color: rgba(255, 60, 60, 0.2);">
             <p style="color: var(--text-secondary); margin-bottom: 1rem;">This action cannot be undone. All associated benchmark results will be permanently destroyed.</p>
             <label class="checkbox-item" style="margin-bottom: 1rem;">
                 <input type="checkbox" required name="confirm_delete"><span>I understand, permanently delete.</span>
@@ -212,7 +212,7 @@
             <div style="padding: 1rem; border-top: 1px solid rgba(255,255,255,0.1);">
                 <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;">
                     <p style="font-size: 0.9rem; color: var(--text-secondary); margin: 0; flex: 1 1 16rem;">{{ group.description }}</p>
-                    <form action="{{ url_for('delete_system_benchmark', system_id=system.id) }}" method="POST" style="flex: 0 0 auto;" onsubmit="return confirm('Remove all results for {{ group.title|e }} from this system? This cannot be undone.');">
+                    <form action="{{ url_for('pages.delete_system_benchmark', system_id=system.id) }}" method="POST" style="flex: 0 0 auto;" onsubmit="return confirm('Remove all results for {{ group.title|e }} from this system? This cannot be undone.');">
                         <input type="hidden" name="title" value="{{ group.title }}">
                         <input type="hidden" name="app_version" value="{{ group.app_version or '' }}">
                         <input type="hidden" name="identifier" value="{{ group.identifier or '' }}">

@@ -5,7 +5,7 @@
     <h1 style="margin-top: 1rem;">Compare Systems</h1>
     <p class="card-meta">Build a report by selecting systems and one or more shared benchmarks.</p>
     <div style="margin-top:0.35rem;">
-        <a href="{{ url_for('list_saved_comparisons') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">
+        <a href="{{ url_for('pages.list_saved_comparisons') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">
             View saved comparisons
         </a>
     </div>
@@ -149,8 +149,8 @@
     </div>
 </div>
 <div style="margin-top:0.5rem;display:flex;flex-direction:column;gap:0.15rem;">
-    <a href="{{ url_for('list_saved_comparisons') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">View saved comparisons</a>
-    <a href="{{ url_for('list_export_slides') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">View exported slides</a>
+    <a href="{{ url_for('pages.list_saved_comparisons') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">View saved comparisons</a>
+    <a href="{{ url_for('export.list_export_slides') }}" style="font-size:0.8rem;color:var(--text-secondary);text-decoration:underline;">View exported slides</a>
 </div>
 {% endblock %}
 
