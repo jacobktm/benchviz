@@ -11,13 +11,15 @@ from app.ob_cache_sync import (
     default_ob_cache_dir,
     default_pts_clone_dir,
     ensure_fallback_buckets,
-    ensure_pts_clone,
     load_ob_cache_index,
     lookup_ob_entry_with_fallback,
     ob_cache_ttl_seconds,
     project_root,
     sync_ob_cache,
-    _is_cache_fresh,
+)
+from app.ob_cache_sync._sync import ensure_pts_clone
+from app.ob_cache_sync._paths import _is_cache_fresh
+from app.ob_cache_sync._lookup import (
     _pick_version_fallback_entry,
     _try_live_ob_lookup,
 )
@@ -26,7 +28,7 @@ from app.pts.hashing import generate_comparison_hash, normalize_ob_unit, strip_t
 
 class ObCachePathTest(unittest.TestCase):
     def test_pts_user_path_override_has_trailing_slash(self):
-        from app.ob_cache_sync import pts_user_path_override_value
+        from app.ob_cache_sync._paths import pts_user_path_override_value
 
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["BENCHVIZ_PTS_USER_PATH"] = tmp
@@ -55,7 +57,7 @@ class ObCachePathTest(unittest.TestCase):
 
 
 class EnsurePtsCloneTest(unittest.TestCase):
-    @mock.patch("app.ob_cache_sync._run")
+    @mock.patch("app.ob_cache_sync._sync._run")
     def test_updates_existing_clone(self, mock_run):
         with tempfile.TemporaryDirectory() as tmp:
             clone = Path(tmp) / "pts"
@@ -72,8 +74,8 @@ class EnsurePtsCloneTest(unittest.TestCase):
             reset_cmd = mock_run.call_args_list[1][0][0]
             self.assertEqual(reset_cmd[3], "reset")
 
-    @mock.patch("app.ob_cache_sync._fresh_pts_clone")
-    @mock.patch("app.ob_cache_sync._run")
+    @mock.patch("app.ob_cache_sync._sync._fresh_pts_clone")
+    @mock.patch("app.ob_cache_sync._sync._run")
     def test_reclones_when_fetch_fails(self, mock_run, mock_fresh):
         with tempfile.TemporaryDirectory() as tmp:
             clone = Path(tmp) / "pts"
@@ -84,7 +86,7 @@ class EnsurePtsCloneTest(unittest.TestCase):
             self.assertEqual(meta["action"], "recloned")
             mock_fresh.assert_called_once_with(clone, "master")
 
-    @mock.patch("app.ob_cache_sync._run")
+    @mock.patch("app.ob_cache_sync._sync._run")
     def test_clones_when_missing(self, mock_run):
         with tempfile.TemporaryDirectory() as tmp:
             clone = Path(tmp) / "pts"
@@ -290,16 +292,16 @@ class ObCacheVersionFallbackTest(unittest.TestCase):
 
 
 class ObCacheLookupOrderTest(unittest.TestCase):
-    @mock.patch("app.ob_cache_sync._try_live_ob_lookup")
-    @mock.patch("app.ob_cache_sync._try_local_disk_exact")
-    @mock.patch("app.ob_cache_sync.lookup_ob_entry")
+    @mock.patch("app.ob_cache_sync._lookup._try_live_ob_lookup")
+    @mock.patch("app.ob_cache_sync._lookup._try_local_disk_exact")
+    @mock.patch("app.ob_cache_sync._lookup.lookup_ob_entry")
     def test_disk_before_live_when_live_allowed(self, mock_lookup, mock_disk, mock_live):
         index = {"entries": {}, "fallback_buckets": {}}
         mock_lookup.return_value = None
         mock_disk.return_value = {"app_version": "6.8", "samples": 1}
         mock_live.return_value = (None, "")
 
-        with mock.patch("app.ob_cache_sync.live_ob_fetch_enabled", return_value=True):
+        with mock.patch("app.ob_cache_sync._lookup.live_ob_fetch_enabled", return_value=True):
             entry, source = lookup_ob_entry_with_fallback(
                 "abc",
                 index,
@@ -312,8 +314,8 @@ class ObCacheLookupOrderTest(unittest.TestCase):
         self.assertEqual(entry["app_version"], "6.8")
         mock_live.assert_not_called()
 
-    @mock.patch("app.ob_cache_sync._try_live_ob_lookup")
-    @mock.patch("app.ob_cache_sync.lookup_ob_entry")
+    @mock.patch("app.ob_cache_sync._lookup._try_live_ob_lookup")
+    @mock.patch("app.ob_cache_sync._lookup.lookup_ob_entry")
     def test_index_hit_skips_live_on_compare(self, mock_lookup, mock_live):
         index = {"entries": {"abc": {"app_version": "1.0", "test_profile": "pts/foo-1.0"}}, "fallback_buckets": {}}
         mock_lookup.return_value = {"app_version": "1.0"}
@@ -342,9 +344,9 @@ class ObCacheFallbackPickerTest(unittest.TestCase):
 
 
 class ObCacheLiveCacheTest(unittest.TestCase):
-    @mock.patch("app.ob_cache_sync.save_ob_cache_index")
-    @mock.patch("app.ob_cache_sync.run_pts_fetch_test_profile")
-    @mock.patch("app.ob_cache_sync.list_test_profiles_for_identifier")
+    @mock.patch("app.ob_cache_sync._lookup.save_ob_cache_index")
+    @mock.patch("app.ob_cache_sync._lookup.run_pts_fetch_test_profile")
+    @mock.patch("app.ob_cache_sync._lookup.list_test_profiles_for_identifier")
     def test_downloads_are_cached_even_without_exact_hash(self, mock_profiles, mock_fetch, mock_save):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "ob-cache"
@@ -370,7 +372,7 @@ class ObCacheLiveCacheTest(unittest.TestCase):
             mock_fetch.return_value = {"ok": True, "generated_json": str(gen_src)}
 
             index = {"entries": {}, "fallback_buckets": {}}
-            with mock.patch("app.ob_cache_sync.default_ob_cache_dir", return_value=cache):
+            with mock.patch("app.ob_cache_sync._lookup.default_ob_cache_dir", return_value=cache):
                 ent, source = _try_live_ob_lookup(
                     "missing-hash",
                     index,
@@ -400,23 +402,23 @@ class ObCacheStaleRefreshTest(unittest.TestCase):
             os.utime(gen_cached, (old, old))
             self.assertFalse(_is_cache_fresh(gen_cached))
 
-            with mock.patch("app.ob_cache_sync.save_ob_cache_index"):
-                with mock.patch("app.ob_cache_sync.run_pts_fetch_test_profile") as mock_fetch:
+            with mock.patch("app.ob_cache_sync._lookup.save_ob_cache_index"):
+                with mock.patch("app.ob_cache_sync._lookup.run_pts_fetch_test_profile") as mock_fetch:
                     mock_fetch.return_value = {"ok": False}
-                    with mock.patch("app.ob_cache_sync.default_ob_cache_dir", return_value=cache):
+                    with mock.patch("app.ob_cache_sync._lookup.default_ob_cache_dir", return_value=cache):
                         with mock.patch(
-                            "app.ob_cache_sync.list_test_profiles_for_identifier",
+                            "app.ob_cache_sync._lookup.list_test_profiles_for_identifier",
                             return_value=["pts/example-1.0"],
                         ):
                             index = {"entries": {}, "fallback_buckets": {}}
                             _try_live_ob_lookup("hash", index, identifier="pts/example-1.0")
                     mock_fetch.assert_called_once_with("pts/example-1.0")
 
-    @mock.patch("app.ob_cache_sync._try_live_ob_lookup")
-    @mock.patch("app.ob_cache_sync._try_local_disk_exact", return_value=None)
-    @mock.patch("app.ob_cache_sync._ingest_cached_profiles_for_identifier", return_value=0)
-    @mock.patch("app.ob_cache_sync._index_entry_cache_fresh", return_value=False)
-    @mock.patch("app.ob_cache_sync.lookup_ob_entry")
+    @mock.patch("app.ob_cache_sync._lookup._try_live_ob_lookup")
+    @mock.patch("app.ob_cache_sync._lookup._try_local_disk_exact", return_value=None)
+    @mock.patch("app.ob_cache_sync._lookup._ingest_cached_profiles_for_identifier", return_value=0)
+    @mock.patch("app.ob_cache_sync._lookup._index_entry_cache_fresh", return_value=False)
+    @mock.patch("app.ob_cache_sync._lookup.lookup_ob_entry")
     def test_stale_index_entry_triggers_live(
         self, mock_lookup, _mock_fresh, _mock_ingest, _mock_disk, mock_live,
     ):
@@ -424,7 +426,7 @@ class ObCacheStaleRefreshTest(unittest.TestCase):
         mock_lookup.return_value = {"app_version": "1.0", "test_profile": "pts/foo-1.0"}
         mock_live.return_value = (None, "")
 
-        with mock.patch("app.ob_cache_sync.live_ob_fetch_enabled", return_value=True):
+        with mock.patch("app.ob_cache_sync._lookup.live_ob_fetch_enabled", return_value=True):
             lookup_ob_entry_with_fallback(
                 "abc",
                 index,
