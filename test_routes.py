@@ -7,6 +7,7 @@ url_for() calls (regression detected in the routes→blueprint refactor).
 import unittest
 
 from app import create_app
+from app.ob_cache_sync import lookup_ob_entry_with_fallback
 
 
 class RouteSmokeTest(unittest.TestCase):
@@ -43,6 +44,40 @@ class RouteSmokeTest(unittest.TestCase):
 
     def test_export_slides(self):
         self._assert_not_500('/export/slides')
+
+
+
+
+class ObCacheRegressionTest(unittest.TestCase):
+    """Regression tests for the ob_cache_sync refactor."""
+
+    def test_lookup_with_dict_entry_does_not_crash(self):
+        """
+        lookup_ob_entry_with_fallback must handle dict cache entries
+        without assuming they are Path objects.
+
+        Regression: _index_entry_cache_fresh(ent) was accidentally replaced
+        with _is_cache_fresh(ent), which calls .is_file() on a dict.
+        """
+        index = {
+            "entries": {
+                "some-hash": {
+                    "test_profile": "pts/example-1.0",
+                    "app_version": "1.0",
+                    "description": "Test",
+                    "unit": "Seconds",
+                    "samples": 10,
+                    "percentiles": [0] * 51,
+                    "ob_median": 100.0,
+                },
+            },
+            "fallback_buckets": {},
+        }
+        entry, source = lookup_ob_entry_with_fallback(
+            "some-hash", index, allow_live=False,
+        )
+        self.assertIsNotNone(entry, "Entry should be returned from index")
+        self.assertEqual(source, "local")
 
 
 if __name__ == '__main__':
