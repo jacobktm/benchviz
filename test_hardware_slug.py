@@ -1,6 +1,7 @@
 import unittest
 
 from app.hardware_slug import (
+    abbreviate_disk,
     abbreviate_graphics,
     abbreviate_memory,
     abbreviate_processor,
@@ -70,6 +71,53 @@ class HardwareSlugTest(unittest.TestCase):
             abbreviate_graphics('NVIDIA GeForce RTX 5080 Laptop GPU 16GB'),
             'rtx5080l',
         )
+
+    # ── disk abbreviation ───────────────────────────────────────────
+
+    def test_abbreviate_samsung_disk(self):
+        self.assertEqual(
+            abbreviate_disk('Samsung SSD 990 Pro 2TB'),
+            's-990pro-2t',
+        )
+
+    def test_abbreviate_wd_disk(self):
+        self.assertEqual(
+            abbreviate_disk('WD Blue SN580 2TB'),
+            'wd-bluesn580-2t',
+        )
+
+    def test_abbreviate_crucial_disk(self):
+        self.assertEqual(
+            abbreviate_disk('Crucial T700 1TB'),
+            'c-t700-1t',
+        )
+
+    def test_abbreviate_unknown_disk(self):
+        self.assertEqual(abbreviate_disk(''), '')
+
+    def test_build_hardware_slug_includes_disk(self):
+        slug = build_hardware_slug(
+            'Processor: Intel Core i5-13600K, '
+            'Memory: 1 x 32GB DDR5 @ 5600 MT/s, '
+            'Graphics: NVIDIA GeForce RTX 4080, '
+            'Disk: Samsung SSD 990 Pro 2TB',
+            serial_number='ABC123',
+        )
+        self.assertIn('s-990pro-2t', slug)
+        self.assertIn('ci5-13k', slug)
+        self.assertIn('1x32g56', slug)
+        self.assertIn('rtx4080', slug)
+        self.assertIn('snabc123', slug)
+
+    def test_build_hardware_slug_multiple_disks(self):
+        slug = build_hardware_slug(
+            'Processor: Intel Core i5-13600K, '
+            'Memory: 1 x 32GB DDR5 @ 5600 MT/s, '
+            'Graphics: NVIDIA GeForce RTX 4080, '
+            'Disk: Samsung SSD 990 Pro 2TB + Samsung SSD 980 Pro 1TB',
+        )
+        self.assertIn('s-990pro-2t', slug)
+        self.assertIn('s-980pro-1t', slug)
 
 
 if __name__ == '__main__':
