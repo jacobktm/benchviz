@@ -21,7 +21,7 @@ from app.ob_cache_sync import (
     _pick_version_fallback_entry,
     _try_live_ob_lookup,
 )
-from app.pts_comparison import generate_comparison_hash, normalize_ob_unit, strip_test_profile_identifier, test_profile_family
+from app.pts.hashing import generate_comparison_hash, normalize_ob_unit, strip_test_profile_identifier, test_profile_family
 
 
 class ObCachePathTest(unittest.TestCase):

@@ -20,3 +20,6 @@ app/static/exports/
 
 # opencode personal workspace config
 .opencode.json
+
+# Session / conversation logs
+session-*.md

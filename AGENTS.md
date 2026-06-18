@@ -23,6 +23,7 @@ BenchViz is a Flask-based web application for visualizing and analyzing Phoronix
 | `python app_main.py` | Run Flask dev server |
 | `python -m flask rebuild-all-insights` | Rebuild legacy + ML insights |
 | `python -m flask sync-openbenchmarking-cache` | Sync OB cache from git mirror |
+| `python -m flask calibrate-hardware-ranks` | Blend spec ranks with real-world results |
 | `python test_<name>.py` | Run a specific unit test file |
 
 **Environment variables**: `BENCHVIZ_OB_LIVE_ON_COMPARE`, `BENCHVIZ_OB_LIVE_FETCH`, `BENCHVIZ_INSIGHTS_REBUILD_FULL`, `BENCHVIZ_DEBUG`, `BENCHVIZ_RELOADER`, `BENCHVIZ_HOST`, `BENCHVIZ_PORT`.
@@ -35,25 +36,28 @@ app/                  # Main application package
   models.py           # ORM models (System, Benchmark, BenchmarkResult, etc.)
   parser.py           # Phoronix XML benchmark file parser
   analyzer.py         # Legacy statistical analysis
+  _util.py            # Misc helpers (flask CLI, generic utilities)
   benchmark_util.py   # Benchmark lookup / creation / orphan cleanup
   components.py       # Hardware/software component extraction + normalization
   system_util.py      # System identity, hardware fingerprinting, import resolution
-  hardware_slug.py    # Compact hardware identifier slug builder
+  hardware_slug.py    # Compact hardware identifier slug builder (+ disk abbreviation)
   hardware_ranks.py   # Kendall tau rank correlation, CPU/GPU rank lookups
+  hardware_ranks_calibrate.py # Blend spec ranks with real benchmark values
+  hardware_ranks_api_sync.py  # Sync HW ranks from external API
   result_merge.py     # BAR_GRAPH / LINE_GRAPH result merging logic
   profile_snapshot.py # Capture system profile at import time
   insights_util.py    # Incremental rebuild helpers
   insights_runner.py  # Scheduled insights rebuild orchestration
   insights_lock.py    # File-based lock for insights rebuild
-  workload_profile.py # Workload characterization from perf counters + MONITOR sensors
-  workload_consensus.py # Consensus logic across argument variations
   pts_math.py         # Geometric/harmonic mean (ported from PHP PTS)
-  pts_comparison.py   # PTS comparison hashing, relative scoring, OB normalization
-  pts_compare.py      # Build full PTS-style comparison payloads
-  ob_cache_sync.py    # OpenBenchmarking cache sync + lookup
   sensor_quality.py   # Detect low-signal / flat MONITOR sensor series
   args_pooling.py     # Argument pooling utilities
   option_equivalence.py # Benchmark option equivalence detection
+  workload_consensus.py # Consensus logic across argument variations
+
+  cli/                # Flask CLI commands (registered via app.cli)
+    commands.py
+
   ml/                 # Machine learning analysis sub-package
     __init__.py
     analyzer.py       # Batch ML analysis orchestrator
@@ -62,11 +66,62 @@ app/                  # Main application package
     workload.py       # Workload fingerprinting (CPU/GPU/cache/memory/storage)
     attribution.py    # Score attribution via ElasticNet regression + LOOCV
     thermal.py        # Thermal sensitivity detection (temp vs score residuals)
+
+  ob_cache_sync/      # OpenBenchmarking cache sync + lookup (package)
+    __init__.py       # Re-exports public API
+    _paths.py         # Cache directory, TTL constants
+    _sync.py          # Git mirror sync logic
+    _data.py          # Cache data read/write
+    _lookup.py        # OB benchmark lookup with live-fetch fallback
+
+  pts/                # PTS comparison utilities (package)
+    __init__.py       # Lazy-imports compare module to avoid circular deps
+    hashing.py        # PTS comparison hash generation (was pts_comparison.py)
+    compare.py        # Build full PTS-style comparison payloads (was pts_compare.py)
+    math_aggregation.py # PTS math helpers (geometric/harmonic mean)
+    ob_baselines.py   # OB baseline normalization
+
+  repositories/       # Data access layer
+    benchmark_repo.py # BenchmarkRepository (find_primary_with_results, etc.)
+    system_repo.py    # SystemRepository (get_by_id_or_404, etc.)
+
+  route_helpers/      # View helper logic, extracted from app_main.py
+    compare.py        # Comparison serialization, geometric mean, COMPARE_BY_OPTIONS
+    insights.py       # Insights scoping, signal-to-noise, workload context
+    system.py         # Profile labels, nvme config sync, system grouping
+    string_utils.py   # Shared string formatting utilities
+
+  routes/             # Flask route Blueprints
+    __init__.py       # Registers all blueprints
+    pages.py          # HTML page routes (dashboard, upload, compare, system, insights)
+    export.py         # PDF/DOCX export routes
+    api/              # JSON API Blueprint (package)
+      __init__.py     # Blueprint creation
+      benchmarks.py   # api_common_benchmarks, api_systems_for_benchmark, etc.
+      compare.py      # api_compare, api_save_comparison, api_pool_flag_suggestions
+      insights.py     # api_scatter_candidates, api_variance_feature_map, etc.
+
   static/
     css/style.css     # Main stylesheet (glassmorphism, dark theme)
     js/main.js        # Minimal vanilla JS
+
   templates/          # Jinja2 templates extending base.html
-app_main.py           # Flask application entrypoint (routes, views, helpers)
+    dashboard.html
+    system.html
+    compare.html
+    insights.html
+    upload.html
+    saved_comparisons.html
+    export_slides.html
+
+  workload_profile/   # Workload characterization from perf counters + MONITOR (package)
+    __init__.py       # Public API: build_profile, classify_workload_profile, ...
+    _constants.py     # SCOPE_HARDWARE_KEYS, sensor keywords, perf markers
+    _helpers.py       # format_score, _args_matches_config, _monitor_result_matches_config
+    _signals.py       # Signal collection (perf counter extraction, sensor extraction)
+    _classification.py # Bottleneck classification, scope inference
+
+app_main.py           # Flask application entrypoint (imports routes, cli, app factory)
 requirements.txt      # Dependencies
 setup.sh              # Environment setup (venv, deps, systemd service)
 test_*.py             # Unit tests and test utilities

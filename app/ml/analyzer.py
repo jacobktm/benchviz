@@ -13,7 +13,7 @@ from app.ml.features import (
     pool_perf_signals,
     pool_sensor_features,
 )
-from app.pts_comparison import _proportion_is_lower_better
+from app.pts import proportion_is_lower_better
 from app.ml.sensor_baselines import HardwareSensorBaselineIndex, build_hardware_sensor_baseline_index
 from app.ml.thermal import compute_thermal_sensitivity
 from app.ml.workload import compute_workload_fingerprint
@@ -31,7 +31,7 @@ def _analyze_config(
 ) -> dict:
     args_key = "default" if (not config_args or config_args == "default") else config_args
     args_db = "" if args_key == "default" else config_args
-    is_lower_better = any(_proportion_is_lower_better(b.proportion) for b in primary_bms)
+    is_lower_better = any(proportion_is_lower_better(b.proportion) for b in primary_bms)
     primary_bm_ids = [b.id for b in primary_bms]
 
     system_ids = sorted({

@@ -101,6 +101,9 @@ def get_system_components(system) -> dict[str, str]:
     memory = extract_hw_any(["Memory", "RAM", "System Memory"])
     motherboard = extract_hw_any(["Motherboard", "Mainboard", "Motherboard / Mainboard"])
     chipset = extract_hw_any(["Chipset"])
+    disk_str = extract_hardware_component(hardware, "Disk")
+    drives = [d.strip() for d in disk_str.split("+")] if disk_str else []
+    storage = ", ".join(drives)
 
     software = (system.software or "").strip()
 
@@ -145,6 +148,7 @@ def get_system_components(system) -> dict[str, str]:
         "memory": memory or "",
         "motherboard": motherboard or "",
         "chipset": chipset or "",
+        "storage": storage,
         "os": os_val,
         "kernel_version": kernel_version or "",
         "nvidia_driver": nvidia_driver or "",

@@ -5,24 +5,28 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .ob_cache_sync import compare_ob_live_fetch_enabled, load_ob_cache_index, lookup_ob_entry_with_fallback
-from .pts_comparison import (
-    _is_hib,
-    comparison_hash_for_benchmark,
+from ..ob_cache_sync import (
+    compare_ob_live_fetch_enabled,
+    load_ob_cache_index,
+    lookup_ob_entry_with_fallback,
+)
+from ..pts_math import geometric_mean
+from .hashing import _is_hib, comparison_hash_for_benchmark, strip_test_profile_identifier
+from .math_aggregation import (
+    pts_geometric_mean_composite,
+    pts_geometric_mean_ob_composite,
+    pts_harmonic_mean_by_scale,
+    pts_harmonic_mean_cross_scale,
+)
+from .ob_baselines import (
     lib_to_hib_value,
     normalize_relative_values,
     ob_median_from_entry,
     ob_p1_from_entry,
     ob_percentiles_for_systems,
-    pts_geometric_mean_composite,
-    pts_geometric_mean_ob_composite,
-    pts_harmonic_mean_by_scale,
-    pts_harmonic_mean_cross_scale,
     relative_vs_ob_baseline,
     relative_vs_ob_median,
-    strip_test_profile_identifier,
 )
-from .pts_math import geometric_mean
 
 
 def build_pts_context_for_compare_group(
@@ -35,11 +39,6 @@ def build_pts_context_for_compare_group(
     config_args: str = "",
     ob_index: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    PTS scoring overlay for one comparison group (one config of one benchmark suite).
-
-    primary_charts: API chart dicts with description, scale, proportion, traces.
-    """
     ob_index = ob_index if ob_index is not None else load_ob_cache_index()
     per_subtest: list[dict[str, Any]] = []
     subtest_value_maps: list[dict[str, float | None]] = []
@@ -168,12 +167,6 @@ def build_pts_global_summary(
     *,
     pts_contexts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """
-    PTS generate_geometric_mean_result() across all BAR_GRAPH subtests in the comparison.
-
-    composite_ob uses OB-relative subtest scores when pts_contexts are available.
-    composite_raw / composite_relative remain head-to-head fallbacks for raw display.
-    """
     trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
     subtests = extract_subtests_from_comparison_groups(comparison_groups)
     per_system: dict[str, list[float]] = {sid: [] for sid in trace_ids}
@@ -240,9 +233,6 @@ def build_pts_ob_p1_global_summary(
     group_contexts: list[dict[str, Any]],
     system_ids: list[str],
 ) -> dict[str, Any]:
-    """
-    Arithmetic mean of per-subtest OB baseline-relative scores (1.0 = percentiles[0] per subtest).
-    """
     per_system: dict[str, list[float]] = {sid: [] for sid in system_ids}
     matched_subtests = 0
     for ctx in group_contexts:
@@ -274,7 +264,6 @@ def build_pts_ob_global_summary(
     group_contexts: list[dict[str, Any]],
     system_ids: list[str],
 ) -> dict[str, Any]:
-    """Backward-compatible alias: OB p1 arithmetic mean (not median geo-mean)."""
     return build_pts_ob_p1_global_summary(group_contexts, system_ids)
 
 
@@ -293,7 +282,6 @@ def _canonical_system_id(trace_name: str | None, group: dict[str, Any]) -> str:
 
 
 def compare_system_ids(comparison_groups: list[dict[str, Any]]) -> list[str]:
-    """Canonical system short_names for the comparison (stable order)."""
     ids: list[str] = []
     seen: set[str] = set()
     for group in comparison_groups:
@@ -308,7 +296,6 @@ def compare_system_ids(comparison_groups: list[dict[str, Any]]) -> list[str]:
 def extract_subtests_from_comparison_groups(
     comparison_groups: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """One subtest per primary chart row (matches compare UI config aggregation)."""
     subtests: list[dict[str, Any]] = []
     for group in comparison_groups:
         sub_by_desc = {
@@ -349,7 +336,6 @@ def extract_subtests_from_comparison_groups(
 
 
 def compare_system_trace_ids(comparison_groups: list[dict[str, Any]]) -> list[str]:
-    """System keys used in chart trace values (canonical short_names)."""
     ids = compare_system_ids(comparison_groups)
     if ids:
         return ids
@@ -369,7 +355,6 @@ def build_pts_global_harmonic_summary(
     comparison_groups: list[dict[str, Any]],
     system_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Harmonic summaries: per-scale raw buckets plus cross-unit relative overall."""
     trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
     subtests = extract_subtests_from_comparison_groups(comparison_groups)
     cross_scale = pts_harmonic_mean_cross_scale(subtests, trace_ids, head_to_head=False)

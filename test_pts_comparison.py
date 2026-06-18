@@ -7,7 +7,9 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ROOT)
 
 from app.pts_math import geometric_mean, harmonic_mean, result_to_percentile
-from app.pts_comparison import (
+from app.pts import (
+    build_pts_global_harmonic_summary,
+    build_pts_global_summary,
     generate_comparison_hash,
     is_harmonic_mean_scale,
     normalize_harmonic_scale_key,
@@ -19,7 +21,6 @@ from app.pts_comparison import (
     relative_vs_ob_baseline,
     relative_vs_ob_median,
 )
-from app.pts_compare import build_pts_global_harmonic_summary, build_pts_global_summary
 
 
 class PtsComparisonHashTest(unittest.TestCase):

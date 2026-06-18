@@ -111,6 +111,67 @@ def abbreviate_memory(memory: str) -> str:
     return _slug_token(memory, max_len=12)
 
 
+def abbreviate_disk(disk: str) -> str:
+    """
+    Short disk/storage abbreviation for profile identifiers.
+
+    Examples:
+        Samsung SSD 990 Pro 2TB -> s-990pro-2t
+        Samsung SSD 980 Pro 1TB -> s-980pro-1t
+        WD Blue SN580 2TB -> wd-bluesn580-2t
+        Crucial T700 1TB -> c-t700-1t
+    """
+    if not disk:
+        return ''
+
+    s = disk.lower().strip()
+
+    brand_map = {
+        'samsung': 's',
+        'western digital': 'wd',
+        'wd': 'wd',
+        'corsair': 'c',
+        'crucial': 'c',
+        'sk hynix': 'h',
+        'hynix': 'h',
+        'kingston': 'k',
+        'seagate': 'st',
+        'micron': 'm',
+        'intel': 'i',
+        'sabrent': 'sb',
+        'teamgroup': 'tg',
+        'adata': 'ad',
+    }
+
+    brand = ''
+    for name in sorted(brand_map, key=len, reverse=True):
+        if s.startswith(name):
+            brand = brand_map[name]
+            s = s[len(name):].strip()
+            break
+
+    for w in [
+        'nvme', 'ssd', 'solid state', 'm.2', 'drive', 'internal',
+        'pcie', 'gen5', 'gen4', 'gen3', 'plus', 'ultra',
+    ]:
+        s = s.replace(w, '')
+    s = re.sub(r'\s+', ' ', s).strip()
+
+    capacity = ''
+    m = re.search(r'(\d+)\s*(tb|gb)', s)
+    if m:
+        cap_num = m.group(1)
+        cap_unit = m.group(2)[0]
+        capacity = f'{cap_num}{cap_unit}'
+        s = (s[:m.start()] + s[m.end():]).strip()
+
+    s = re.sub(r'\s+', '', s)
+    s = _slug_token(s, max_len=10)
+
+    parts = [p for p in [brand, s, capacity] if p]
+    return '-'.join(parts)
+
+
 def abbreviate_graphics(graphics: str) -> str:
     """RTX 4080 Laptop GPU -> rtx4080l, Radeon RX 7900 XTX -> rx7900xtx."""
     raw = normalize_graphics_name(graphics)
@@ -166,6 +227,14 @@ def build_hardware_slug(
     ):
         if abbrev and abbrev not in parts:
             parts.append(abbrev)
+
+    disk_str = extract_hardware_component(hardware, 'Disk')
+    if disk_str:
+        drives = [d.strip() for d in disk_str.split('+') if d.strip()]
+        disk_abbrevs = [abbreviate_disk(d) for d in drives]
+        disk_abbrevs = [a for a in disk_abbrevs if a and a not in parts]
+        if disk_abbrevs:
+            parts.append('+'.join(disk_abbrevs))
 
     serial = re.sub(r'\s+', '', (serial_number or '').strip().lower())
     if serial:

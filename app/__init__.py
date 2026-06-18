@@ -185,6 +185,13 @@ def create_app():
 
     db.init_app(app)
 
+    from app.routes.pages import bp as pages_bp
+    from app.routes.api import bp as api_bp
+    from app.routes.export import bp as export_bp
+    app.register_blueprint(pages_bp)
+    app.register_blueprint(api_bp)
+    app.register_blueprint(export_bp)
+
     with app.app_context():
         db.create_all()
         ensure_schema_compatibility()

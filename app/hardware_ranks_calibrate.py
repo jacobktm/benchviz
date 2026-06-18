@@ -14,7 +14,7 @@ from sqlalchemy.orm import joinedload
 
 from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, HardwareTheoreticalRank
-from app.pts_comparison import _proportion_is_lower_better
+from app.pts import proportion_is_lower_better
 
 
 def _performance_scalar(value: float, lower_better: bool) -> float:
@@ -65,7 +65,7 @@ def collect_empirical_percentiles_by_match_key(
         if len(rlist) < 2:
             continue
         b0 = rlist[0].benchmark
-        lower_better = _proportion_is_lower_better(b0.proportion if b0 else None)
+        lower_better = proportion_is_lower_better(b0.proportion if b0 else None)
 
         rows: list[tuple[str, int, float]] = []
         for r in rlist:
