@@ -172,7 +172,7 @@ def upload_benchmarks():
     
     if not files or files[0].filename == '':
         flash('No files selected for upload.', 'error')
-        return redirect(url_for('upload_benchmarks'))
+        return redirect(url_for('pages.upload_benchmarks'))
         
     # Process files in a temporary directory
     temp_dir = tempfile.mkdtemp()
@@ -230,7 +230,7 @@ def upload_benchmarks():
                 seen_notes.add(note)
                 flash(note, 'success')
             shutil.rmtree(temp_dir, ignore_errors=True)
-            return redirect(url_for('dashboard'))
+            return redirect(url_for('pages.dashboard'))
         else:
             flash('No valid XML benchmark files were found in the upload.', 'error')
             
@@ -240,7 +240,7 @@ def upload_benchmarks():
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
         
-    return redirect(url_for('upload_benchmarks'))
+    return redirect(url_for('pages.upload_benchmarks'))
 
 
 @bp.route('/system/<int:id>')
@@ -386,7 +386,7 @@ def update_system(id):
         db.session.commit()
 
     flash('System profile updated.', 'success')
-    return redirect(url_for('system_detail', id=system.id))
+    return redirect(url_for('pages.system_detail', id=system.id))
 
 
 @bp.route('/delete_system/<int:id>', methods=['POST'])
@@ -397,7 +397,7 @@ def delete_system(id):
     delete_orphan_benchmarks()
     db.session.commit()
     flash(f'System "{system_name}" successfully deleted.', 'success')
-    return redirect(url_for('dashboard'))
+    return redirect(url_for('pages.dashboard'))
 
 
 @bp.route('/system/<int:system_id>/delete_benchmark', methods=['POST'])
@@ -409,7 +409,7 @@ def delete_system_benchmark(system_id):
 
     if not title:
         flash('Missing benchmark title.', 'error')
-        return redirect(url_for('system_detail', id=system.id))
+        return redirect(url_for('pages.system_detail', id=system.id))
 
     deleted = delete_system_benchmark_suite(
         system.id,
@@ -423,7 +423,7 @@ def delete_system_benchmark(system_id):
         flash(f'Removed {deleted} result(s) for "{title}" from this system.', 'success')
     else:
         flash(f'No results found for "{title}" on this system.', 'error')
-    return redirect(url_for('system_detail', id=system.id))
+    return redirect(url_for('pages.system_detail', id=system.id))
 
 
 @bp.route('/compare')
@@ -484,11 +484,11 @@ def delete_saved_comparison(comp_id):
     saved = SavedComparison.query.get(comp_id)
     if not saved:
         flash('Saved comparison not found.', 'error')
-        return redirect(url_for('list_saved_comparisons'))
+        return redirect(url_for('pages.list_saved_comparisons'))
     db.session.delete(saved)
     db.session.commit()
     flash('Saved comparison deleted.', 'success')
-    return redirect(url_for('list_saved_comparisons'))
+    return redirect(url_for('pages.list_saved_comparisons'))
 
 
 @bp.route('/insights')

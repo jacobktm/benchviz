@@ -1,10 +1,11 @@
-"""Smoke test: verify all page routes render without 500 errors.
+"""Smoke test: verify all endpoints and redirects resolve correctly.
 
-Catches template-rendering issues like missing blueprint prefixes in
-url_for() calls (regression detected in the routes→blueprint refactor).
+Catches issues like missing blueprint prefixes in url_for() calls
+(regression detected in the routes→blueprint refactor).
 """
 
 import unittest
+from flask import url_for
 
 from app import create_app
 from app.ob_cache_sync import lookup_ob_entry_with_fallback
@@ -78,6 +79,73 @@ class ObCacheRegressionTest(unittest.TestCase):
         )
         self.assertIsNotNone(entry, "Entry should be returned from index")
         self.assertEqual(source, "local")
+
+
+
+
+class UrlForResolveTest(unittest.TestCase):
+    """Verify all url_for() calls in route handlers resolve (no missing blueprint prefix)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = create_app()
+        cls.ctx = cls.app.test_request_context()
+        cls.ctx.push()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ctx.pop()
+
+    def _assert_resolves(self, endpoint: str, **values):
+        try:
+            url_for(endpoint, **values)
+        except Exception as e:
+            self.fail(f"url_for({endpoint!r}, {values!r}) raised: {e}")
+
+    # ── pages blueprint ──────────────────────────────────────────────
+
+    def test_dashboard(self):
+        self._assert_resolves('pages.dashboard')
+
+    def test_upload(self):
+        self._assert_resolves('pages.upload_benchmarks')
+
+    def test_system_detail(self):
+        self._assert_resolves('pages.system_detail', id=1)
+
+    def test_update_system(self):
+        self._assert_resolves('pages.update_system', id=1)
+
+    def test_delete_system(self):
+        self._assert_resolves('pages.delete_system', id=1)
+
+    def test_delete_system_benchmark(self):
+        self._assert_resolves('pages.delete_system_benchmark', system_id=1)
+
+    def test_compare_saved(self):
+        self._assert_resolves('pages.compare_saved', comp_id='test')
+
+    def test_list_saved_comparisons(self):
+        self._assert_resolves('pages.list_saved_comparisons')
+
+    def test_delete_saved_comparison(self):
+        self._assert_resolves('pages.delete_saved_comparison', comp_id='test')
+
+    # ── export blueprint ─────────────────────────────────────────────
+
+    def test_export_slide(self):
+        self._assert_resolves('export.export_slide')
+
+    def test_export_slides(self):
+        self._assert_resolves('export.list_export_slides')
+
+    def test_delete_export_slide(self):
+        self._assert_resolves('export.delete_export_slide', export_id='test')
+
+    # ── api blueprint (common endpoints) ─────────────────────────────
+
+    def test_api_compare(self):
+        self._assert_resolves('api.api_compare')
 
 
 if __name__ == '__main__':
