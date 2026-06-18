@@ -148,5 +148,68 @@ class UrlForResolveTest(unittest.TestCase):
         self._assert_resolves('api.api_compare')
 
 
+
+
+class PostRouteSmokeTest(unittest.TestCase):
+    """Smoke-test POST route handlers.
+
+    Verifies no unhandled exceptions (500) when calling POST endpoints
+    with invalid / nonexistent data.  A 404 or 4xx is acceptable.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = create_app()
+        cls.client = cls.app.test_client()
+
+    # ── pages blueprint ──────────────────────────────────────────────
+
+    def test_upload_post(self):
+        """POST /upload without files → redirect (302) or error, not 500."""
+        resp = self.client.post('/upload')
+        self.assertNotEqual(500, resp.status_code)
+
+    def test_update_system_missing(self):
+        """POST /update_system/<missing> → 404, not 500."""
+        resp = self.client.post('/update_system/99999', data={})
+        self.assertNotEqual(500, resp.status_code)
+
+    def test_delete_system_missing(self):
+        """POST /delete_system/<missing> → 404, not 500."""
+        resp = self.client.post('/delete_system/99999')
+        self.assertNotEqual(500, resp.status_code)
+
+    def test_delete_benchmark_missing(self):
+        """POST /system/<missing>/delete_benchmark → 404, not 500."""
+        resp = self.client.post('/system/99999/delete_benchmark',
+                                data={'title': 'x'})
+        self.assertNotEqual(500, resp.status_code)
+
+    def test_delete_saved_comparison_missing(self):
+        """POST /compare/saved/<missing>/delete → flash+redirect, not 500."""
+        resp = self.client.post('/compare/saved/nonexistent/delete')
+        self.assertNotEqual(500, resp.status_code)
+
+    # ── export blueprint ─────────────────────────────────────────────
+
+    def test_export_slide_no_image(self):
+        """POST /export/slide without image → 400, not 500."""
+        resp = self.client.post('/export/slide', data={})
+        self.assertEqual(400, resp.status_code)
+
+    def test_export_slide_delete_missing(self):
+        """POST /export/slide/<missing>/delete → flash+redirect, not 500."""
+        resp = self.client.post('/export/slide/nonexistent/delete')
+        self.assertNotEqual(500, resp.status_code)
+
+    # ── api blueprint ────────────────────────────────────────────────
+
+    def test_api_save_comparison_empty(self):
+        """POST /api/save_comparison with empty payload → 400, not 500."""
+        resp = self.client.post('/api/save_comparison',
+                                json={"systems": [], "benchmarks": []})
+        self.assertEqual(400, resp.status_code)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -3,7 +3,6 @@ from app.cli import register_commands
 import os
 
 app = create_app()
-app.secret_key = 'super-secret-benchmark-key'
 register_commands(app)
 
 

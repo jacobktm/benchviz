@@ -171,6 +171,7 @@ def _migrate_benchmark_results_v2(connection, inspector) -> None:
 
 def create_app():
     app = Flask(__name__)
+    app.secret_key = os.environ.get('BENCHVIZ_SECRET_KEY', 'super-secret-benchmark-key')
     # Use an absolute path so the DB is consistent regardless of current working directory
     # (important for systemd service vs CLI commands).
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
