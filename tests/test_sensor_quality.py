@@ -2,7 +2,7 @@ import importlib.util
 import os
 import unittest
 
-_ROOT = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location(
     "sensor_quality",
     os.path.join(_ROOT, "app", "sensor_quality.py"),

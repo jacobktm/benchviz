@@ -131,23 +131,26 @@ class SystemUtilTest(unittest.TestCase):
         )
 
     def test_group_system_profiles_uses_primary_system_name(self):
-        from app_main import group_system_profiles
+        from app.route_helpers import group_system_profiles
 
         db.session.add_all([
             System(
                 identifier='Mira-R4-N3',
                 primary_system_name='Mira R4',
                 hardware='Processor: AMD Ryzen 9 9950X',
+                software='OS: Pop!_OS',
             ),
             System(
                 identifier='Mira-R4-N4',
                 primary_system_name='Mira R4',
                 hardware='Processor: AMD Ryzen 9 9950X',
+                software='OS: Pop!_OS',
             ),
             System(
                 identifier='pang14',
                 primary_system_name='pang14',
                 hardware='Processor: Intel Core i7',
+                software='OS: Ubuntu',
             ),
         ])
         db.session.commit()
