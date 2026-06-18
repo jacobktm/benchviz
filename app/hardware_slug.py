@@ -19,19 +19,15 @@ def _slug_token(text: str, *, max_len: int = 24) -> str:
 
 
 def _shorten_cpu_model(model: str) -> str:
-    """13600K -> 136k, 290HX-Plus -> 29hxp."""
+    """13600K -> 136k, 290HX-Plus -> 290hxp."""
     model = (model or '').lower().replace('-', '')
     model = model.replace('plus', 'p').replace('max', 'm')
 
-    m = re.match(r'(\d+?)(0+)([a-z]+)$', model)
+    # Strip groups of 2+ trailing zeros that pad the suffix (13600K -> 136k).
+    # But keep a single trailing zero (9950X -> 9950x).
+    m = re.match(r'(\d+?)(0{2,})([a-z]+)$', model)
     if m and len(m.group(1)) >= 3:
         model = m.group(1) + m.group(3)
-
-    m = re.match(r'(\d{3,})(hxp?|x3d|x|k|kf|f|hs|u)$', model)
-    if m:
-        num, suffix = m.group(1), m.group(2)
-        if len(num) >= 3:
-            model = num[:2] + suffix
 
     return model
 
@@ -236,9 +232,12 @@ def build_hardware_slug(
         if disk_abbrevs:
             parts.append('+'.join(disk_abbrevs))
 
-    serial = re.sub(r'\s+', '', (serial_number or '').strip().lower())
+    serial = re.sub(r'[^a-z0-9]+', '', (serial_number or '').strip().lower())
     if serial:
-        sn_part = f'sn{serial}' if len(serial) <= 16 else f'sn{serial[:12]}'
+        prefix = '' if serial.startswith('sn') else 'sn'
+        sn_part = f'{prefix}{serial}'
+        if len(sn_part) > 16:
+            sn_part = sn_part[:16]
         parts.append(sn_part)
 
     return '-'.join(parts)

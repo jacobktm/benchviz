@@ -61,7 +61,7 @@ class SystemUtilTest(unittest.TestCase):
         db.session.commit()
 
         self.assertTrue(created)
-        self.assertEqual(second.identifier, 'qa-meer10__ci9-14900k')
+        self.assertEqual(second.identifier, 'qa-meer10__ci9-149k')
         self.assertEqual(second.primary_system_name, 'qa-meer10')
         self.assertIn('hardware-distinguished', note or '')
         self.assertEqual(System.query.count(), 2)
@@ -89,6 +89,7 @@ class SystemUtilTest(unittest.TestCase):
 
         self.assertTrue(created)
         self.assertEqual(second.identifier, 'qa-lemp13__cu7-265k-sn1002')
+
         self.assertEqual(second.primary_system_name, 'qa-lemp13')
         self.assertEqual(second.serial_number, 'SN-1002')
         self.assertIn('hardware-distinguished', (note or '').lower())

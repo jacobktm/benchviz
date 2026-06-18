@@ -21,7 +21,7 @@ class HardwareSlugTest(unittest.TestCase):
     def test_abbreviate_core_ultra_hx_plus(self):
         self.assertEqual(
             abbreviate_processor('Intel Core Ultra 9 290HX-Plus'),
-            'cu9-29hxp',
+            'cu9-290hxp',
         )
 
     def test_abbreviate_amd_ryzen(self):
@@ -104,7 +104,7 @@ class HardwareSlugTest(unittest.TestCase):
             serial_number='ABC123',
         )
         self.assertIn('s-990pro-2t', slug)
-        self.assertIn('ci5-13k', slug)
+        self.assertIn('ci5-136k', slug)
         self.assertIn('1x32g56', slug)
         self.assertIn('rtx4080', slug)
         self.assertIn('snabc123', slug)
