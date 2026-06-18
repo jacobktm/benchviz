@@ -23,6 +23,7 @@ from app.ob_cache_sync._paths import (
     LIVE_FETCH_TIMEOUT_SEC,
     ObLookupSource,
     _cached_generated_json_path,
+    _index_entry_cache_fresh,
     _is_cache_fresh,
     default_ob_cache_dir,
     default_pts_clone_dir,
@@ -371,7 +372,7 @@ def lookup_ob_entry_with_fallback(
     unit = (scale or "").strip()
 
     ent = lookup_ob_entry(comparison_hash, idx)
-    if ent is not None and (_is_cache_fresh(ent) or not allow_live):
+    if ent is not None and (_index_entry_cache_fresh(ent) or not allow_live):
         return ent, "local"
 
     disk_ent = _try_local_disk_exact(comparison_hash, idx, identifier)
