@@ -83,6 +83,7 @@ def geometric_mean_by_system_across_arguments(benchmark_rows):
 COMPARE_BY_OPTIONS = [
     ('system_name', 'System name'),
     ('identifier', 'System identifier'),
+    ('native_resolution', 'Native display resolution'),
     ('processor', 'CPU (Processor)'),
     ('graphics', 'GPU (Graphics)'),
     ('memory', 'Memory'),

@@ -96,6 +96,9 @@ def api_compare():
     pool_equivalent_configs = str(request.args.get('pool_equivalent_configs') or '').strip().lower() in {
         '1', 'true', 'yes', 'on'
     }
+    pool_resolution_classes = str(request.args.get('pool_resolution_classes') or '').strip().lower() in {
+        '1', 'true', 'yes', 'on'
+    }
     from app.args_pooling import (
         extract_flag_values,
         parse_pool_flags,
@@ -181,6 +184,8 @@ def api_compare():
 
         pooling_active = False
         raw_args_for_query_by_args_val = None
+        resolution_raw_map: dict[str, list[str]] | None = None
+        resolution_class_name: str | None = None
 
         if pool_equivalent_configs and args_filter is not None:
             current_base_key = pool_key_for_args_by_flags(args_filter, pool_flags) or str(args_filter)
@@ -316,6 +321,31 @@ def api_compare():
             if not args_list:
                 continue
 
+            if pool_resolution_classes and not pool_equivalent_configs:
+                from app.option_equivalence import resolution_pool_key
+                seen_classes: dict[str, list[str]] = {}
+                for a in args_list:
+                    if not a or not isinstance(a, str):
+                        continue
+                    pk = resolution_pool_key(a)
+                    if pk:
+                        seen_classes.setdefault(pk, []).append(a)
+                if seen_classes:
+                    resolution_raw_map = {}
+                    pooled_args_list = []
+                    for a in args_list:
+                        if not a or not isinstance(a, str):
+                            pooled_args_list.append(a)
+                            continue
+                        pk = resolution_pool_key(a)
+                        if pk and len(seen_classes[pk]) > 1:
+                            if pk not in resolution_raw_map:
+                                resolution_raw_map[pk] = seen_classes[pk]
+                                pooled_args_list.append(pk)
+                        else:
+                            pooled_args_list.append(a)
+                    args_list = pooled_args_list
+
             if pool_equivalent_configs:
                 suite_key = (primary_benchmark.title, primary_benchmark.app_version)
                 suite_task_key = (suite_key[0], suite_key[1], "pool-axes")
@@ -429,6 +459,7 @@ def api_compare():
             sys_args_map = {}
             system_details = []
             primary_args_set = set()
+            resolution_class_name: str | None = None
 
             q_prim = BenchmarkResult.query.filter(
                 BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
@@ -446,7 +477,35 @@ def api_compare():
                     (BenchmarkResult.arguments.is_(None)) | (BenchmarkResult.arguments == "")
                 )
             else:
-                q_prim = q_prim.filter(BenchmarkResult.arguments == args_val)
+                resolution_raw_args: list[str] | None = None
+                if pool_resolution_classes and not pooling_active:
+                    from app.option_equivalence import resolution_pool_key
+                    # Check if args_val is itself a resolution class key from "All configurations"
+                    raw_map_entry = (resolution_raw_map or {}).get(args_val)
+                    if raw_map_entry:
+                        resolution_raw_args = raw_map_entry
+                        resolution_class_name = args_val
+                    else:
+                        pk = resolution_pool_key(args_val)
+                        if pk:
+                            matching_raw = db.session.query(BenchmarkResult.arguments).filter(
+                                BenchmarkResult.benchmark_id.in_(matching_primary_bm_ids),
+                                BenchmarkResult.system_id.in_(sys_id_ints),
+                                BenchmarkResult.arguments.isnot(None),
+                                BenchmarkResult.arguments != "",
+                            ).distinct().all()
+                            all_raw = list({r[0] for r in matching_raw if r[0]})
+                            same_class = [
+                                ra for ra in all_raw
+                                if resolution_pool_key(ra) == pk
+                            ]
+                            if len(same_class) > 1:
+                                resolution_raw_args = same_class
+                                resolution_class_name = pk
+                if resolution_raw_args:
+                    q_prim = q_prim.filter(BenchmarkResult.arguments.in_(resolution_raw_args))
+                else:
+                    q_prim = q_prim.filter(BenchmarkResult.arguments == args_val)
             all_prim_results = q_prim.all()
 
             by_bm_id = defaultdict(list)
@@ -455,6 +514,8 @@ def api_compare():
                 sys_args_map[r.system_id] = r.arguments
                 if r.arguments:
                     primary_args_set.add(r.arguments.strip())
+            if resolution_class_name:
+                primary_args_set = {resolution_class_name}
 
             for sys_id in sys_id_ints:
                 if sys_id not in sys_args_map:
@@ -777,11 +838,14 @@ def api_compare():
             if charts:
                 charts.sort(key=lambda x: not x["is_primary"])
                 title = f"{primary_benchmark.title} ({primary_benchmark.app_version})"
-                if args_val and (isinstance(args_val, str) and args_val.strip()):
-                    title += f" — {args_val}"
+                display_args = resolution_class_name or (args_val if isinstance(args_val, str) else "")
+                if display_args:
+                    title += f" — {display_args}"
                 args_label = None
                 if pooling_active:
                     args_label = args_val
+                elif resolution_class_name:
+                    args_label = resolution_class_name
                 elif args_val and (isinstance(args_val, str) and args_val.strip()):
                     args_label = args_val
                 else:

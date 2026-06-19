@@ -114,6 +114,16 @@ def get_system_components(system) -> dict[str, str]:
     if not os_val:
         os_val = "Unknown" if software else ""
 
+    # Native display resolution (e.g. "1920x1080@60Hz" → "1920x1080")
+    # Phoronix software strings may use "Screen Resolution:", "Display:", or "Resolution:".
+    native_resolution = extract_software_component(software, "Screen Resolution")
+    if not native_resolution:
+        native_resolution = extract_software_component(software, "Display")
+    if not native_resolution:
+        native_resolution = extract_software_component(software, "Resolution")
+    if native_resolution and "@" in native_resolution:
+        native_resolution = native_resolution.split("@")[0].strip()
+
     # Software version fields (common in Phoronix / hardware insights)
     kernel_version = extract_software_component(software, "Kernel")
     nvidia_driver = extract_software_component(software, "NVIDIA Driver")
@@ -143,6 +153,7 @@ def get_system_components(system) -> dict[str, str]:
     return {
         "system_name": get_primary_group_name(system),
         "identifier": clean_text(system.identifier) or "",
+        "native_resolution": native_resolution or "",
         "processor": processor or "",
         "graphics": graphics or "",
         "memory": memory or "",

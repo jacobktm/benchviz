@@ -58,14 +58,18 @@
                 Generate Comparison ➔
             </button>
 
-            <div style="margin-top: 0.75rem;">
+            <div style="margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
                 <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;color:var(--text-secondary);font-size:0.9rem;user-select:none;">
                     <input type="checkbox" id="poolEquivalentConfigs" />
                     <span>Pool comparable hardware options inside config (remove values for pooled argument flags)</span>
                 </label>
-                <button type="button" id="poolEquivalentConfigsConfigureBtn" class="btn-primary-sm" style="margin-top:0.5rem; width:100%;" disabled>
+                <button type="button" id="poolEquivalentConfigsConfigureBtn" class="btn-primary-sm" style="width:100%;" disabled>
                     Configure pooled argument flags
                 </button>
+                <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;color:var(--text-secondary);font-size:0.9rem;user-select:none;">
+                    <input type="checkbox" id="poolResolutionClasses" />
+                    <span>Pool equivalent resolution classes (e.g. 16:9 ≅ 16:10)</span>
+                </label>
             </div>
         </div>
     </div>
@@ -189,6 +193,7 @@
         // as equivalent (values removed from the pooling key).
         const poolEquivalentConfigsEl = document.getElementById('poolEquivalentConfigs');
         const poolEquivalentConfigsConfigureBtn = document.getElementById('poolEquivalentConfigsConfigureBtn');
+        const poolResolutionClassesEl = document.getElementById('poolResolutionClasses');
         const poolArgFlagsModal = document.getElementById('poolArgFlagsModal');
         const poolArgFlagsText = document.getElementById('poolArgFlagsText');
         const poolArgFlagsModalSaveBtn = document.getElementById('poolArgFlagsModalSaveBtn');
@@ -448,6 +453,7 @@
                     includeOverallOutliers,
                     showWinsLossCharts,
                     poolEquivalentConfigs: !!(poolEquivalentConfigsEl && poolEquivalentConfigsEl.checked),
+                    poolResolutionClasses: !!(poolResolutionClassesEl && poolResolutionClassesEl.checked),
                     poolArgFlags: (poolArgFlagsValue || '').trim(),
                 },
                 overallSensors: Object.entries(showOverallSensor || {}).filter(([, on]) => on).map(([metric]) => metric),
@@ -492,6 +498,9 @@
                 showWinsLossCharts = !!opts.showWinsLossCharts;
                 if (poolEquivalentConfigsEl) {
                     poolEquivalentConfigsEl.checked = !!opts.poolEquivalentConfigs;
+                }
+                if (poolResolutionClassesEl) {
+                    poolResolutionClassesEl.checked = !!opts.poolResolutionClasses;
                 }
                 if (opts.poolArgFlags != null) {
                     poolArgFlagsValue = String(opts.poolArgFlags || '').trim();
@@ -4566,6 +4575,10 @@
                     if (poolArgFlagsValue && poolArgFlagsValue.trim()) {
                         url.searchParams.set('pool_arg_flags', poolArgFlagsValue.trim());
                     }
+                }
+                const poolResEl = document.getElementById('poolResolutionClasses');
+                if (poolResEl && poolResEl.checked) {
+                    url.searchParams.set('pool_resolution_classes', '1');
                 }
                 url.searchParams.set('filter_sensors', filterRelevantSensors ? '1' : '0');
                 url.searchParams.set('filter_noisy_sensors', filterNoisySensors ? '1' : '0');

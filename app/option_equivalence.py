@@ -139,3 +139,42 @@ def pool_key_for_args(benchmark_title: str | None, args_str: str | None) -> str 
     # in api_compare via the (title, app_version, pool_key) task key anyway.
     return canonical
 
+
+def resolution_pool_key(args_str: str | None) -> str | None:
+    """
+    Return a canonical pool key that only normalizes resolution classes
+    (e.g. 1920x1080 and 1920x1200 both map to "Resolution class: 1080p-ish").
+
+    Unlike pool_key_for_args, this does NOT pool GPU backends — it only
+    buckets resolutions so 16:9 and 16:10 variants are treated equivalently.
+    """
+    if not args_str or not str(args_str).strip():
+        return None
+
+    raw = str(args_str)
+    sl = raw.lower()
+
+    # Same heuristic as _resolution_class_key.
+    if re.search(r"\b8k\b", sl):
+        return "Resolution class: 8k"
+    if re.search(r"\b4k\b", sl):
+        return "Resolution class: 4k"
+    if re.search(r"\b1440p\b", sl):
+        return "Resolution class: 1440p"
+    if re.search(r"\b1080p\b", sl):
+        return "Resolution class: 1080p"
+
+    m = _RESOLUTION_WIDTH_RE.search(sl)
+    if not m:
+        return None
+
+    w = int(m.group("w"))
+    if 3800 <= w <= 4100:
+        return "Resolution class: 4k"
+    if 1500 <= w <= 2000:
+        return "Resolution class: 1080p-ish"
+    if 2400 <= w <= 3000:
+        return "Resolution class: 1440p-ish"
+
+    return None
+

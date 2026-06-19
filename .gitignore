@@ -23,3 +23,9 @@ app/static/exports/
 
 # Session / conversation logs
 session-*.md
+
+# E2E test server config (per-environment)
+tests/e2e_config.json
+
+# E2E test screenshots
+screenshots/

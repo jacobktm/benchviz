@@ -1,11 +1,12 @@
 from playwright.sync_api import sync_playwright
+from e2e_config import get_server_url
 import time
 
 def run():
     with sync_playwright() as p:
         browser = p.chromium.launch(args=['--no-sandbox', '--disable-setuid-sandbox'])
         page = browser.new_page()
-        page.goto("http://127.0.0.1:8765/compare")
+        page.goto(f"{get_server_url()}/compare")
         
         print("Page loaded.")
         
