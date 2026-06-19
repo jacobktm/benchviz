@@ -385,6 +385,8 @@ def update_system(id):
         _reconcile_primary_name_conflict(new_primary_name)
         db.session.commit()
 
+    # The system may have been merged into another record; resolve to the current one.
+    system = System.query.filter_by(primary_system_name=new_primary_name).first() or system
     flash('System profile updated.', 'success')
     return redirect(url_for('pages.system_detail', id=system.id))
 
