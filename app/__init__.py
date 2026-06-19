@@ -193,6 +193,9 @@ def create_app():
     app.register_blueprint(api_bp)
     app.register_blueprint(export_bp)
 
+    from app.cli import register_commands
+    register_commands(app)
+
     with app.app_context():
         db.create_all()
         ensure_schema_compatibility()
