@@ -18,14 +18,20 @@ def register_commands(app):
         import_hardware_ranks_cmd,
         ingest,
         init_db,
+        move_results,
+        nuke_db,
         rebuild_all_insights,
         rebuild_ml_insights,
         rebuild_performance_insights,
+        remove_results,
         sync_hardware_ranks_api_cmd,
         sync_openbenchmarking_cache_cmd,
     )
 
     app.cli.add_command(init_db)
+    app.cli.add_command(move_results)
+    app.cli.add_command(remove_results)
+    app.cli.add_command(nuke_db)
     app.cli.add_command(ingest)
     app.cli.add_command(backfill_perf_counters)
     app.cli.add_command(rebuild_performance_insights)

@@ -7,7 +7,7 @@ Catches issues like missing blueprint prefixes in url_for() calls
 import unittest
 from flask import url_for
 
-from app import create_app
+from app import create_app, db
 from app.ob_cache_sync import lookup_ob_entry_with_fallback
 
 
@@ -15,7 +15,17 @@ class RouteSmokeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = create_app()
+        cls.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+        cls.ctx = cls.app.app_context()
+        cls.ctx.push()
+        db.create_all()
         cls.client = cls.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.session.remove()
+        db.drop_all()
+        cls.ctx.pop()
 
     def _assert_not_500(self, path: str, method: str = 'GET'):
         resp = self.client.open(path, method=method)
@@ -89,6 +99,7 @@ class UrlForResolveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = create_app()
+        cls.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
         cls.ctx = cls.app.test_request_context()
         cls.ctx.push()
 
@@ -160,7 +171,17 @@ class PostRouteSmokeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = create_app()
+        cls.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+        cls.ctx = cls.app.app_context()
+        cls.ctx.push()
+        db.create_all()
         cls.client = cls.app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        db.session.remove()
+        db.drop_all()
+        cls.ctx.pop()
 
     # ── pages blueprint ──────────────────────────────────────────────
 

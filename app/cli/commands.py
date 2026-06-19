@@ -29,6 +29,7 @@ from app.models import (
     BenchmarkAnalysis,
     BenchmarkResult,
     HardwareTheoreticalRank,
+    System,
 )
 from app.ob_cache_sync import (
     build_ob_cache_index,
@@ -38,6 +39,144 @@ from app.ob_cache_sync import (
 )
 from app.parser import parse_benchmark_files
 from app.repositories import SystemRepository
+
+
+@click.command("nuke-db")
+@click.option("--yes", is_flag=True, help="Acknowledge destructive action.")
+def nuke_db(yes):
+    """Drop all data and recreate tables.
+
+    Safe-guarded: requires both BENCHVIZ_NUKE_CONFIRM=1 and --yes.
+    """
+    if not yes:
+        click.echo(
+            "ERROR: This will permanently delete ALL data. "
+            "Add --yes to confirm, and set BENCHVIZ_NUKE_CONFIRM=1.",
+            err=True,
+        )
+        raise click.Abort()
+
+    if os.environ.get("BENCHVIZ_NUKE_CONFIRM") != "1":
+        click.echo(
+            "ERROR: Set BENCHVIZ_NUKE_CONFIRM=1 to confirm you want to "
+            "delete every row in every table.",
+            err=True,
+        )
+        raise click.Abort()
+
+    with current_app.app_context():
+        click.echo("Dropping all tables ...")
+        db.drop_all()
+        click.echo("Recreating schema ...")
+        db.create_all()
+        click.echo("Database reset complete — all tables are empty.")
+
+
+@click.command("move-results")
+@click.option("--from-system", required=True, type=int, help="Source system ID.")
+@click.option("--to-system", required=True, type=int, help="Destination system ID.")
+@click.option("--benchmark-title", default="", help="Only move results for this benchmark title (substring match, case-insensitive).")
+@click.option("--args", "args_filter", default="", help="Only move results with this exact arguments string.")
+@click.option("--dry-run", is_flag=True, help="Show what would be moved without changing anything.")
+@click.option("--yes", is_flag=True, help="Confirm the operation.")
+def move_results(from_system, to_system, benchmark_title, args_filter, dry_run, yes):
+    """Move benchmark results from one system to another."""
+    if not yes:
+        click.echo("ERROR: Add --yes to confirm.", err=True)
+        raise click.Abort()
+
+    with current_app.app_context():
+        src = db.session.get(System, from_system)
+        dst = db.session.get(System, to_system)
+        if not src:
+            click.echo(f"ERROR: Source system {from_system} not found.", err=True)
+            raise click.Abort()
+        if not dst:
+            click.echo(f"ERROR: Destination system {to_system} not found.", err=True)
+            raise click.Abort()
+
+        q = BenchmarkResult.query.filter_by(system_id=from_system)
+        if benchmark_title:
+            bm_ids = [
+                b.id for b in Benchmark.query.filter(
+                    Benchmark.title.ilike(f"%{benchmark_title}%")
+                ).all()
+            ]
+            if not bm_ids:
+                click.echo(f"No benchmarks match title substring {benchmark_title!r}.")
+                return
+            q = q.filter(BenchmarkResult.benchmark_id.in_(bm_ids))
+        if args_filter:
+            q = q.filter(BenchmarkResult.arguments == args_filter)
+
+        rows = q.all()
+        if not rows:
+            click.echo("No matching results to move.")
+            return
+
+        if dry_run:
+            click.echo(f"Would move {len(rows)} result(s) from system {from_system} to system {to_system}:")
+            for r in rows:
+                bm = db.session.get(Benchmark, r.benchmark_id)
+                title = bm.title if bm else "?"
+                click.echo(f"  [{r.id}] {title} args={r.arguments!r} value={r.value}")
+            return
+
+        for r in rows:
+            r.system_id = to_system
+        db.session.commit()
+        click.echo(f"Moved {len(rows)} result(s) from system {from_system} to system {to_system}.")
+
+
+@click.command("remove-results")
+@click.option("--system", "system_id", required=True, type=int, help="System ID.")
+@click.option("--benchmark-title", default="", help="Only remove results for this benchmark title (substring match, case-insensitive).")
+@click.option("--args", "args_filter", default="", help="Only remove results with this exact arguments string.")
+@click.option("--dry-run", is_flag=True, help="Show what would be removed without changing anything.")
+@click.option("--yes", is_flag=True, help="Confirm the operation.")
+def remove_results(system_id, benchmark_title, args_filter, dry_run, yes):
+    """Delete benchmark results from a system."""
+    if not yes:
+        click.echo("ERROR: Add --yes to confirm.", err=True)
+        raise click.Abort()
+
+    with current_app.app_context():
+        sys = db.session.get(System, system_id)
+        if not sys:
+            click.echo(f"ERROR: System {system_id} not found.", err=True)
+            raise click.Abort()
+
+        q = BenchmarkResult.query.filter_by(system_id=system_id)
+        if benchmark_title:
+            bm_ids = [
+                b.id for b in Benchmark.query.filter(
+                    Benchmark.title.ilike(f"%{benchmark_title}%")
+                ).all()
+            ]
+            if not bm_ids:
+                click.echo(f"No benchmarks match title substring {benchmark_title!r}.")
+                return
+            q = q.filter(BenchmarkResult.benchmark_id.in_(bm_ids))
+        if args_filter:
+            q = q.filter(BenchmarkResult.arguments == args_filter)
+
+        rows = q.all()
+        if not rows:
+            click.echo("No matching results to remove.")
+            return
+
+        if dry_run:
+            click.echo(f"Would remove {len(rows)} result(s) from system {system_id}:")
+            for r in rows:
+                bm = db.session.get(Benchmark, r.benchmark_id)
+                title = bm.title if bm else "?"
+                click.echo(f"  [{r.id}] {title} args={r.arguments!r} value={r.value}")
+            return
+
+        ids = [r.id for r in rows]
+        BenchmarkResult.query.filter(BenchmarkResult.id.in_(ids)).delete(synchronize_session=False)
+        db.session.commit()
+        click.echo(f"Removed {len(ids)} result(s) from system {system_id}.")
 
 
 @click.command("init-db")
