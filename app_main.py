@@ -1,6 +1,10 @@
+import logging
+import os
+
 from app import create_app
 from app.cli import register_commands
-import os
+
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 app = create_app()
 register_commands(app)
