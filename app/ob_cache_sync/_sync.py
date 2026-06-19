@@ -193,11 +193,17 @@ def _resolve_local_clone(local_path: str | Path | None) -> Path:
     if local_path:
         return Path(local_path)
     preferred = default_pts_clone_dir()
-    if preferred.is_dir() and (preferred / "ob-cache").is_dir():
-        return preferred
+    try:
+        if preferred.is_dir() and (preferred / "ob-cache").is_dir():
+            return preferred
+    except PermissionError:
+        pass
     legacy = Path(LEGACY_LOCAL_CLONE)
-    if legacy.is_dir() and (legacy / "ob-cache").is_dir():
-        return legacy
+    try:
+        if legacy.is_dir() and (legacy / "ob-cache").is_dir():
+            return legacy
+    except PermissionError:
+        pass
     return preferred
 
 
