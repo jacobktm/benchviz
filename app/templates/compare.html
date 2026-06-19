@@ -66,7 +66,7 @@
                 <button type="button" id="poolEquivalentConfigsConfigureBtn" class="btn-primary-sm" style="width:100%;" disabled>
                     Configure pooled argument flags
                 </button>
-                <label class="checkbox-item" style="display:flex;align-items:center;gap:0.5rem;color:var(--text-secondary);font-size:0.9rem;user-select:none;">
+                <label class="checkbox-item" id="poolResolutionClassesRow" style="display:flex;align-items:center;gap:0.5rem;color:var(--text-secondary);font-size:0.9rem;user-select:none;">
                     <input type="checkbox" id="poolResolutionClasses" />
                     <span>Pool equivalent resolution classes (e.g. 16:9 ≅ 16:10)</span>
                 </label>
@@ -193,6 +193,7 @@
         // as equivalent (values removed from the pooling key).
         const poolEquivalentConfigsEl = document.getElementById('poolEquivalentConfigs');
         const poolEquivalentConfigsConfigureBtn = document.getElementById('poolEquivalentConfigsConfigureBtn');
+        const poolResolutionClassesRow = document.getElementById('poolResolutionClassesRow');
         const poolResolutionClassesEl = document.getElementById('poolResolutionClasses');
         const poolArgFlagsModal = document.getElementById('poolArgFlagsModal');
         const poolArgFlagsText = document.getElementById('poolArgFlagsText');
@@ -670,6 +671,7 @@
                     ? 'No common benchmarks for current systems.'
                     : 'Select at least one system first.';
                 benchmarkPanel.appendChild(benchmarkPanelPlaceholder);
+                updateResolutionPoolVisibility();
                 return;
             }
             benchmarkPanelPlaceholder.remove();
@@ -773,6 +775,7 @@
                 row.appendChild(body);
                 benchmarkPanel.appendChild(row);
             });
+            updateResolutionPoolVisibility();
         }
 
         async function syncBenchmarkOptions() {
@@ -783,6 +786,7 @@
                 renderSelectedBenchmarks();
                 refreshGenerateButtonState();
                 benchmarkHelperText.textContent = 'Select one or more benchmarks shared by the chosen systems. Expand a benchmark to choose specific configurations.';
+                updateResolutionPoolVisibility();
                 return;
             }
 
@@ -817,14 +821,30 @@
                         benchmarkHelperText.textContent = 'Only benchmarks common to all selected systems are shown. Expand to pick configurations.';
                     }
                 }
+                updateResolutionPoolVisibility();
             } catch (err) {
                 console.error(err);
                 availableBenchmarks = [];
                 renderBenchmarkPanel();
                 benchmarkHelperText.textContent = 'Failed to load shared benchmarks.';
+                updateResolutionPoolVisibility();
             } finally {
                 refreshGenerateButtonState();
             }
+        }
+
+        /** Check whether any benchmark config contains a resolution (e.g. 1920x1080, 4k). */
+        function hasResolutionConfigs() {
+            const wRe = /\b(\d{3,4})\s*[xX×]\s*(\d{3,4})\b/;
+            return availableBenchmarks.some(bm => (bm.configs || []).some(c => {
+                const s = (typeof c === 'string' ? c : c.value || '').toLowerCase();
+                return /\b8k\b/.test(s) || /\b4k\b/.test(s) || /\b1440p\b/.test(s) || /\b1080p\b/.test(s) || wRe.test(s);
+            }));
+        }
+
+        function updateResolutionPoolVisibility() {
+            if (!poolResolutionClassesRow) return;
+            poolResolutionClassesRow.style.display = hasResolutionConfigs() ? 'flex' : 'none';
         }
 
         async function syncSystemConstraints() {
