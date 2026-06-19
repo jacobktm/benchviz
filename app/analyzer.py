@@ -70,7 +70,8 @@ def analyze_benchmarks(*, incremental: bool = True):
         # Representative benchmark for metadata
         rep_bm = bm_list[0]
         identifier = rep_bm.identifier or ''
-        is_lower_better = "Lower is Better" in (rep_bm.proportion or "")
+        prop = (rep_bm.proportion or "").upper()
+        is_lower_better = "LIB" in prop or "LOWER IS BETTER" in prop
         
         # Collect all results across all these matching benchmark definitions
         all_results = []
@@ -212,7 +213,7 @@ def analyze_benchmarks(*, incremental: bool = True):
 
             # Commit per benchmark group so the web app can read the DB while analysis runs.
             db.session.commit()
-            db.session.remove()
+            db.session.expire_all()
 
     print("Background benchmark analysis complete.")
 
