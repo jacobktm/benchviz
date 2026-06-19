@@ -17,9 +17,11 @@ def extract_hardware_component(hardware_string: str, component_prefix: str) -> s
     """Extract a specific component like 'Processor: ' from the Phoronix hardware string."""
     if not hardware_string:
         return None
-    for part in hardware_string.split(","):
+    # Some PTS files use newlines or mixed delimiters instead of commas
+    normalized = hardware_string.replace("\n", ",").replace("\r", ",")
+    for part in normalized.split(","):
         part = part.strip()
-        if part.startswith(f"{component_prefix}:"):
+        if part.lower().startswith(f"{component_prefix.lower()}:"):
             return part.split(":", 1)[1].strip()
     return None
 
