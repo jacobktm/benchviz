@@ -42,6 +42,8 @@ from app.profile_snapshot import format_observation_label
 from app.benchmark_util import delete_orphan_benchmarks, delete_system_benchmark_suite
 from app.analyzer import analyze_benchmarks
 from app.ml.analyzer import analyze_ml_profiles
+from app.ml.hardware_ranking import list_rankable_benchmarks
+from app.analyzer import INSIGHT_COMPONENT_KEYS
 from app.insights_lock import insights_rebuild_lock
 from app.insights_runner import schedule_insights_rebuild
 from app.pts import proportion_is_lower_better
@@ -563,6 +565,17 @@ def delete_saved_comparison(comp_id):
     db.session.commit()
     flash('Saved comparison deleted.', 'success')
     return redirect(url_for('pages.list_saved_comparisons'))
+
+
+@bp.route('/discriminating_benchmarks')
+def discriminating_benchmarks():
+    return render_template('discriminating_benchmarks.html')
+
+
+@bp.route('/hardware_ranking')
+def hardware_ranking():
+    benchmarks = list_rankable_benchmarks()
+    return render_template('hardware_ranking.html', benchmarks=benchmarks)
 
 
 @bp.route('/insights')

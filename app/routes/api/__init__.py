@@ -4,4 +4,4 @@ from flask import Blueprint
 
 bp = Blueprint('api', __name__)
 
-from . import compare, benchmarks, insights
+from . import compare, benchmarks, insights, hardware_ranking

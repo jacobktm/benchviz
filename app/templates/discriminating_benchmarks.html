@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>Discriminating Benchmark Discovery</h1>
+    <p class="subtitle">
+        For a given hardware pair (e.g. CPU A vs CPU B), find which benchmarks best separate them.
+        Benchmarks are ranked by Cohen's d (standardized mean difference).
+    </p>
+</div>
+
+<div class="glass" style="padding: 1.5rem; border-radius: 12px; margin-bottom: 2rem;">
+    <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: end;">
+        <div>
+            <label style="display: block; margin-bottom: 0.25rem; color: var(--text-secondary); font-size: 0.85rem;">Hardware Feature</label>
+            <select id="feature-select" style="min-width: 200px;">
+                <option value="">Loading...</option>
+            </select>
+        </div>
+        <div>
+            <label style="display: block; margin-bottom: 0.25rem; color: var(--text-secondary); font-size: 0.85rem;">Value A</label>
+            <select id="value-a-select" style="min-width: 250px;">
+                <option value="">Select feature first</option>
+            </select>
+        </div>
+        <div>
+            <label style="display: block; margin-bottom: 0.25rem; color: var(--text-secondary); font-size: 0.85rem;">Value B</label>
+            <select id="value-b-select" style="min-width: 250px;">
+                <option value="">Select feature first</option>
+            </select>
+        </div>
+        <div>
+            <button id="run-btn" class="btn-primary" disabled>Find discriminating benchmarks</button>
+        </div>
+    </div>
+</div>
+
+<div id="results-container" style="display:none;">
+    <div class="glass" style="padding: 1.5rem; border-radius: 12px;">
+        <div id="results-meta" style="margin-bottom: 1rem; font-size: 0.9rem; color: #8892b0;"></div>
+        <div class="table-container">
+            <table id="results-table" style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+                <thead>
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                        <th style="padding: 0.5rem 0.75rem; text-align: left;">Rank</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: left;">Benchmark</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: right;">Cohen's d</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: right;">Mean (A)</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: right;">Mean (B)</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: right;">N (A)</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: right;">N (B)</th>
+                        <th style="padding: 0.5rem 0.75rem; text-align: left;">Favors</th>
+                    </tr>
+                </thead>
+                <tbody id="results-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="empty-state" class="glass" style="padding: 2rem; border-radius: 12px; text-align: center; display: block;">
+    <p style="color: var(--text-secondary);">Select a hardware feature and two values, then click "Find discriminating benchmarks".</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var featureData = null;
+
+function populateValueSelect(selectId, values) {
+    var sel = document.getElementById(selectId);
+    sel.innerHTML = '<option value="">Select a value</option>';
+    values.forEach(function(v) {
+        var opt = document.createElement('option');
+        opt.value = v.value;
+        opt.textContent = v.value + ' (' + v.n_systems + ' systems)';
+        sel.appendChild(opt);
+    });
+}
+
+fetch('/api/discriminating_benchmarks/eligible')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        var sel = document.getElementById('feature-select');
+        sel.innerHTML = '<option value="">Select a feature</option>';
+        featureData = data.features || [];
+        featureData.forEach(function(f) {
+            var opt = document.createElement('option');
+            opt.value = f.feature_key;
+            opt.textContent = f.label;
+            sel.appendChild(opt);
+        });
+    });
+
+document.getElementById('feature-select').addEventListener('change', function() {
+    var key = this.value;
+    var feature = (featureData || []).find(function(f) { return f.feature_key === key; });
+    if (feature && feature.values) {
+        populateValueSelect('value-a-select', feature.values);
+        populateValueSelect('value-b-select', feature.values);
+    }
+    document.getElementById('run-btn').disabled = true;
+    document.getElementById('results-container').style.display = 'none';
+    document.getElementById('empty-state').style.display = 'block';
+});
+
+function updateRunButton() {
+    var a = document.getElementById('value-a-select').value;
+    var b = document.getElementById('value-b-select').value;
+    var feature = document.getElementById('feature-select').value;
+    var btn = document.getElementById('run-btn');
+    btn.disabled = !(feature && a && b && a !== b);
+}
+
+document.getElementById('value-a-select').addEventListener('change', updateRunButton);
+document.getElementById('value-b-select').addEventListener('change', updateRunButton);
+
+document.getElementById('run-btn').addEventListener('click', function() {
+    var feature = document.getElementById('feature-select').value;
+    var a = document.getElementById('value-a-select').value;
+    var b = document.getElementById('value-b-select').value;
+
+    if (!feature || !a || !b || a === b) return;
+
+    var url = '/api/discriminating_benchmarks?feature_key=' + encodeURIComponent(feature) +
+        '&value_a=' + encodeURIComponent(a) +
+        '&value_b=' + encodeURIComponent(b);
+
+    var container = document.getElementById('results-container');
+    var empty = document.getElementById('empty-state');
+    container.style.display = 'none';
+    empty.style.display = 'block';
+    empty.innerHTML = '<p style="color:var(--text-secondary);">Loading...</p>';
+
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.available) {
+                empty.style.display = 'block';
+                empty.innerHTML = '<p style="color:#ff6b6b;">' + (data.reason || 'No data available.') + '</p>';
+                return;
+            }
+            empty.style.display = 'none';
+            container.style.display = 'block';
+
+            var meta = document.getElementById('results-meta');
+            meta.innerHTML = 'Comparing <strong>' + data.value_a + '</strong> vs <strong>' + data.value_b + '</strong> ' +
+                'across <strong>' + data.benchmarks.length + '</strong> common benchmarks. ' +
+                '<span style="color:#8892b0;">' + data.n_a + ' systems in A, ' + data.n_b + ' in B.</span>';
+
+            var tbody = document.getElementById('results-tbody');
+            tbody.innerHTML = '';
+            data.benchmarks.forEach(function(bm, idx) {
+                var tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid rgba(255,255,255,0.04)';
+
+                var d = bm.cohens_d;
+                var dCls = d > 0 ? 'perf-up' : (d < 0 ? 'perf-down' : '');
+                var dStr = (d >= 0 ? '+' : '') + d.toFixed(3);
+
+                var favors = bm.favors_a ? data.value_a : data.value_b;
+                var interp = '';
+                if (Math.abs(d) >= 0.8) interp = ' (large)';
+                else if (Math.abs(d) >= 0.5) interp = ' (medium)';
+                else if (Math.abs(d) >= 0.2) interp = ' (small)';
+
+                tr.innerHTML =
+                    '<td style="padding:0.5rem 0.75rem;color:#8892b0;">#' + (idx + 1) + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;">' + bm.benchmark_title + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;text-align:right;" class="' + dCls + '">' + dStr + interp + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;text-align:right;">' + bm.mean_a.toFixed(2) + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;text-align:right;">' + bm.mean_b.toFixed(2) + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;text-align:right;">' + bm.n_a + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;text-align:right;">' + bm.n_b + '</td>' +
+                    '<td style="padding:0.5rem 0.75rem;">' + favors + '</td>';
+                tbody.appendChild(tr);
+            });
+        })
+        .catch(function(err) {
+            empty.style.display = 'block';
+            empty.innerHTML = '<p style="color:#ff6b6b;">Error: ' + err.message + '</p>';
+        });
+});
+</script>
+<style>
+.perf-up { color: #64ffda; }
+.perf-down { color: #ff6b6b; }
+</style>
+{% endblock %}

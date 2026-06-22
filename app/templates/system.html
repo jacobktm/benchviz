@@ -53,7 +53,90 @@
     </div>
 </div>
 
-<div class="animate-in delay-3">
+<div id="overperformance-card" class="glass animate-in delay-3" style="padding: 1.5rem; border-radius: 12px; margin-bottom: 2rem; display: none;">
+    <h2 style="margin-bottom: 0.75rem;">Hardware-Adjusted Performance</h2>
+    <div id="overperformance-summary" style="margin-bottom: 1rem;"></div>
+    <div id="overperformance-detail" style="display: none;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+            <thead>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                    <th style="padding: 0.5rem 0.75rem; text-align: left;">Benchmark</th>
+                    <th style="padding: 0.5rem 0.75rem; text-align: right;">Actual</th>
+                    <th style="padding: 0.5rem 0.75rem; text-align: right;">Expected</th>
+                    <th style="padding: 0.5rem 0.75rem; text-align: right;">vs Expected</th>
+                </tr>
+            </thead>
+            <tbody id="overperformance-rows"></tbody>
+        </table>
+    </div>
+    <button id="overperformance-toggle" class="btn btn-secondary" style="font-size: 0.85rem; margin-top: 0.75rem; display: none;">Show details</button>
+</div>
+
+<script>
+(function() {
+    var systemId = {{ system.id }};
+    fetch('/api/system_overperformance/' + systemId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var card = document.getElementById('overperformance-card');
+            if (!data.n_benchmarks_with_data || data.mean_overperformance_pct === null) {
+                card.style.display = 'block';
+                document.getElementById('overperformance-summary').innerHTML =
+                    '<p class="text-muted">Not enough peer systems with hardware specs to compute expected scores.</p>';
+                return;
+            }
+            card.style.display = 'block';
+            var pct = data.mean_overperformance_pct;
+            var cls = pct >= 0 ? 'perf-up' : 'perf-down';
+            var arrow = pct >= 0 ? '&#9650;' : '&#9660;';
+            var label = pct >= 0 ? 'over' : 'under';
+            var summary = '<div class="' + cls + '" style="padding: 0.75rem 1rem; border-radius: 8px; font-size: 1rem;">';
+            summary += '<span style="font-weight: 700; font-size: 1.3rem;">' + arrow + ' ' + Math.abs(pct).toFixed(1) + '%</span>';
+            summary += ' <span style="color: var(--text-secondary);">' + label + 'performing expectations across ';
+            summary += data.n_benchmarks_with_data + ' benchmark' + (data.n_benchmarks_with_data !== 1 ? 's' : '') + '</span>';
+            summary += '<span style="display: block; font-size: 0.85rem; margin-top: 0.25rem; color: var(--text-secondary);">';
+            summary += 'Best: ' + (data.best ? data.best.benchmark_title + ' (' + (data.best.overperformance_pct > 0 ? '+' : '') + data.best.overperformance_pct.toFixed(1) + '%)' : '—');
+            summary += ' &middot; Worst: ' + (data.worst ? data.worst.benchmark_title + ' (' + (data.worst.overperformance_pct > 0 ? '+' : '') + data.worst.overperformance_pct.toFixed(1) + '%)' : '—');
+            summary += '</span></div>';
+            document.getElementById('overperformance-summary').innerHTML = summary;
+
+            var tbody = document.getElementById('overperformance-rows');
+            tbody.innerHTML = '';
+            data.benchmarks.forEach(function(bm) {
+                var tr = document.createElement('tr');
+                var pct = bm.overperformance_pct;
+                var pctCls = pct >= 0 ? 'perf-up' : 'perf-down';
+                var pctStr = pct !== null ? (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%' : '—';
+                var actualStr = bm.actual_score.toFixed(2);
+                var expectedStr = bm.expected_score !== null ? bm.expected_score.toFixed(2) : '—';
+                tr.innerHTML = '<td style="padding: 0.5rem 0.75rem;">' + bm.benchmark_title + '</td>' +
+                    '<td style="padding: 0.5rem 0.75rem; text-align: right;">' + actualStr + '</td>' +
+                    '<td style="padding: 0.5rem 0.75rem; text-align: right;">' + expectedStr + '</td>' +
+                    '<td class="' + pctCls + '" style="padding: 0.5rem 0.75rem; text-align: right;">' + pctStr + '</td>';
+                tbody.appendChild(tr);
+            });
+
+            var toggle = document.getElementById('overperformance-toggle');
+            toggle.style.display = 'inline-block';
+            toggle.onclick = function() {
+                var detail = document.getElementById('overperformance-detail');
+                var isHidden = detail.style.display === 'none';
+                detail.style.display = isHidden ? 'block' : 'none';
+                toggle.textContent = isHidden ? 'Hide details' : 'Show details';
+            };
+        })
+        .catch(function(err) {
+            console.error('Failed to load overperformance:', err);
+        });
+})();
+</script>
+<style>
+.perf-up { color: #64ffda; }
+.perf-down { color: #ff6b6b; }
+.text-muted { color: #8892b0; }
+</style>
+
+<div class="animate-in delay-4">
     <form action="{{ url_for('pages.update_system', id=system.id) }}" method="POST" class="glass" style="padding: 1.5rem; border-radius: 12px;">
         <h2 style="margin-bottom: 1.5rem;">Editable System Profile</h2>
 

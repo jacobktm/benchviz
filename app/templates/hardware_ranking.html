@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+    <h1>Hardware-Adjusted Rankings</h1>
+    <p class="subtitle">
+        Systems ranked by actual vs. expected performance given their hardware specs.
+        Green = outperforming expectations, red = underperforming.
+    </p>
+</div>
+
+<div id="ranking-list" class="benchmark-grid">
+    {% for bm in benchmarks %}
+    <div class="card glass animate-in" data-title="{{ bm.benchmark_title }}" data-app="{{ bm.app_version }}">
+        <div class="card-body">
+            <h3>
+                <a href="#" class="ranking-benchmark-link"
+                   data-title="{{ bm.benchmark_title }}"
+                   data-app="{{ bm.app_version }}">
+                    {{ bm.benchmark_title }}
+                </a>
+            </h3>
+            <div class="meta">
+                <span class="badge">{{ bm.app_version or 'default' }}</span>
+                <span class="badge badge-secondary">{{ bm.n_systems }} systems</span>
+                <span class="badge badge-info">{{ bm.n_with_spec }} with specs</span>
+            </div>
+        </div>
+        <div class="ranking-table-container" style="display:none;">
+            <div class="loading-spinner">Loading...</div>
+        </div>
+    </div>
+    {% else %}
+    <div class="card glass">
+        <div class="card-body">
+            <p>No rankable benchmarks yet. Upload benchmarks from at least 3 different systems to see rankings here.</p>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.ranking-benchmark-link').forEach(function(link) {
+    link.addEventListener('click', function(e) {
+        e.preventDefault();
+        var card = this.closest('.card');
+        var container = card.querySelector('.ranking-table-container');
+        var isVisible = container.style.display !== 'none';
+
+        if (isVisible) {
+            container.style.display = 'none';
+            return;
+        }
+
+        container.style.display = 'block';
+        container.innerHTML = '<div class="loading-spinner">Loading...</div>';
+
+        var title = encodeURIComponent(this.dataset.title);
+        var app = this.dataset.app;
+        var url = '/api/hardware_ranking/' + title + '?app_version=' + encodeURIComponent(app);
+
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.available) {
+                    container.innerHTML = '<p class="text-muted">' + (data.reason || 'Not enough data.') + '</p>';
+                    return;
+                }
+
+                var html = '';
+                html += '<div class="ranking-meta">';
+                html += '<span>R² = ' + data.r2_score + '</span>';
+                html += ' <span>Features: ' + data.feature_keys.join(', ') + '</span>';
+                html += ' <span>Scale: ' + data.score_unit + '</span>';
+                if (data.is_lower_better) {
+                    html += ' <span class="badge">lower is better</span>';
+                }
+                html += '</div>';
+
+                var sensorCache = {};
+
+                html += '<table class="ranking-table">';
+                html += '<thead><tr><th>Rank</th><th>System</th><th>Actual</th><th>Expected</th><th>Ratio</th><th>vs Expected</th><th></th></tr></thead>';
+                html += '<tbody>';
+
+                data.systems.forEach(function(sys, idx) {
+                    var rank = idx + 1;
+                    var ratioClass = '';
+                    var perfLabel = '';
+                    if (sys.ratio !== null) {
+                        if (sys.overperformance > 0) {
+                            ratioClass = 'perf-up';
+                            perfLabel = '▲ Over';
+                        } else if (sys.overperformance < 0) {
+                            ratioClass = 'perf-down';
+                            perfLabel = '▼ Under';
+                        } else {
+                            perfLabel = '— On target';
+                        }
+                    }
+
+                    var actualStr = sys.actual_score !== null ? sys.actual_score.toFixed(2) : '—';
+                    var expectedStr = sys.expected_score !== null ? sys.expected_score.toFixed(2) : '—';
+                    var ratioStr = sys.ratio !== null ? sys.ratio.toFixed(3) : '—';
+                    var rowId = 'row-' + sys.system_id;
+                    var explainId = 'explain-' + sys.system_id;
+
+                    html += '<tr class="' + ratioClass + '" id="' + rowId + '">';
+                    html += '<td class="rank-cell">#' + rank + '</td>';
+                    html += '<td>' + sys.label + '</td>';
+                    html += '<td class="num-cell">' + actualStr + '</td>';
+                    html += '<td class="num-cell">' + expectedStr + '</td>';
+                    html += '<td class="num-cell">' + ratioStr + '</td>';
+                    html += '<td class="num-cell">' + perfLabel + '</td>';
+                    html += '<td><button class="explain-btn" data-system-id="' + sys.system_id + '" data-title="' + encodeURIComponent(data.benchmark_title) + '" data-app="' + encodeURIComponent(data.app_version) + '" style="font-size:0.75rem;padding:0.25rem 0.5rem;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:4px;color:#8892b0;">Sensors</button></td>';
+                    html += '</tr>';
+                    html += '<tr id="' + explainId + '" style="display:none;"><td colspan="7" style="padding:0;"><div class="explain-panel" style="padding:0.75rem 1rem;background:rgba(255,255,255,0.02);font-size:0.85rem;"></div></td></tr>';
+                });
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            })
+            .catch(function(err) {
+                container.innerHTML = '<p class="text-error">Error loading ranking: ' + err.message + '</p>';
+            });
+    });
+});
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.explain-btn');
+    if (!btn) return;
+
+    var systemId = btn.dataset.systemId;
+    var title = decodeURIComponent(btn.dataset.title);
+    var app = decodeURIComponent(btn.dataset.app);
+    var explainRow = document.getElementById('explain-' + systemId);
+    if (!explainRow) return;
+
+    var isVisible = explainRow.style.display !== 'none';
+    if (isVisible) {
+        explainRow.style.display = 'none';
+        return;
+    }
+
+    var panel = explainRow.querySelector('.explain-panel');
+    panel.innerHTML = '<span style="color:#8892b0;">Loading sensor data...</span>';
+    explainRow.style.display = 'table-row';
+
+    var cacheKey = title + '|' + app + '|' + systemId;
+    if (sensorCache[cacheKey]) {
+        panel.innerHTML = sensorCache[cacheKey];
+        return;
+    }
+
+    var url = '/api/hardware_ranking/' + encodeURIComponent(title) + '/explain/' + systemId + '?app_version=' + encodeURIComponent(app);
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.available) {
+                panel.innerHTML = '<span style="color:#8892b0;">' + (data.reason || 'No sensor data available.') + '</span>';
+                return;
+            }
+            var html = '<div style="color:#ccd6f6;font-weight:600;margin-bottom:0.5rem;">Sensor metrics vs cohort average</div>';
+            html += '<table style="width:100%;border-collapse:collapse;font-size:0.85rem;">';
+            html += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
+            html += '<th style="padding:0.3rem 0.5rem;text-align:left;color:#8892b0;">Metric</th>';
+            html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:#8892b0;">This system</th>';
+            html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:#8892b0;">Cohort avg</th>';
+            html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:#8892b0;">Diff</th>';
+            html += '</tr></thead><tbody>';
+            data.explanations.forEach(function(ex) {
+                var diffCls = ex.difference > 0 ? 'perf-up' : 'perf-down';
+                var arrow = ex.difference > 0 ? '▲' : '▼';
+                html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.03);">';
+                html += '<td style="padding:0.3rem 0.5rem;">' + ex.label + '</td>';
+                html += '<td style="padding:0.3rem 0.5rem;text-align:right;">' + ex.system_value + '</td>';
+                html += '<td style="padding:0.3rem 0.5rem;text-align:right;">' + ex.cohort_average + '</td>';
+                html += '<td style="padding:0.3rem 0.5rem;text-align:right;" class="' + diffCls + '">' + arrow + ' ' + Math.abs(ex.difference_pct).toFixed(1) + '%</td>';
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            panel.innerHTML = html;
+            sensorCache[cacheKey] = html;
+        })
+        .catch(function(err) {
+            panel.innerHTML = '<span style="color:#ff6b6b;">Error: ' + err.message + '</span>';
+        });
+});
+</script>
+<style>
+.ranking-table-container { padding: 1rem 0; }
+.ranking-meta { font-size: 0.85rem; color: #8892b0; margin-bottom: 0.75rem; }
+.ranking-meta span { margin-right: 1rem; }
+.ranking-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.ranking-table th { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.1); color: #ccd6f6; font-weight: 600; }
+.ranking-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.rank-cell { color: #8892b0; font-weight: 600; }
+.num-cell { font-family: 'Outfit', sans-serif; text-align: right; }
+.perf-up td { background: rgba(100, 255, 218, 0.04); }
+.perf-down td { background: rgba(255, 107, 107, 0.04); }
+.perf-up .num-cell { color: #64ffda; }
+.perf-down .num-cell { color: #ff6b6b; }
+.loading-spinner { padding: 2rem; text-align: center; color: #8892b0; }
+.text-muted { color: #8892b0; }
+.text-error { color: #ff6b6b; }
+</style>
+{% endblock %}
