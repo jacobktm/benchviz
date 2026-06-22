@@ -48,6 +48,9 @@
         {% if system.nvme_fans %}<span class="tag">NVMe Fans</span>{% endif %}
     </div>
     <p class="card-meta" style="margin-bottom: 0;">Profile Label: {{ system.profile_label }}</p>
+    <div style="margin-top: 0.75rem;">
+        <a href="{{ url_for('pages.hardware_spec_edit', system_id=system.id) }}" class="btn btn-secondary" style="text-decoration:none;font-size:0.85rem;">Edit Hardware Spec</a>
+    </div>
 </div>
 
 <div class="animate-in delay-3">

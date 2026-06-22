@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="animate-in delay-1" style="margin-bottom: 2rem;">
+    <a href="#" onclick="history.back();return false;" style="color: var(--text-secondary); font-size: 0.9rem;">&larr; Back</a>
+    <h1 style="margin-top: 1rem;">Spec Field Schemas</h1>
+    <p class="card-meta">Define what fields appear in each hardware spec section. Add a row here and it automatically shows up in the form.</p>
+</div>
+
+<style>
+    .schema-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .schema-table th, .schema-table td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .schema-table th { color: var(--text-secondary); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .schema-table td { vertical-align: middle; }
+    .schema-table input, .schema-table select { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; padding: 0.3rem 0.5rem; color: var(--text-primary); font-size: 0.85rem; width: 100%; box-sizing: border-box; }
+    .schema-table input:focus, .schema-table select:focus { outline: none; border-color: var(--accent, #6c63ff); }
+    .schema-table .cat-badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; font-weight: 500; }
+    .cat-badge.cpu { background: rgba(46, 213, 115, 0.12); color: #7bed9f; }
+    .cat-badge.gpu { background: rgba(108, 99, 255, 0.12); color: #a29bfe; }
+    .cat-badge.memory { background: rgba(255, 165, 2, 0.12); color: #ffa502; }
+    .cat-badge.storage { background: rgba(255, 71, 87, 0.12); color: #ff6b81; }
+    .actions { display: flex; gap: 0.4rem; }
+    .actions button { background: none; border: 1px solid rgba(255,255,255,0.12); border-radius: 4px; padding: 0.25rem 0.5rem; cursor: pointer; color: var(--text-secondary); font-size: 0.8rem; transition: background 0.15s; }
+    .actions .del:hover { background: rgba(255, 60, 60, 0.15); border-color: rgba(255, 60, 60, 0.3); color: #ff6b81; }
+    .flash-message { padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; font-weight: 500; font-size: 0.95rem; }
+    .flash-success { background: rgba(46, 213, 115, 0.1); color: #7bed9f; border: 1px solid rgba(46, 213, 115, 0.2); }
+    .flash-error { background: rgba(255, 60, 60, 0.1); color: #ff6b81; border: 1px solid rgba(255, 60, 60, 0.2); }
+    .btn-row { display: flex; gap: 1rem; align-items: center; margin-top: 1rem; }
+</style>
+
+<div id="status-bar" style="margin-bottom:1rem;"></div>
+
+<div class="glass" style="padding: 1.5rem; border-radius: 12px; overflow-x: auto;">
+  <table class="schema-table" id="schema-table">
+    <thead>
+      <tr>
+        <th style="width:100px;">Category</th>
+        <th style="width:160px;">Field Name</th>
+        <th>Label</th>
+        <th style="width:90px;">Type</th>
+        <th>Hint</th>
+        <th style="width:60px;">Order</th>
+        <th style="width:60px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody id="schema-rows">
+      {% for f in fields %}
+      <tr data-id="{{ f.id }}" data-blob="{{ f.blob_column }}">
+        <td><span class="cat-badge {{ f.blob_column.replace('_spec','') }}">{{ f.blob_column.replace('_spec','') }}</span></td>
+        <td><code>{{ f.field_name }}</code></td>
+        <td><input type="text" class="edit-label" value="{{ f.label }}"></td>
+        <td>
+          <select class="edit-type">
+            <option value="text" {{ 'selected' if f.field_type == 'text' }}>text</option>
+            <option value="number" {{ 'selected' if f.field_type == 'number' }}>number</option>
+            <option value="json" {{ 'selected' if f.field_type == 'json' }}>json</option>
+          </select>
+        </td>
+        <td><input type="text" class="edit-hint" value="{{ f.hint or '' }}"></td>
+        <td><input type="number" class="edit-order" value="{{ f.sort_order }}" style="width:50px;" min="0"></td>
+        <td>
+          <div class="actions">
+            <button class="save-row" title="Save">&#10003;</button>
+            <button class="del-row" title="Delete">&times;</button>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="btn-row">
+    <button id="add-row-btn" class="btn-secondary">+ Add Field</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const table = document.getElementById('schema-table');
+const tbody = document.getElementById('schema-rows');
+const statusBar = document.getElementById('status-bar');
+
+function status(msg, type) {
+    statusBar.innerHTML = `<div class="flash-message ${type === 'error' ? 'flash-error' : 'flash-success'}">${msg}</div>`;
+    setTimeout(() => statusBar.innerHTML = '', 3000);
+}
+
+async function saveRow(tr) {
+    const id = tr.dataset.id;
+    const data = {
+        label: tr.querySelector('.edit-label').value.trim(),
+        field_type: tr.querySelector('.edit-type').value,
+        hint: tr.querySelector('.edit-hint').value.trim(),
+        sort_order: parseInt(tr.querySelector('.edit-order').value) || 0,
+    };
+    const resp = await fetch(`/api/hardware_spec/schemas/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+    const td = tr.querySelector('td');
+    td.style.background = 'rgba(46,213,115,0.08)';
+    setTimeout(() => td.style.background = '', 500);
+}
+
+async function deleteRow(tr) {
+    const id = tr.dataset.id;
+    if (!confirm('Delete this field?')) return;
+    const resp = await fetch(`/api/hardware_spec/schemas/${id}`, { method: 'DELETE' });
+    if (!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+    tr.remove();
+}
+
+tbody.addEventListener('click', async (e) => {
+    const tr = e.target.closest('tr');
+    if (!tr || !tr.dataset.id) return;
+    try {
+        if (e.target.classList.contains('save-row')) {
+            await saveRow(tr);
+            status('Saved.', 'success');
+        } else if (e.target.classList.contains('del-row')) {
+            await deleteRow(tr);
+            status('Deleted.', 'success');
+        }
+    } catch (err) {
+        status(err.message, 'error');
+    }
+});
+
+document.getElementById('add-row-btn').addEventListener('click', () => {
+    const tr = document.createElement('tr');
+    tr.dataset.blob = 'cpu_spec';
+    tr.innerHTML = `
+        <td>
+            <select class="edit-blob" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;">
+                <option value="cpu_spec">cpu</option>
+                <option value="gpu_spec">gpu</option>
+                <option value="memory_spec">memory</option>
+                <option value="storage_spec">storage</option>
+            </select>
+        </td>
+        <td><input class="edit-field-name" placeholder="field_name" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;width:100%;box-sizing:border-box;"></td>
+        <td><input class="edit-label" placeholder="Display label" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;width:100%;box-sizing:border-box;"></td>
+        <td>
+            <select class="edit-type" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;">
+                <option value="text">text</option>
+                <option value="number">number</option>
+                <option value="json">json</option>
+            </select>
+        </td>
+        <td><input class="edit-hint" placeholder="Hint text" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;width:100%;box-sizing:border-box;"></td>
+        <td><input class="edit-order" type="number" value="99" min="0" style="width:50px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;"></td>
+        <td><button class="btn-primary-sm" id="create-new-row" style="padding:0.3rem 0.6rem;font-size:0.8rem;">Create</button></td>
+    `;
+    tbody.appendChild(tr);
+
+    tr.querySelector('#create-new-row').addEventListener('click', async () => {
+        const blob = tr.querySelector('.edit-blob').value;
+        const field = tr.querySelector('.edit-field-name').value.trim();
+        const label = tr.querySelector('.edit-label').value.trim() || field;
+        const ftype = tr.querySelector('.edit-type').value;
+        const hint = tr.querySelector('.edit-hint').value.trim();
+        const order = parseInt(tr.querySelector('.edit-order').value) || 0;
+        if (!field) { status('Field name is required.', 'error'); return; }
+        try {
+            const resp = await fetch('/api/hardware_spec/schemas', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ blob_column: blob, field_name: field, label, field_type: ftype, hint, sort_order: order }),
+            });
+            if (!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+            const result = await resp.json();
+            tr.dataset.id = result.id;
+            tr.innerHTML = `
+                <td><span class="cat-badge ${blob.replace('_spec','')}">${blob.replace('_spec','')}</span></td>
+                <td><code>${field}</code></td>
+                <td><input class="edit-label" value="${label}" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;width:100%;box-sizing:border-box;"></td>
+                <td>
+                    <select class="edit-type" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;">
+                        <option value="text" ${ftype==='text'?'selected':''}>text</option>
+                        <option value="number" ${ftype==='number'?'selected':''}>number</option>
+                        <option value="json" ${ftype==='json'?'selected':''}>json</option>
+                    </select>
+                </td>
+                <td><input class="edit-hint" value="${hint}" style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;width:100%;box-sizing:border-box;"></td>
+                <td><input class="edit-order" type="number" value="${order}" min="0" style="width:50px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:0.3rem 0.5rem;color:var(--text-primary);font-size:0.85rem;"></td>
+                <td><div class="actions"><button class="save-row" title="Save">&#10003;</button><button class="del-row" title="Delete">&times;</button></div></td>
+            `;
+            status('Created.', 'success');
+        } catch (err) {
+            status(err.message, 'error');
+        }
+    });
+});
+</script>
+{% endblock %}

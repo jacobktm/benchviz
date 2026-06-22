@@ -122,3 +122,88 @@ class SavedComparison(db.Model):
     id = db.Column(db.String(32), primary_key=True)  # short slug, not UUID v4 text
     payload_json = db.Column(db.JSON, nullable=False)
     created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+
+class HardwareSpec(db.Model):
+    """
+    Hardware specification for a system, stored in extendable JSON blobs.
+
+    Flat columns (cpu_model, gpu_model, cpu_cores, cpu_threads) are extracted
+    for display and simple SQL queries; everything else lives in the structured
+    JSON columns so the schema can grow without migrations.
+
+    Examples of what goes in each JSON column:
+      cpu_spec: {
+        "arch_family": "zen_5",
+        "clusters": [
+          {"type": "performance", "cores": 8, "threads": 16,
+           "base_clock_mhz": 4500, "boost_clock_mhz": 5750,
+           "tdp_watts": 170, "l2_cache_kb": 8192, "l3_cache_kb": 65536}
+        ],
+        "tdp_pl1_watts": 170, "tdp_pl2_watts": 230,
+        "base_clock_mhz": 4500, "boost_clock_mhz": 5750,
+        "l3_cache_kb": 65536, "l2_cache_kb": 8192
+      }
+      gpu_spec: {
+        "vram_mb": 16384, "core_clock_mhz": 2295, "boost_clock_mhz": 2520,
+        "tdp_watts": 450, "shader_count": 10752, "tensor_cores": 336
+      }
+      memory_spec: {
+        "size_mb": 131072, "type": "DDR5", "speed_mhz": 6000,
+        "channels": 4, "rank": "dual"
+      }
+      storage_spec: [
+        {"model": "Samsung 990 Pro", "type": "nvme", "capacity_gb": 2048}
+      ]
+    """
+    __tablename__ = 'hardware_specs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    system_id = db.Column(db.Integer, db.ForeignKey('systems.id'), nullable=False, unique=True)
+
+    # Flat columns — commonly queried / displayed
+    cpu_model = db.Column(db.String(255), nullable=True)
+    cpu_cores = db.Column(db.Integer, nullable=True)
+    cpu_threads = db.Column(db.Integer, nullable=True)
+    gpu_model = db.Column(db.String(255), nullable=True)
+
+    # Extendable JSON blobs
+    cpu_spec = db.Column(db.JSON, nullable=True)
+    gpu_spec = db.Column(db.JSON, nullable=True)
+    memory_spec = db.Column(db.JSON, nullable=True)
+    storage_spec = db.Column(db.JSON, nullable=True)
+
+    # Metadata
+    source = db.Column(db.String(50), nullable=False, default='auto')
+    extra_json = db.Column(db.JSON, nullable=True)
+    updated_at = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
+
+    system = db.relationship('System', backref=db.backref('hardware_spec', uselist=False))
+
+
+class SpecFieldSchema(db.Model):
+    """
+    Defines what fields exist in each hardware spec JSON blob.
+
+    The hardware spec edit form reads this table to render dynamic inputs
+    for cpu_spec, gpu_spec, memory_spec, storage_spec.  Add a row here and
+    it automatically appears in the form — no code changes needed.
+
+    ``blob_column``: one of ``cpu_spec``, ``gpu_spec``, ``memory_spec``, ``storage_spec``.
+    ``field_name``: key in the JSON blob (e.g. ``arch_family``, ``clusters``).
+    ``field_type``: ``text`` | ``number`` | ``json`` (how the form renders it).
+    """
+    __tablename__ = 'spec_field_schemas'
+
+    id = db.Column(db.Integer, primary_key=True)
+    blob_column = db.Column(db.String(20), nullable=False)  # cpu_spec | gpu_spec | memory_spec | storage_spec
+    field_name = db.Column(db.String(100), nullable=False)
+    label = db.Column(db.String(255), nullable=False)
+    field_type = db.Column(db.String(10), nullable=False, default='text')  # text | number | json
+    hint = db.Column(db.Text, nullable=True)
+    sort_order = db.Column(db.Integer, nullable=False, default=0)
+    required = db.Column(db.Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('blob_column', 'field_name', name='uix_spec_field'),
+    )

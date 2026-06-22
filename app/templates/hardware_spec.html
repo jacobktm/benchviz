@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+
+{% set blob_categories = {
+  'cpu_spec': 'CPU',
+  'gpu_spec': 'GPU',
+  'memory_spec': 'Memory',
+  'storage_spec': 'Storage',
+} %}
+
+{# Group schemas by blob_column #}
+{% set schema_map = {} %}
+{% for s in schemas %}
+  {% set _ = schema_map.__setitem__(s.blob_column, schema_map.get(s.blob_column, []) + [s]) %}
+{% endfor %}
+
+{% block content %}
+<div class="animate-in delay-1" style="margin-bottom: 2rem;">
+    <a href="{{ url_for('pages.system_detail', id=system.id) }}" style="color: var(--text-secondary); font-size: 0.9rem;">&larr; Back to {{ system.identifier }}</a>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;">
+      <h1 style="margin-top: 1rem;">Hardware Specification</h1>
+      <a href="{{ url_for('pages.hardware_spec_schemas') }}" style="font-size:0.85rem;color:var(--text-secondary);">Edit Schema &rarr;</a>
+    </div>
+    <p class="card-meta">{{ system.identifier }} &middot; Source: {{ spec.source }} &middot; Updated: {{ spec.updated_at or 'never' }}</p>
+</div>
+
+<style>
+    .spec-form { max-width: 900px; }
+    .spec-section { margin-bottom: 1.5rem; }
+    .spec-section h3 { margin-bottom: 1rem; margin-top: 0; color: var(--text-primary); font-size: 1.1rem; border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.1)); padding-bottom: 0.4rem; }
+    .spec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+    .spec-field label { display: block; margin-bottom: 0.3rem; color: var(--text-secondary); font-size: 0.85rem; }
+    .spec-field input, .spec-field textarea { width: 100%; padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: var(--text-primary); font-size: 0.9rem; box-sizing: border-box; }
+    .spec-field input:focus, .spec-field textarea:focus { outline: none; border-color: var(--accent, #6c63ff); }
+    .spec-field .hint { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem; }
+    .spec-field .hint-missing { color: #ffa502; }
+    .hints-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem; }
+    .hint-chip { background: rgba(255, 165, 2, 0.1); border: 1px solid rgba(255, 165, 2, 0.3); color: #ffa502; padding: 0.3rem 0.7rem; border-radius: 16px; font-size: 0.8rem; }
+    .flash-message { padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; font-weight: 500; font-size: 0.95rem; }
+    .flash-success { background: rgba(46, 213, 115, 0.1); color: #7bed9f; border: 1px solid rgba(46, 213, 115, 0.2); }
+    .flash-error { background: rgba(255, 60, 60, 0.1); color: #ff6b81; border: 1px solid rgba(255, 60, 60, 0.2); }
+    .btn-row { display: flex; gap: 1rem; margin-top: 1.5rem; align-items: center; }
+    .save-status { font-size: 0.85rem; color: var(--text-secondary); }
+    .save-status.saving { color: #ffa502; }
+    .save-status.saved { color: #7bed9f; }
+    code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }
+    .spec-json textarea { font-family: monospace; }
+</style>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <div class="animate-in delay-1">
+    {% for category, message in messages %}
+      <div class="flash-message {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">{{ message }}</div>
+    {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+
+<div id="hints-bar" class="hints-bar">
+  {% for hint in hints %}
+    <span class="hint-chip">{{ hint.category }}: {{ hint.hint }}</span>
+  {% endfor %}
+</div>
+
+<form id="spec-form" class="glass spec-form" style="padding: 1.5rem; border-radius: 12px;">
+  <input type="hidden" id="system-id" value="{{ system.id }}">
+
+  {# ---- Flat columns ---- #}
+  <div class="spec-section">
+    <h3>Core Identity</h3>
+    <div class="spec-grid">
+      <div class="spec-field">
+        <label for="cpu_model">CPU Model</label>
+        <input type="text" id="cpu_model" name="cpu_model" value="{{ spec.cpu_model or '' }}" placeholder="e.g. AMD Ryzen 9 9950X">
+      </div>
+      <div class="spec-field">
+        <label for="cpu_cores">CPU Cores</label>
+        <input type="number" id="cpu_cores" name="cpu_cores" value="{{ spec.cpu_cores or '' }}" min="0">
+      </div>
+      <div class="spec-field">
+        <label for="cpu_threads">CPU Threads</label>
+        <input type="number" id="cpu_threads" name="cpu_threads" value="{{ spec.cpu_threads or '' }}" min="0">
+      </div>
+      <div class="spec-field">
+        <label for="gpu_model">GPU Model</label>
+        <input type="text" id="gpu_model" name="gpu_model" value="{{ spec.gpu_model or '' }}" placeholder="e.g. NVIDIA GeForce RTX 5080">
+      </div>
+    </div>
+  </div>
+
+  {# ---- Dynamic schema sections ---- #}
+  {% for blob_col, category_label in blob_categories.items() %}
+  <div class="spec-section">
+    <h3>{{ category_label }}</h3>
+    {% set fields = schema_map.get(blob_col, []) %}
+    {% set blob = spec[blob_col] if spec[blob_col] else {} %}
+
+    {% if fields %}
+    <div class="spec-grid">
+      {% for s in fields %}
+        {% set value = blob.get(s.field_name) if blob is mapping else '' %}
+        <div class="spec-field">
+          <label for="{{ blob_col }}_{{ s.field_name }}">{{ s.label }}</label>
+          {% if s.field_type == 'json' %}
+            <textarea id="{{ blob_col }}_{{ s.field_name }}" name="{{ blob_col }}.{{ s.field_name }}" rows="3" style="font-family:monospace;">{{ value | tojson if value is mapping or value is iterable and value is not string else value }}</textarea>
+          {% elif s.field_type == 'number' %}
+            <input type="number" id="{{ blob_col }}_{{ s.field_name }}" name="{{ blob_col }}.{{ s.field_name }}" value="{{ value or '' }}" min="0" step="any">
+          {% else %}
+            <input type="text" id="{{ blob_col }}_{{ s.field_name }}" name="{{ blob_col }}.{{ s.field_name }}" value="{{ value or '' }}">
+          {% endif %}
+          {% if s.hint %}<div class="hint">{{ s.hint }}</div>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Raw JSON editor for anything not in the schema #}
+    <div class="spec-json" style="margin-top: {% if fields %}1rem{% else %}0{% endif %};">
+      <details>
+        <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.85rem;">Raw JSON editor</summary>
+        {% set blob_json = spec[blob_col] | tojson(indent=2) if spec[blob_col] else '{}' %}
+        <textarea class="raw-json" id="{{ blob_col }}" name="{{ blob_col }}" rows="6" style="width:100%;margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:var(--text-primary);font-size:0.85rem;font-family:monospace;box-sizing:border-box;">{{ blob_json }}</textarea>
+        <div class="hint" style="margin-top:0.3rem;">Raw JSON — any extra keys are preserved across saves.</div>
+      </details>
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="btn-row">
+    <button type="submit" class="btn-primary">Save Spec</button>
+    <span id="save-status" class="save-status"></span>
+    <button type="button" id="repopulate-btn" class="btn-secondary" style="margin-left:auto;">Re-populate from PTS</button>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const systemId = document.getElementById('system-id').value;
+const form = document.getElementById('spec-form');
+const statusEl = document.getElementById('save-status');
+
+function tryParseJson(str) {
+    const s = (str || '').trim();
+    if (!s) return null;
+    try { return JSON.parse(s); } catch { return null; }
+}
+
+form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    statusEl.textContent = 'Saving…';
+    statusEl.className = 'save-status saving';
+
+    const fd = new FormData(form);
+    const data = {};
+
+    // Flat fields first
+    for (const f of ['cpu_model', 'cpu_cores', 'cpu_threads', 'gpu_model']) {
+        const v = fd.get(f);
+        if (v === '') { data[f] = null; continue; }
+        if (f === 'cpu_cores' || f === 'cpu_threads') {
+            const n = Number(v);
+            data[f] = !isNaN(n) ? n : null;
+        } else {
+            data[f] = v;
+        }
+    }
+
+    // Collect per-blob fields
+    const blobs = { 'cpu_spec': {}, 'gpu_spec': {}, 'memory_spec': {}, 'storage_spec': {} };
+    const rawJsonEls = document.querySelectorAll('textarea.raw-json');
+
+    // Dot-path form fields (blob.field)
+    for (const [key, val] of fd.entries()) {
+        const dot = key.indexOf('.');
+        if (dot === -1) continue;
+        const blobName = key.slice(0, dot);
+        const fieldName = key.slice(dot + 1);
+        if (!(blobName in blobs)) continue;
+        if (val === '') { blobs[blobName][fieldName] = null; continue; }
+        const parsed = tryParseJson(val);
+        blobs[blobName][fieldName] = parsed !== null ? parsed : val;
+    }
+
+    // Raw JSON textareas (override anything from dot-path fields)
+    for (const ta of rawJsonEls) {
+        const blobName = ta.id;
+        if (!(blobName in blobs)) continue;
+        const txt = ta.value.trim();
+        if (!txt) { blobs[blobName] = null; continue; }
+        const parsed = tryParseJson(txt);
+        if (parsed && typeof parsed === 'object') {
+            // Merge: raw JSON overrides dot-path fields, but preserve any extra keys
+            // that the user added directly in the raw editor
+            const merged = { ...blobs[blobName], ...parsed };
+            blobs[blobName] = merged;
+        }
+    }
+
+    for (const [blobName, blobData] of Object.entries(blobs)) {
+        if (blobData !== null && Object.keys(blobData).length > 0) {
+            data[blobName] = blobData;
+        } else {
+            data[blobName] = null;
+        }
+    }
+
+    try {
+        const resp = await fetch(`/api/systems/${systemId}/hardware_spec`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            statusEl.textContent = 'Saved ✓';
+            statusEl.className = 'save-status saved';
+        } else {
+            statusEl.textContent = `Error: ${result.error || 'Unknown'}`;
+            statusEl.className = 'save-status';
+        }
+    } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.className = 'save-status';
+    }
+});
+
+document.getElementById('repopulate-btn').addEventListener('click', async () => {
+    statusEl.textContent = 'Re-populating from PTS data…';
+    statusEl.className = 'save-status saving';
+    try {
+        const resp = await fetch(`/api/systems/${systemId}/hardware_spec/repopulate`, { method: 'POST' });
+        const result = await resp.json();
+        if (result.ok) {
+            location.reload();
+        } else {
+            statusEl.textContent = 'Re-populate completed, but no new data found.';
+            statusEl.className = 'save-status';
+        }
+    } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.className = 'save-status';
+    }
+});
+</script>
+{% endblock %}

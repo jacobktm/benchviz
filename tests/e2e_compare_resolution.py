@@ -142,14 +142,12 @@ def run():
         page.screenshot(path=f"{SCREENSHOT_DIR}/resolution_pool_03_charts.png", full_page=True)
         print("✓ Charts rendered, screenshot saved")
 
-        # ── 7. Verify the URL includes resolution pooling param ───
-        current_url = page.url
-        if "pool_resolution_classes=1" in current_url:
-            print("✓ URL contains pool_resolution_classes=1")
-        else:
-            print(f"ℹ URL does not contain pool_resolution_classes: {current_url[:120]}")
-
-        # ── 8. Disable pooling and regenerate ─────────────────────
+        # ── 7. Disable pooling and regenerate ─────────────────────
+        # The configure accordion may have collapsed after generation; re-open it.
+        accordion_summary = page.query_selector("#configureAccordion summary")
+        if accordion_summary:
+            accordion_summary.click()
+            time.sleep(0.3)
         pool_checkbox.uncheck()
         page.click("#generateBtn")
         time.sleep(2)

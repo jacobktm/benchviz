@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from flask import request
+from flask import jsonify, request
 
 from app import db
-from app.models import Benchmark, BenchmarkResult
+from app.models import Benchmark, BenchmarkResult, HardwareSpec, SpecFieldSchema, System
 from app.components import get_primary_group_name
 from app.repositories import BenchmarkRepository, SystemRepository
 from app.route_helpers import _unique_part_of_description, format_system_profile_label
+from app.hardware_spec import auto_populate_hardware_spec, missing_spec_hints
 
 from . import bp
 
@@ -177,3 +178,148 @@ def api_systems_for_benchmark_title():
             } for s in systems
         ]
     }, 200
+
+
+# ---------------------------------------------------------------------------
+# Hardware spec API
+# ---------------------------------------------------------------------------
+
+
+@bp.route('/api/systems/<int:system_id>/hardware_spec', methods=['GET'])
+def api_hardware_spec_get(system_id: int):
+    spec = HardwareSpec.query.filter_by(system_id=system_id).first()
+    if not spec:
+        return {"spec": None, "hints": []}, 200
+    hints = missing_spec_hints(spec)
+    return {"spec": _serialize_spec(spec), "hints": hints}, 200
+
+
+@bp.route('/api/systems/<int:system_id>/hardware_spec', methods=['PUT'])
+def api_hardware_spec_update(system_id: int):
+    data = request.get_json(silent=True)
+    if not data:
+        return {"error": "Request body must be JSON"}, 400
+
+    spec = HardwareSpec.query.filter_by(system_id=system_id).first()
+    if spec is None:
+        spec = HardwareSpec(system_id=system_id, source='manual')
+        db.session.add(spec)
+    else:
+        if spec.source == 'auto':
+            spec.source = 'manual'
+
+    _SPEC_EDITABLE_FIELDS = [
+        'cpu_model', 'cpu_cores', 'cpu_threads', 'gpu_model',
+        'cpu_spec', 'gpu_spec', 'memory_spec', 'storage_spec',
+        'extra_json',
+    ]
+
+    for field in _SPEC_EDITABLE_FIELDS:
+        if field in data:
+            setattr(spec, field, data[field])
+
+    db.session.commit()
+    return {"spec": _serialize_spec(spec), "ok": True}, 200
+
+
+@bp.route('/api/systems/<int:system_id>/hardware_spec/repopulate', methods=['POST'])
+def api_hardware_spec_repopulate(system_id: int):
+    system = System.query.get(system_id)
+    if not system:
+        return {"error": "System not found"}, 404
+    spec = auto_populate_hardware_spec(system)
+    db.session.commit()
+    return {"spec": _serialize_spec(spec) if spec else None, "ok": True}, 200
+
+
+def _serialize_spec(spec: HardwareSpec) -> dict:
+    return {
+        "id": spec.id,
+        "system_id": spec.system_id,
+        "cpu_model": spec.cpu_model,
+        "cpu_cores": spec.cpu_cores,
+        "cpu_threads": spec.cpu_threads,
+        "gpu_model": spec.gpu_model,
+        "cpu_spec": spec.cpu_spec,
+        "gpu_spec": spec.gpu_spec,
+        "memory_spec": spec.memory_spec,
+        "storage_spec": spec.storage_spec,
+        "source": spec.source,
+        "updated_at": spec.updated_at.isoformat() if spec.updated_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Spec field schema management
+# ---------------------------------------------------------------------------
+
+
+@bp.route('/api/hardware_spec/schemas', methods=['GET'])
+def api_spec_schemas_list():
+    rows = SpecFieldSchema.query.order_by(
+        SpecFieldSchema.blob_column, SpecFieldSchema.sort_order,
+    ).all()
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        groups.setdefault(r.blob_column, []).append({
+            'id': r.id,
+            'blob_column': r.blob_column,
+            'field_name': r.field_name,
+            'label': r.label,
+            'field_type': r.field_type,
+            'hint': r.hint,
+            'sort_order': r.sort_order,
+            'required': r.required,
+        })
+    return groups, 200
+
+
+@bp.route('/api/hardware_spec/schemas', methods=['POST'])
+def api_spec_schema_create():
+    data = request.get_json(silent=True)
+    if not data:
+        return {"error": "Request body must be JSON"}, 400
+    blob = (data.get('blob_column') or '').strip()
+    field = (data.get('field_name') or '').strip()
+    if not blob or not field:
+        return {"error": "blob_column and field_name are required"}, 400
+    existing = SpecFieldSchema.query.filter_by(blob_column=blob, field_name=field).first()
+    if existing:
+        return {"error": "Field already exists in this category"}, 409
+    row = SpecFieldSchema(
+        blob_column=blob,
+        field_name=field,
+        label=(data.get('label') or field).strip(),
+        field_type=data.get('field_type') or 'text',
+        hint=data.get('hint') or '',
+        sort_order=data.get('sort_order') or 0,
+        required=bool(data.get('required')),
+    )
+    db.session.add(row)
+    db.session.commit()
+    return {"id": row.id}, 201
+
+
+@bp.route('/api/hardware_spec/schemas/<int:schema_id>', methods=['PUT'])
+def api_spec_schema_update(schema_id: int):
+    row = SpecFieldSchema.query.get(schema_id)
+    if not row:
+        return {"error": "Schema not found"}, 404
+    data = request.get_json(silent=True)
+    if not data:
+        return {"error": "Request body must be JSON"}, 400
+    for field in ('label', 'field_type', 'hint', 'sort_order', 'required'):
+        if field in data:
+            setattr(row, field, data[field])
+    db.session.commit()
+    return {"ok": True}, 200
+
+
+@bp.route('/api/hardware_spec/schemas/<int:schema_id>', methods=['DELETE'])
+def api_spec_schema_delete(schema_id: int):
+    row = SpecFieldSchema.query.get(schema_id)
+    if not row:
+        return {"error": "Schema not found"}, 404
+    db.session.delete(row)
+    db.session.commit()
+    return {"ok": True}, 200

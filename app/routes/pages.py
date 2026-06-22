@@ -26,7 +26,12 @@ from sqlalchemy import or_, func as sqla_func
 from app import db
 from app.models import (
     System, Benchmark, BenchmarkResult, SystemNvmeConfig,
-    BenchmarkAnalysis, SavedComparison,
+    BenchmarkAnalysis, SavedComparison, HardwareSpec, SpecFieldSchema,
+)
+from app.hardware_spec import (
+    auto_populate_hardware_spec, apply_sidecar_to_spec,
+    is_sidecar_filename, system_id_from_sidecar_filename,
+    missing_spec_hints,
 )
 from app.parser import (
     BOOL_PROFILE_FIELDS, STRING_PROFILE_FIELDS,
@@ -76,6 +81,36 @@ from app.route_helpers import (
 )
 
 bp = Blueprint("pages", __name__)
+
+
+def _import_sidecar_json(filepath: str) -> None:
+    """Load a hardware-spec-*.json file and update the matching system's HardwareSpec."""
+    try:
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        flash(f'Could not parse sidecar JSON: {e}', 'error')
+        return
+
+    if not isinstance(data, dict):
+        flash('Sidecar JSON must be an object.', 'error')
+        return
+
+    system_id_str = system_id_from_sidecar_filename(os.path.basename(filepath))
+    system = System.query.filter_by(identifier=system_id_str).first()
+    if not system:
+        flash(f'No system found for sidecar identifier "{system_id_str}"', 'warning')
+        return
+
+    spec = HardwareSpec.query.filter_by(system_id=system.id).first()
+    if spec is None:
+        spec = HardwareSpec(system_id=system.id, source='sidecar')
+        db.session.add(spec)
+
+    spec.source = 'sidecar'
+    apply_sidecar_to_spec(spec, data)
+    db.session.flush()
+    flash(f'Hardware spec updated from sidecar for "{system_id_str}".', 'success')
 
 
 @bp.route('/')
@@ -189,17 +224,24 @@ def upload_benchmarks():
                 with zipfile.ZipFile(file_path, 'r') as zip_ref:
                     zip_ref.extractall(temp_dir)
                     for info in zip_ref.infolist():
+                        fpath = os.path.join(temp_dir, info.filename)
                         if info.filename.lower().endswith('.xml'):
-                            parse_file(os.path.join(temp_dir, info.filename), system_profile=system_profile)
+                            parse_file(fpath, system_profile=system_profile)
                             extracted_xml_count += 1
+                        elif is_sidecar_filename(info.filename):
+                            _import_sidecar_json(fpath)
             elif filename.lower().endswith('.xml'):
                 parse_file(file_path, system_profile=system_profile)
                 extracted_xml_count += 1
+            elif is_sidecar_filename(filename):
+                _import_sidecar_json(file_path)
                 
         for system in System.query.all():
             _, changed = sync_nvme_configs(system)
             if changed:
                 db.session.flush()
+        for system in System.query.all():
+            auto_populate_hardware_spec(system)
 
         db.session.commit()
         
@@ -241,6 +283,36 @@ def upload_benchmarks():
         shutil.rmtree(temp_dir, ignore_errors=True)
         
     return redirect(url_for('pages.upload_benchmarks'))
+
+
+@bp.route('/system/<int:system_id>/hardware_spec')
+def hardware_spec_edit(system_id: int):
+    system = SystemRepository.get_by_id_or_404(system_id)
+    spec = HardwareSpec.query.filter_by(system_id=system.id).first()
+    if spec is None:
+        spec = HardwareSpec(system_id=system.id, source='auto')
+        db.session.add(spec)
+        db.session.flush()
+    hints = missing_spec_hints(spec)
+    schemas = SpecFieldSchema.query.order_by(
+        SpecFieldSchema.blob_column, SpecFieldSchema.sort_order,
+    ).all()
+    return render_template(
+        'hardware_spec.html',
+        system=system,
+        spec=spec,
+        hints=hints,
+        schemas=schemas,
+    )
+
+
+@bp.route('/hardware_spec/schemas')
+def hardware_spec_schemas():
+    """Manage the spec field schema definitions."""
+    fields = SpecFieldSchema.query.order_by(
+        SpecFieldSchema.blob_column, SpecFieldSchema.sort_order,
+    ).all()
+    return render_template('spec_schemas.html', fields=fields)
 
 
 @bp.route('/system/<int:id>')

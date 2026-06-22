@@ -1546,31 +1546,101 @@
             return Math.log(hi / lo);
         }
 
+        /** Read workload scope from a config entry (chart-level, per-option, or group-level). */
+        function getConfigWorkloadScope(config) {
+            const wp = config.primaryChart && config.primaryChart.workload_profile;
+            if (wp && wp.scope) return wp.scope;
+            const group = config.group;
+            if (group) {
+                if (config.option_key && group.workload_profiles_by_option) {
+                    const perOpt = group.workload_profiles_by_option[config.option_key];
+                    if (perOpt && perOpt.scope) return perOpt.scope;
+                }
+                if (group.workload_profile && group.workload_profile.scope) {
+                    return group.workload_profile.scope;
+                }
+            }
+            return null;
+        }
+
+        /** Hardware component keys whose differences could explain a scope's performance gap. */
+        function scopeHardwareKeys(scope) {
+            if (scope === 'cpu') return ['processor'];
+            if (scope === 'gpu') return ['graphics'];
+            if (scope === 'storage') return ['storage'];
+            if (scope === 'memory') return ['memory'];
+            if (scope === 'mixed') return ['processor', 'graphics'];
+            return [];
+        }
+
+        /** True if the compared systems differ on any hardware relevant to this scope. */
+        function hardwareDiffersForScope(systemsWithComponents, scope) {
+            const keys = scopeHardwareKeys(scope);
+            if (!keys.length) return false;
+            return keys.some(key => {
+                const values = systemsWithComponents.map(s => (s.components[key] || '').toLowerCase().trim());
+                return values.some(v => v) && new Set(values).size > 1;
+            });
+        }
+
         /**
-         * Drop subtests whose head-to-head margin is a statistical outlier vs all other subtests.
-         * Uses max(Q3 + 1.5×IQR, 3× median margin) so a few blowout results don't dominate overall.
+         * Drop subtests whose head-to-head margin is a statistical outlier.
+         *
+         * When a subtest's workload scope maps to a hardware component that differs between
+         * the compared systems (e.g. GPU-bound subtest, different GPUs), the outlier filter
+         * runs within its peer group (same-scope subtests) rather than globally. This preserves
+         * legitimate performance differences driven by known hardware gaps.
          */
         function filterOutlierMarginSubtests(configEntries, systems) {
             if (!configEntries.length || systems.length < 2) return { kept: configEntries, excluded: 0 };
 
             const tagged = configEntries.map(entry => {
                 const margin = subtestObPairwiseMargin(entry.config, systems, entry.bGroup);
-                return margin != null ? { entry, margin } : null;
+                if (margin == null) return null;
+                const scope = getConfigWorkloadScope(entry.config);
+                return { entry, margin, scope };
             }).filter(Boolean);
 
             if (tagged.length < 4) return { kept: configEntries, excluded: 0 };
 
-            const margins = tagged.map(t => t.margin).sort((a, b) => a - b);
-            const q1 = margins[Math.floor(margins.length * 0.25)];
-            const q3 = margins[Math.floor(margins.length * 0.75)];
-            const iqr = Math.max(q3 - q1, 1e-9);
-            const med = medianPositive(margins) || margins[Math.floor(margins.length / 2)];
-            const cutoff = Math.max(q3 + 1.5 * iqr, med * 3);
+            // Group subtests by whether their scope's hardware differs between systems.
+            // Entries with a known scope whose hardware differs are grouped per-scope
+            // (filter within peer group). All others share a global group.
+            const groups = new Map();
+            for (const t of tagged) {
+                const hardwareDiff = t.scope ? hardwareDiffersForScope(selectedSystems, t.scope) : false;
+                const key = hardwareDiff ? (t.scope || '_other') : '_global';
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(t);
+            }
 
-            const kept = tagged.filter(t => t.margin <= cutoff).map(t => t.entry);
+            let kept = [];
+            let excluded = 0;
+
+            for (const group of groups.values()) {
+                if (group.length < 2) {
+                    kept.push(...group.map(t => t.entry));
+                    continue;
+                }
+                const margins = group.map(t => t.margin).sort((a, b) => a - b);
+                const q1 = margins[Math.floor(margins.length * 0.25)];
+                const q3 = margins[Math.floor(margins.length * 0.75)];
+                const iqr = Math.max(q3 - q1, 1e-9);
+                const med = medianPositive(margins) || margins[Math.floor(margins.length / 2)];
+                const cutoff = Math.max(q3 + 1.5 * iqr, med * 3);
+
+                const groupKept = group.filter(t => t.margin <= cutoff).map(t => t.entry);
+                if (groupKept.length >= 2) {
+                    kept.push(...groupKept);
+                    excluded += group.length - groupKept.length;
+                } else {
+                    kept.push(...group.map(t => t.entry));
+                }
+            }
+
             return {
                 kept: kept.length >= 2 ? kept : configEntries,
-                excluded: tagged.length - kept.length,
+                excluded,
             };
         }
 

@@ -114,6 +114,48 @@ def ensure_schema_compatibility():
                     "WHERE rank_value_spec IS NULL"
                 ))
 
+    if 'spec_field_schemas' not in table_names:
+        with db.engine.begin() as connection:
+            connection.execute(text(
+                """
+                CREATE TABLE spec_field_schemas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    blob_column VARCHAR(20) NOT NULL,
+                    field_name VARCHAR(100) NOT NULL,
+                    label VARCHAR(255) NOT NULL,
+                    field_type VARCHAR(10) NOT NULL DEFAULT 'text',
+                    hint TEXT,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    required BOOLEAN NOT NULL DEFAULT 0,
+                    UNIQUE(blob_column, field_name)
+                )
+                """
+            ))
+            _seed_default_spec_schemas(connection)
+
+    if 'hardware_specs' not in table_names:
+        with db.engine.begin() as connection:
+            connection.execute(text(
+                """
+                CREATE TABLE hardware_specs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    system_id INTEGER NOT NULL UNIQUE,
+                    cpu_model VARCHAR(255),
+                    cpu_cores INTEGER,
+                    cpu_threads INTEGER,
+                    gpu_model VARCHAR(255),
+                    cpu_spec JSON,
+                    gpu_spec JSON,
+                    memory_spec JSON,
+                    storage_spec JSON,
+                    source VARCHAR(50) NOT NULL DEFAULT 'auto',
+                    extra_json JSON,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(system_id) REFERENCES systems (id)
+                )
+                """
+            ))
+
     inspector3 = inspect(db.engine)
     if 'benchmark_results' in inspector3.get_table_names():
         with db.engine.begin() as connection:
@@ -168,6 +210,43 @@ def _migrate_benchmark_results_v2(connection, inspector) -> None:
         "CREATE INDEX IF NOT EXISTS ix_benchmark_results_import_batch_id "
         "ON benchmark_results (import_batch_id)"
     ))
+
+def _seed_default_spec_schemas(connection):
+    """Populate the initial spec field schema table."""
+    defaults = [
+        # cpu_spec
+        ('cpu_spec', 'arch_family', 'Microarchitecture', 'text', 'e.g. zen_5, raptor_cove, arrow_lake', 10),
+        ('cpu_spec', 'clusters', 'Core Clusters', 'json', 'Array of {type, cores, threads, base_clock_mhz, boost_clock_mhz, tdp_watts}', 20),
+        ('cpu_spec', 'boost_clock_mhz', 'Boost Clock (MHz)', 'number', 'Maximum single-core boost', 30),
+        ('cpu_spec', 'base_clock_mhz', 'Base Clock (MHz)', 'number', 'Sustained clock under all-core load', 40),
+        ('cpu_spec', 'tdp_pl1_watts', 'TDP PL1 (W)', 'number', 'Sustained power limit', 50),
+        ('cpu_spec', 'tdp_pl2_watts', 'TDP PL2 (W)', 'number', 'Boost power limit', 60),
+        ('cpu_spec', 'tdp_watts', 'TDP Class (W)', 'number', 'Thermal design power', 70),
+        ('cpu_spec', 'l3_cache_kb', 'L3 Cache (KB)', 'number', 'Last-level cache', 80),
+        ('cpu_spec', 'l2_cache_kb', 'L2 Cache (KB)', 'number', 'Per-core L2 cache', 90),
+        # gpu_spec
+        ('gpu_spec', 'vram_mb', 'VRAM (MB)', 'number', 'Video memory', 10),
+        ('gpu_spec', 'shader_count', 'Shader / CUDA Cores', 'number', 'Universal shader count', 20),
+        ('gpu_spec', 'boost_clock_mhz', 'Boost Clock (MHz)', 'number', 'Maximum boost clock', 30),
+        ('gpu_spec', 'core_clock_mhz', 'Core Clock (MHz)', 'number', 'Base core clock', 40),
+        ('gpu_spec', 'tdp_watts', 'TDP (W)', 'number', 'Thermal design power', 50),
+        ('gpu_spec', 'tensor_cores', 'Tensor / AI Cores', 'number', 'Tensor / RT / AI accelerator count', 60),
+        # memory_spec
+        ('memory_spec', 'size_mb', 'Size (MB)', 'number', 'Total system memory', 10),
+        ('memory_spec', 'type', 'Type', 'text', 'DDR4 / DDR5 / LPDDR5', 20),
+        ('memory_spec', 'speed_mhz', 'Speed (MHz)', 'number', 'Memory clock rate', 30),
+        ('memory_spec', 'channels', 'Channels', 'number', 'Memory channel count', 40),
+        ('memory_spec', 'rank', 'Rank', 'text', 'Single / Dual / Quad', 50),
+    ]
+    for blob_col, field, label, ftype, hint, sort_order in defaults:
+        connection.execute(
+            text("""
+                INSERT INTO spec_field_schemas (blob_column, field_name, label, field_type, hint, sort_order)
+                VALUES (:bc, :fn, :lb, :ft, :hi, :so)
+            """),
+            {'bc': blob_col, 'fn': field, 'lb': label, 'ft': ftype, 'hi': hint, 'so': sort_order},
+        )
+
 
 def create_app():
     app = Flask(__name__)

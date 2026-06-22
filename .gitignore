@@ -8,6 +8,7 @@ benchmarks/**/*.xml
 benchmarks/*.xml
 
 # Local SQLite instance database
+benchmarks.db
 instance/benchmarks.db
 instance/ob-cache/
 instance/ob_cache_index.json
@@ -30,3 +31,4 @@ tests/e2e_config.json
 # E2E test screenshots
 screenshots/
 node_modules/
+benchmarks.db
