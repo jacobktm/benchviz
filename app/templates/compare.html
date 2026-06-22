@@ -161,6 +161,7 @@
 {% block scripts %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+<script src="/static/js/compare-utils.js"></script>
 <script id="compare-system-groups-data" type="application/json">{{ compare_system_groups_json | safe }}</script>
 <script>
     window.COMPARE_BY_OPTIONS = {{ compare_by_options | default([]) | tojson | safe }};
@@ -327,6 +328,10 @@
         let selectedSystems = [];     // { id, shortName, primaryName, label, components }
         // Stable mapping of system identity -> color index (keeps colors consistent across chart types).
         let colorOrderIds = [];
+        /** Bridge to CompareUtils.colorIndexForSystemId with local colorOrderIds. */
+        function colorIndexForSystemId(sysId) {
+            return CompareUtils.colorIndexForSystemId(sysId, colorOrderIds);
+        }
         let selectedBenchmarks = [];  // { id, label, args } — args null = whole benchmark
         let globalCompareBy = 'system_name';  // single "compare by" for all systems; only options present in all systems are shown
         let availableBenchmarks = []; // from /api/common_benchmarks (each has .configs)
@@ -931,16 +936,7 @@
         const BAR_CHART_TICK_COLOR = '#c9d1d9';
         /** Sort labels and values so the best system is first (top). higherIsBetter: true = max first, false = min first. */
         function sortLabelsValuesBestFirst(labels, values, higherIsBetter) {
-            const pairs = (Array.isArray(labels) ? labels : []).map((label, i) => ({
-                label,
-                value: (values && values[i] != null && !isNaN(values[i])) ? Number(values[i]) : null
-            }));
-            const sorted = pairs.sort((a, b) => {
-                const va = a.value != null ? a.value : (higherIsBetter ? -Infinity : Infinity);
-                const vb = b.value != null ? b.value : (higherIsBetter ? -Infinity : Infinity);
-                return higherIsBetter ? vb - va : va - vb;
-            });
-            return { labels: sorted.map(p => p.label), values: sorted.map(p => p.value) };
+            return CompareUtils.sortLabelsValuesBestFirst(labels, values, higherIsBetter);
         }
         function sortLabelsValuesSystemIdsBestFirst(labels, values, systemIds, higherIsBetter) {
             const pairs = (Array.isArray(labels) ? labels : []).map((label, i) => ({
@@ -976,7 +972,7 @@
             const ids = Array.isArray(systemIdsForLabels) ? systemIdsForLabels : [];
             const bgColors = labelList.map((_, i) => {
                 const sysId = ids[i];
-                const idx = (sysId != null) ? colorOrderIds.indexOf(String(sysId)) : -1;
+                const idx = (sysId != null) ? colorIndexForSystemId(sysId) : -1;
                 const colorIndex = idx >= 0 ? idx : i;
                 return defaultColors[colorIndex % defaultColors.length];
             });
@@ -1064,7 +1060,7 @@
             /** Same palette index as composite / primary bar charts (colorOrderIds × defaultColors). */
             const systemColorAt = (si) => {
                 const sysId = systems[si];
-                const idx = colorOrderIds.indexOf(String(sysId));
+                const idx = colorIndexForSystemId(sysId);
                 const colorIndex = idx >= 0 ? idx : si;
                 return defaultColors[colorIndex % defaultColors.length];
             };
@@ -1398,35 +1394,18 @@
         }
 
         function geometricMean(arr) {
-            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
-            if (!valid.length) return null;
-            if (valid.some(v => v <= 0)) return valid.reduce((a, b) => a + b, 0) / valid.length;
-            const logSum = valid.reduce((acc, v) => acc + Math.log(v), 0);
-            return Math.exp(logSum / valid.length);
+            return CompareUtils.geometricMean(arr);
         }
 
         function harmonicMean(arr) {
-            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0);
-            if (!valid.length) return null;
-            const sumInv = valid.reduce((acc, v) => acc + 1 / v, 0);
-            if (!sumInv) return null;
-            return (1 / sumInv) * valid.length;
+            return CompareUtils.harmonicMean(arr);
         }
 
         const MIN_HARMONIC_SUBTESTS = 4;
 
         /** Map trace name (possibly pooled suffix) to canonical system short_name. */
         function canonicalSystemId(traceName, compGroup) {
-            const name = String(traceName || '').trim();
-            if (!name) return '';
-            const details = (compGroup && compGroup.system_details) || [];
-            for (const s of details) {
-                const sn = (s.short_name || '').trim();
-                if (!sn) continue;
-                if (name === sn || name.startsWith(sn + ' ') || name.startsWith(sn + '(')) return sn;
-            }
-            const m = name.match(/^(\S+)\s+\([^()]+\)$/);
-            return m ? m[1] : name;
+            return CompareUtils.canonicalSystemId(traceName, compGroup);
         }
 
         /** Canonical compare system ids from all comparison groups (stable order). */
@@ -1548,10 +1527,7 @@
         }
 
         function percentilePositive(arr, p) {
-            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0).sort((a, b) => a - b);
-            if (!valid.length) return null;
-            const idx = Math.min(valid.length - 1, Math.max(0, Math.ceil(p * valid.length) - 1));
-            return valid[idx];
+            return CompareUtils.percentilePositive(arr, p);
         }
 
         /**
@@ -1823,22 +1799,7 @@
 
         /** Canonical scale bucket for cross-benchmark harmonic mean (any HIB unit; aliases like MiB/s → MB/s). */
         function normalizeHarmonicScaleKey(scale) {
-            const rs = (scale || '').trim();
-            if (!rs) return null;
-            const rsLower = rs.toLowerCase();
-            if (rsLower === 'mb/s' || rsLower === 'mib/s') return 'MB/s';
-            if (rsLower.includes('byte') && (rs.includes('/') || rsLower.includes('sec') || rsLower.includes(' per '))) {
-                return 'MB/s';
-            }
-            if (rsLower.endsWith('/s') && (rsLower.includes('mib') || rsLower.includes('mb'))) return 'MB/s';
-            if (rsLower.includes('fps') || (rsLower.includes('frame') && rsLower.includes('second'))) return 'FPS';
-            if (rsLower === 'mips' || rsLower.includes('mips') || rsLower.includes('million instructions')) return 'MIPS';
-            if (rsLower.includes('iops')) return 'IOPS';
-            if (rsLower.includes('bps')) return 'bps';
-            if (rsLower.includes('run') && (rs.includes('/') || rsLower.includes(' per '))) return 'runs/min';
-            if (rsLower === 'seconds' || rsLower === 'second' || rsLower === 'sec' || rsLower === 's') return 'Seconds';
-            if (rsLower === 'ms' || rsLower.includes('millisecond')) return 'ms';
-            return rs;
+            return CompareUtils.normalizeHarmonicScaleKey(scale);
         }
 
         /** Stable scale bucket for same-unit detection within one benchmark suite. */
@@ -1857,11 +1818,7 @@
 
         /** Infer direction from unit when proportion is missing (time → LIB, throughput → HIB). */
         function inferHibFromScaleKey(scaleKey) {
-            const k = (scaleKey || '').toLowerCase();
-            if (!k) return true;
-            if (k === 'seconds' || k === 'ms') return false;
-            if (k.includes('second') || k.includes('millisecond') || k.includes('time')) return false;
-            return true;
+            return CompareUtils.inferHibFromScaleKey(scaleKey);
         }
 
         /**
@@ -1956,11 +1913,7 @@
         }
 
         function medianPositive(arr) {
-            const valid = arr.filter(v => typeof v === 'number' && !isNaN(v) && v > 0).sort((a, b) => a - b);
-            if (!valid.length) return null;
-            const mid = Math.floor(valid.length / 2);
-            if (valid.length % 2 === 1) return valid[mid];
-            return (valid[mid - 1] + valid[mid]) / 2;
+            return CompareUtils.medianPositive(arr);
         }
 
         /** Interpret proportion: HIB / LIB or "Higher/More Is Better" (any casing). */
@@ -2410,55 +2363,32 @@
 
         /** Data labels on composite bars. */
         function formatCompositeBarValue(v, asNormalized) {
-            if (v == null || isNaN(v)) return '';
-            const n = Number(v);
-            if (asNormalized) {
-                const pctFromOne = Math.abs(n - 1) * 100;
-                if (pctFromOne < 0.01) return n.toFixed(4);
-                if (pctFromOne < 0.1) return n.toFixed(3);
-                return n.toFixed(2);
-            }
-            if (Math.abs(n) < 0.05) return '0%';
-            return (n >= 0 ? '+' : '') + n.toFixed(1) + '%';
+            return CompareUtils.formatCompositeBarValue(v, asNormalized);
         }
 
         /** Convert capped relative composite (≥1.0) to % advantage vs class reference system. */
         function compositeToPercentAdvantage(v) {
-            if (v == null || isNaN(v) || Number(v) <= 0) return null;
-            return (Number(v) - 1) * 100;
+            return CompareUtils.compositeToPercentAdvantage(v);
         }
 
         /** Bar-chart scale: reference system's composite maps to 100. */
         function compositeToPerformanceIndex(v, refComposite) {
-            if (v == null || isNaN(v) || Number(v) <= 0) return null;
-            const ref = (refComposite != null && !isNaN(refComposite) && Number(refComposite) > 0)
-                ? Number(refComposite) : 1;
-            return (Number(v) / ref) * 100;
+            return CompareUtils.compositeToPerformanceIndex(v, refComposite);
         }
 
         /** Data label for performance-index composite bars (100 = reference). */
         function formatPerformanceIndexLabel(indexVal) {
-            if (indexVal == null || isNaN(indexVal)) return '';
-            const n = Number(indexVal);
-            const pct = n - 100;
-            if (Math.abs(pct) < 0.05) return '100';
-            return n.toFixed(1) + ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)';
+            return CompareUtils.formatPerformanceIndexLabel(indexVal);
         }
 
         /** PTS viewer raw composite value label (geo/harmonic mean in native units). */
         function formatPtsRawMeanLabel(v) {
-            if (v == null || isNaN(v)) return '';
-            const n = Number(v);
-            if (Math.abs(n) >= 10000) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
-            if (Math.abs(n) >= 100) return n.toFixed(1);
-            if (Math.abs(n) >= 10) return n.toFixed(2);
-            return n.toFixed(3);
+            return CompareUtils.formatPtsRawMeanLabel(v);
         }
 
         /** PTS normalize: relative performance multiplier (reference = 1.0). */
         function formatPtsRelativeLabel(relative) {
-            if (relative == null || isNaN(relative)) return '';
-            return formatCompositeBarValue(Number(relative), true);
+            return CompareUtils.formatPtsRelativeLabel(relative);
         }
 
         /** Collect unique PTS subtests from all comparison groups in a benchmark bucket. */
@@ -2978,6 +2908,11 @@
             })();
             if (!traceNames.length) return;
             const systemLabels = getSystemDisplayNames(traceNames);
+            // Stable identity-based colors for export charts (matches main comparison view).
+            const exportColors = traceNames.map((n, i) => {
+                const ci = colorIndexForSystemId(n);
+                return defaultColors[(ci >= 0 ? ci : i) % defaultColors.length];
+            });
 
             // --- Data prep (normalized, higher = better) ---
             const benchSummaries = [];
@@ -3086,7 +3021,7 @@
                         const v = b.ratios[idx] || 0;
                         return Number.isFinite(v) ? Number(v.toFixed(3)) : 0;
                     }),
-                    backgroundColor: defaultColors[idx % defaultColors.length]
+                    backgroundColor: exportColors[idx]
                 }));
                 panelPromises.push(buildExportChart({
                     type: 'bar',
@@ -3156,7 +3091,7 @@
                         datasets: [{
                             label: 'Overall balanced average vs OB baseline',
                             data: dataVals,
-                            backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
+                            backgroundColor: systemLabels.map((_, idx) => exportColors[idx])
                         }]
                     },
                     options: {
@@ -3199,7 +3134,7 @@
             // Wins / losses pies
             if (opts.showOverallWinsLosses && globalWins && globalWins.length && globalLosses && globalLosses.length) {
                 const labels = systemLabels.slice();
-                const bgColors = systemLabels.map((_, i) => defaultColors[i % defaultColors.length]);
+                const bgColors = systemLabels.map((_, i) => exportColors[i]);
                 panelPromises.push(buildExportChart({
                     type: 'pie',
                     data: {
@@ -3250,7 +3185,7 @@
                         datasets: [{
                             label: sensor.metric,
                             data: dataVals,
-                            backgroundColor: systemLabels.map((_, idx) => defaultColors[idx % defaultColors.length])
+                            backgroundColor: systemLabels.map((_, idx) => exportColors[idx])
                         }]
                     },
                     options: {
@@ -3327,7 +3262,7 @@
                     const item = document.createElement('div');
                     item.style.cssText = 'display:inline-flex;align-items:center;gap:8px;font-size:14px;color:#c9d1d9;';
                     const sw = document.createElement('span');
-                    sw.style.cssText = `width:14px;height:14px;border-radius:2px;background:${defaultColors[idx % defaultColors.length]};display:inline-block;`;
+                    sw.style.cssText = `width:14px;height:14px;border-radius:2px;background:${exportColors[idx]};display:inline-block;`;
                     const txt = document.createElement('span');
                     txt.textContent = s;
                     item.appendChild(sw);
@@ -3873,7 +3808,7 @@
                 const ids = Array.isArray(systemIds) ? systemIds : [];
                 const bgColors = systemLabels.map((_, i) => {
                     const sysId = ids[i];
-                    const idx = (sysId != null) ? colorOrderIds.indexOf(String(sysId)) : -1;
+                    const idx = (sysId != null) ? colorIndexForSystemId(sysId) : -1;
                     const colorIndex = idx >= 0 ? idx : i;
                     return defaultColors[colorIndex % defaultColors.length];
                 });
@@ -4057,7 +3992,7 @@
                                 const labels = (firstTrace.x && firstTrace.x.length) ? firstTrace.x.map((_, i) => i) : (firstTrace.y || []).map((_, i) => i);
                                 const datasets = chartData.traces.map((t, i) => {
                                     const sysId = t.name;
-                                    const idx = (sysId != null) ? colorOrderIds.indexOf(String(sysId)) : -1;
+                                    const idx = (sysId != null) ? colorIndexForSystemId(sysId) : -1;
                                     const colorIndex = idx >= 0 ? idx : i;
                                     const color = defaultColors[colorIndex % defaultColors.length];
                                     return { label: t.name, data: t.y || [], borderColor: color, backgroundColor: 'rgba(0,0,0,0)', tension: 0.1, pointRadius: 0, borderWidth: 2 };

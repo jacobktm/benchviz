@@ -13,8 +13,9 @@ BenchViz is a Flask-based web application for visualizing and analyzing Phoronix
 - **XML parsing**: lxml 5.x
 - **ML / statistics**: scikit-learn 1.3+, numpy 1.24+
 - **Frontend**: Jinja2 templates, CSS3 (glassmorphism, dark theme), Plotly.js 2.32
-- **Testing**: Python `unittest` (unit tests) + Playwright (E2E browser tests)
-- **No JS framework**: plain HTML + CSS + Plotly.js with vanilla JS in template `<script>` blocks
+- **Testing**: Python `unittest` (unit tests) + Playwright (E2E browser tests) + GitHub Actions CI (`.github/workflows/ci.yml`)
+- **JS testing**: Vitest (~25 unit tests in `tests/compare-utils.test.js`)
+- **No JS framework**: plain HTML + CSS + Plotly.js with vanilla JS in template `<script>` blocks; pure utility functions extracted to `app/static/js/compare-utils.js`
 
 ## Key Commands
 
@@ -25,6 +26,8 @@ BenchViz is a Flask-based web application for visualizing and analyzing Phoronix
 | `python -m flask sync-openbenchmarking-cache` | Sync OB cache from git mirror |
 | `python -m flask calibrate-hardware-ranks` | Blend spec ranks with real-world results |
 | `python test_<name>.py` | Run a specific unit test file |
+| `npm test` | Run Vitest JS unit tests (compare-utils, etc.) |
+| `npm run test:watch` | Run Vitest in watch mode |
 
 **Environment variables**: `BENCHVIZ_OB_LIVE_ON_COMPARE`, `BENCHVIZ_OB_LIVE_FETCH`, `BENCHVIZ_INSIGHTS_REBUILD_FULL`, `BENCHVIZ_DEBUG`, `BENCHVIZ_RELOADER`, `BENCHVIZ_HOST`, `BENCHVIZ_PORT`.
 

@@ -29,3 +29,4 @@ tests/e2e_config.json
 
 # E2E test screenshots
 screenshots/
+node_modules/

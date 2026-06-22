@@ -12,5 +12,10 @@ if [ ! -x "$PYTHON" ]; then
     exit 0
 fi
 
-echo "Running unit tests…"
+echo "Running Python unit tests…"
 "$PYTHON" -m unittest discover -s "$ROOT/tests" -v
+
+echo "Running JS unit tests…"
+if [ -x "$(command -v npm)" ] && [ -f "$ROOT/package.json" ]; then
+    cd "$ROOT" && npm test
+fi
