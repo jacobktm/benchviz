@@ -7,6 +7,8 @@ from app.components import (
     clean_text,
     get_primary_group_name,
     extract_hardware_component,
+    extract_memory_speed,
+    extract_memory_bus_width,
     normalize_processor_name,
     normalize_graphics_name,
     hardware_rank_match_key,
@@ -241,6 +243,67 @@ class ExtractSoftwareComponentTest(unittest.TestCase):
         self.assertEqual(extract_software_component('OS: Linux', None), '')
 
 
+class ExtractMemorySpeedTest(unittest.TestCase):
+    def test_empty_returns_empty(self):
+        self.assertEqual(extract_memory_speed(''), '')
+
+    def test_none_returns_empty(self):
+        self.assertEqual(extract_memory_speed(None), '')
+
+    def test_ddr5_speed(self):
+        self.assertEqual(
+            extract_memory_speed('2 x 16 GB DDR5-6000MT/s Kingston'),
+            'DDR5-6000',
+        )
+
+    def test_ddr4_speed(self):
+        self.assertEqual(
+            extract_memory_speed('32 GB DDR4-3200'),
+            'DDR4-3200',
+        )
+
+    def test_lpddr5_speed(self):
+        self.assertEqual(
+            extract_memory_speed('8 GB LPDDR5-6400'),
+            'LPDDR5-6400',
+        )
+
+    def test_no_memory_info_returns_empty(self):
+        self.assertEqual(extract_memory_speed('Unknown'), '')
+
+    def test_case_handling(self):
+        self.assertEqual(
+            extract_memory_speed('16 gb ddr5-4800'),
+            'DDR5-4800',
+        )
+
+
+class ExtractMemoryBusWidthTest(unittest.TestCase):
+    def test_empty_returns_empty(self):
+        self.assertEqual(extract_memory_bus_width(''), '')
+
+    def test_none_returns_empty(self):
+        self.assertEqual(extract_memory_bus_width(None), '')
+
+    def test_128_bit(self):
+        self.assertEqual(
+            extract_memory_bus_width('2 x 16 GB DDR5-6000MT/s 128-bit Kingston'),
+            '128-bit',
+        )
+
+    def test_256_bit(self):
+        self.assertEqual(
+            extract_memory_bus_width('32 GB DDR5-4800MT/s 256-bit'),
+            '256-bit',
+        )
+
+    def test_no_bus_width_returns_empty(self):
+        self.assertEqual(
+            extract_memory_bus_width('32 GB DDR5-4800'),
+            '',
+        )
+
+
 class GetSystemComponentsTest(unittest.TestCase):
     """Additional focused tests for get_system_components edge cases."""
 
@@ -313,6 +376,20 @@ class GetSystemComponentsTest(unittest.TestCase):
         sys = self._make_system(nvme_configs=[pad])
         comps = get_system_components(sys)
         self.assertEqual(comps['thermal_pad_sandwich_nvme'], 'Yes')
+
+    def test_memory_speed_and_bus_width(self):
+        sys = self._make_system(
+            hardware='Memory: 2 x 16 GB DDR5-6000MT/s 128-bit Kingston',
+        )
+        comps = get_system_components(sys)
+        self.assertEqual(comps['memory_speed'], 'DDR5-6000')
+        self.assertEqual(comps['memory_bus_width'], '128-bit')
+
+    def test_memory_speed_empty_when_missing(self):
+        sys = self._make_system(hardware='Memory: 32 GB')
+        comps = get_system_components(sys)
+        self.assertEqual(comps['memory_speed'], '')
+        self.assertEqual(comps['memory_bus_width'], '')
 
 
 if __name__ == "__main__":

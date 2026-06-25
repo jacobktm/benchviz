@@ -72,6 +72,32 @@ def hardware_rank_match_key(feature_key: str, display_value: str) -> str:
     return clean_text(display_value)
 
 
+def extract_memory_speed(memory_str: str) -> str:
+    """Extract memory generation + speed from a PTS memory string.
+
+    Examples: "2 x 16 GB DDR5-6000MT/s Kingston" → "DDR5-6000"
+              "32 GB DDR4-3200" → "DDR4-3200"
+              "8 GB LPDDR5-6400" → "LPDDR5-6400"
+    """
+    s = clean_text(memory_str)
+    if not s:
+        return ""
+    m = re.search(r"(LPDDR[345X]*|DDR[345]|PC[345])-?\d+", s, re.IGNORECASE)
+    return m.group(0).upper() if m else ""
+
+
+def extract_memory_bus_width(memory_str: str) -> str:
+    """Extract memory bus width from a PTS memory string.
+
+    Example: "2 x 16 GB DDR5-6000MT/s 128-bit Kingston" → "128-bit"
+    """
+    s = clean_text(memory_str)
+    if not s:
+        return ""
+    m = re.search(r"\d+-bit", s)
+    return m.group(0) if m else ""
+
+
 def extract_software_component(software_text: str, label: str) -> str:
     """Extract value for a label from Phoronix-style software string (e.g. 'Kernel: 6.8.0' or 'NVIDIA Driver: 560')."""
     if not software_text or not label:
@@ -101,6 +127,8 @@ def get_system_components(system) -> dict[str, str]:
     graphics = extract_hw_any(["Graphics", "GPU", "Graphics Processor"])
     graphics = normalize_graphics_name(graphics) if graphics else ""
     memory = extract_hw_any(["Memory", "RAM", "System Memory"])
+    memory_speed = extract_memory_speed(memory)
+    memory_bus_width = extract_memory_bus_width(memory)
     motherboard = extract_hw_any(["Motherboard", "Mainboard", "Motherboard / Mainboard"])
     chipset = extract_hw_any(["Chipset"])
     disk_str = extract_hardware_component(hardware, "Disk")
@@ -159,6 +187,8 @@ def get_system_components(system) -> dict[str, str]:
         "processor": processor or "",
         "graphics": graphics or "",
         "memory": memory or "",
+        "memory_speed": memory_speed,
+        "memory_bus_width": memory_bus_width,
         "motherboard": motherboard or "",
         "chipset": chipset or "",
         "storage": storage,
