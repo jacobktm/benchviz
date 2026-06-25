@@ -89,15 +89,18 @@ def extract_memory_speed(memory_str: str) -> str:
 def extract_memory_bus_width(memory_str: str) -> str:
     """Compute the aggregate memory bus width from a PTS memory string.
 
-    Standard DDR DIMMs use a 64-bit bus per module, so any reported width
-    < 64 (e.g. 32-bit) is per-module (common for soldered LPDDR). Widths
-    >= 64 are assumed to already be the aggregate total.
+    PTS is inconsistent: sometimes reports per-module width (e.g.
+    "4 x 8 GB … 32-bit"), sometimes aggregate ("2 x 16 GB … 128-bit").
+    When a module count is present we always multiply, so the feature
+    dimension is consistent across all systems even if the raw value
+    for a specific system is technically wrong.
 
     Examples:
-      "2 x 16 GB DDR5-6000MT/s 128-bit"  → "128-bit"  (≥64, already total)
-      "4 x 8 GB DDR5-4800MT/s 32-bit"    → "128-bit"  (<64, per-module → 4×32)
-      "32 GB DDR4-3200 64-bit"            → "64-bit"   (≥64, already total)
-      "8 x 8 GB DDR5-6400 32-bit"         → "256-bit"  (<64, per-module → 8×32)
+      "2 x 16 GB DDR5-6000MT/s 128-bit"  → "256-bit"  (2×128)
+      "4 x 8 GB DDR5-4800MT/s 32-bit"    → "128-bit"  (4×32)
+      "4 x 32 GB DDR5-4800MT/s 64-bit"   → "256-bit"  (4×64; Threadripper)
+      "8 x 8 GB DDR5-6400 32-bit"         → "256-bit"  (8×32)
+      "32 GB DDR4-3200 64-bit"            → "64-bit"   (no multiplier)
     """
     s = clean_text(memory_str)
     if not s:
@@ -106,8 +109,6 @@ def extract_memory_bus_width(memory_str: str) -> str:
     if not m:
         return ""
     reported = int(m.group(1))
-    if reported >= 64:
-        return f"{reported}-bit"
     count_m = re.search(r"(\d+)\s*x\s+\d+\s*(?:GB|MB|GiB)", s, re.IGNORECASE)
     if count_m:
         total = int(count_m.group(1)) * reported

@@ -285,10 +285,10 @@ class ExtractMemoryBusWidthTest(unittest.TestCase):
     def test_none_returns_empty(self):
         self.assertEqual(extract_memory_bus_width(None), '')
 
-    def test_dual_channel_total(self):
+    def test_dual_channel_always_multiplies(self):
         self.assertEqual(
             extract_memory_bus_width('2 x 16 GB DDR5-6000MT/s 128-bit Kingston'),
-            '128-bit',
+            '256-bit',
         )
 
     def test_quad_channel_aggregate(self):
@@ -395,7 +395,7 @@ class GetSystemComponentsTest(unittest.TestCase):
         )
         comps = get_system_components(sys)
         self.assertEqual(comps['memory_speed'], 'DDR5-6000')
-        self.assertEqual(comps['memory_bus_width'], '128-bit')
+        self.assertEqual(comps['memory_bus_width'], '256-bit')
 
     def test_memory_bus_width_aggregates_multiple_dimms(self):
         sys = self._make_system(
