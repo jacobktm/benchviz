@@ -280,6 +280,24 @@ def build_ob_cache_index(cache_dir: Path | None = None, index_path: Path | None 
     return payload
 
 
+def _try_track_cache(metric_name: str) -> None:
+    try:
+        from flask import current_app
+        metrics = current_app.extensions.get("benchviz_metrics")
+        if metrics is not None:
+            getattr(metrics, metric_name)()
+    except Exception:
+        pass
+
+
+def _track_ob_cache_hit() -> None:
+    _try_track_cache("ob_cache.hit")
+
+
+def _track_ob_cache_miss() -> None:
+    _try_track_cache("ob_cache.miss")
+
+
 def _invalidate_index_cache() -> None:
     global _index_cache
     with _index_cache_lock:
@@ -292,7 +310,10 @@ def load_ob_cache_index(index_path: Path | None = None) -> dict[str, Any] | None
 
     with _index_cache_lock:
         if _index_cache is not None:
+            _track_ob_cache_hit()
             return _index_cache
+
+    _track_ob_cache_miss()
 
     if not path.is_file():
         return None

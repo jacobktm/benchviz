@@ -265,6 +265,9 @@ def create_app():
 
     db.init_app(app)
 
+    from app.analytics import register_analytics
+    register_analytics(app)
+
     from app.routes.pages import bp as pages_bp
     from app.routes.api import bp as api_bp
     from app.routes.export import bp as export_bp

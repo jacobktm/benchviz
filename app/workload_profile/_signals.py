@@ -33,10 +33,27 @@ def _signals_cache_key(
     )
 
 
+def _try_track_signals_cache(hit: bool) -> None:
+    try:
+        from flask import current_app
+        metrics = current_app.extensions.get("benchviz_metrics")
+        if metrics is not None:
+            counter = metrics.signals_cache
+            if hit:
+                counter.hit()
+            else:
+                counter.miss()
+    except Exception:
+        pass
+
+
 def _cached_signals(key: tuple) -> Any | None:
     val = _SIGNALS_CACHE.get(key)
     if val is not None:
         _SIGNALS_CACHE.move_to_end(key)
+        _try_track_signals_cache(hit=True)
+    else:
+        _try_track_signals_cache(hit=False)
     return val
 
 
