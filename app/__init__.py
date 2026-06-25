@@ -253,10 +253,13 @@ def create_app():
     app.secret_key = os.environ.get('BENCHVIZ_SECRET_KEY', 'super-secret-benchmark-key')
     # Use an absolute path so the DB is consistent regardless of current working directory
     # (important for systemd service vs CLI commands).
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    instance_dir = os.path.join(project_root, 'instance')
-    os.makedirs(instance_dir, exist_ok=True)
-    db_path = os.path.join(instance_dir, 'benchmarks.db')
+    # Allow explicit override via env var (e.g. systemd service or production deploy).
+    db_path = os.environ.get('BENCHVIZ_DB_PATH')
+    if not db_path:
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        instance_dir = os.path.join(project_root, 'instance')
+        os.makedirs(instance_dir, exist_ok=True)
+        db_path = os.path.join(instance_dir, 'benchmarks.db')
     app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
