@@ -7,6 +7,7 @@ SCOPE_HARDWARE_KEYS: dict[str, frozenset[str]] = {
         "processor", "memory", "motherboard", "chipset", "os", "kernel_version",
         "llvm_version", "cooler_model", "chassis_version", "psu", "custom_hardware",
         "external_off", "memory_fans",
+        "memory_speed", "memory_bus_width", "cpu_memory_channels",
     }),
     "gpu": frozenset({
         "graphics", "nvidia_driver", "mesa_version", "llvm_version", "vulkan_driver",
@@ -19,12 +20,14 @@ SCOPE_HARDWARE_KEYS: dict[str, frozenset[str]] = {
     "memory": frozenset({
         "processor", "memory", "motherboard", "chipset", "cooler_model", "memory_fans",
         "chassis_version", "psu",
+        "memory_speed", "memory_bus_width", "cpu_memory_channels",
     }),
     "general": frozenset({
         "processor", "graphics", "memory", "motherboard", "chipset", "os",
         "kernel_version", "nvidia_driver", "mesa_version", "llvm_version",
         "vulkan_driver", "chassis_version", "cooler_model", "psu", "custom_hardware",
         "external_off", "gpu_fans", "memory_fans", "nvme_fans",
+        "memory_speed", "memory_bus_width", "cpu_memory_channels",
     }),
 }
 
