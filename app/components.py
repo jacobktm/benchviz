@@ -87,15 +87,32 @@ def extract_memory_speed(memory_str: str) -> str:
 
 
 def extract_memory_bus_width(memory_str: str) -> str:
-    """Extract memory bus width from a PTS memory string.
+    """Compute the aggregate memory bus width from a PTS memory string.
 
-    Example: "2 x 16 GB DDR5-6000MT/s 128-bit Kingston" → "128-bit"
+    Standard DDR DIMMs use a 64-bit bus per module, so any reported width
+    < 64 (e.g. 32-bit) is per-module (common for soldered LPDDR). Widths
+    >= 64 are assumed to already be the aggregate total.
+
+    Examples:
+      "2 x 16 GB DDR5-6000MT/s 128-bit"  → "128-bit"  (≥64, already total)
+      "4 x 8 GB DDR5-4800MT/s 32-bit"    → "128-bit"  (<64, per-module → 4×32)
+      "32 GB DDR4-3200 64-bit"            → "64-bit"   (≥64, already total)
+      "8 x 8 GB DDR5-6400 32-bit"         → "256-bit"  (<64, per-module → 8×32)
     """
     s = clean_text(memory_str)
     if not s:
         return ""
-    m = re.search(r"\d+-bit", s)
-    return m.group(0) if m else ""
+    m = re.search(r"(\d+)-bit", s)
+    if not m:
+        return ""
+    reported = int(m.group(1))
+    if reported >= 64:
+        return f"{reported}-bit"
+    count_m = re.search(r"(\d+)\s*x\s+\d+\s*(?:GB|MB|GiB)", s, re.IGNORECASE)
+    if count_m:
+        total = int(count_m.group(1)) * reported
+        return f"{total}-bit"
+    return f"{reported}-bit"
 
 
 def extract_software_component(software_text: str, label: str) -> str:

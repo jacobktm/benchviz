@@ -285,13 +285,19 @@ class ExtractMemoryBusWidthTest(unittest.TestCase):
     def test_none_returns_empty(self):
         self.assertEqual(extract_memory_bus_width(None), '')
 
-    def test_128_bit(self):
+    def test_dual_channel_total(self):
         self.assertEqual(
             extract_memory_bus_width('2 x 16 GB DDR5-6000MT/s 128-bit Kingston'),
             '128-bit',
         )
 
-    def test_256_bit(self):
+    def test_quad_channel_aggregate(self):
+        self.assertEqual(
+            extract_memory_bus_width('4 x 8 GB DDR5-4800MT/s 32-bit'),
+            '128-bit',
+        )
+
+    def test_single_module_passthrough(self):
         self.assertEqual(
             extract_memory_bus_width('32 GB DDR5-4800MT/s 256-bit'),
             '256-bit',
@@ -301,6 +307,12 @@ class ExtractMemoryBusWidthTest(unittest.TestCase):
         self.assertEqual(
             extract_memory_bus_width('32 GB DDR5-4800'),
             '',
+        )
+
+    def test_8_module_aggregate(self):
+        self.assertEqual(
+            extract_memory_bus_width('8 x 8 GB DDR5-6400 32-bit'),
+            '256-bit',
         )
 
 
@@ -377,12 +389,20 @@ class GetSystemComponentsTest(unittest.TestCase):
         comps = get_system_components(sys)
         self.assertEqual(comps['thermal_pad_sandwich_nvme'], 'Yes')
 
-    def test_memory_speed_and_bus_width(self):
+    def test_memory_speed_and_bus_width_dual_channel(self):
         sys = self._make_system(
             hardware='Memory: 2 x 16 GB DDR5-6000MT/s 128-bit Kingston',
         )
         comps = get_system_components(sys)
         self.assertEqual(comps['memory_speed'], 'DDR5-6000')
+        self.assertEqual(comps['memory_bus_width'], '128-bit')
+
+    def test_memory_bus_width_aggregates_multiple_dimms(self):
+        sys = self._make_system(
+            hardware='Memory: 4 x 8 GB DDR5-4800MT/s 32-bit',
+        )
+        comps = get_system_components(sys)
+        self.assertEqual(comps['memory_speed'], 'DDR5-4800')
         self.assertEqual(comps['memory_bus_width'], '128-bit')
 
     def test_memory_speed_empty_when_missing(self):
