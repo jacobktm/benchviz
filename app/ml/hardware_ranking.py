@@ -17,7 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from app import db
 from app.models import Benchmark, BenchmarkResult, HardwareSpec, System
 from app.pts import proportion_is_lower_better
-from app.repositories import BenchmarkRepository
+from app.repositories import BenchmarkRepository, SystemRepository
 
 from app.ml.features import _collect_perf_for_system, _collect_sensors_for_system
 

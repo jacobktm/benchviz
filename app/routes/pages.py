@@ -469,6 +469,8 @@ def update_system(id):
 def delete_system(id):
     system = SystemRepository.get_by_id_or_404(id)
     system_name = system.identifier
+    if system.hardware_spec:
+        db.session.delete(system.hardware_spec)
     db.session.delete(system)
     delete_orphan_benchmarks()
     db.session.commit()

@@ -158,6 +158,8 @@ def _reconcile_primary_name_conflict(primary_name):
                     {"system_id": target.id},
                     synchronize_session=False,
                 )
+                if source.hardware_spec:
+                    db.session.delete(source.hardware_spec)
                 db.session.delete(source)
             delete_orphan_benchmarks()
 
