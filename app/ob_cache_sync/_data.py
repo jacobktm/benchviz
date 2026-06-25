@@ -25,6 +25,8 @@ from app.pts.hashing import (
 )
 
 _index_write_lock = threading.Lock()
+_index_cache: dict[str, Any] | None = None
+_index_cache_lock = threading.Lock()
 
 
 # ── Entry parsing from generated.json ──────────────────────────────
@@ -237,6 +239,7 @@ def save_ob_cache_index(index: dict[str, Any], index_path: Path | None = None) -
     path.parent.mkdir(parents=True, exist_ok=True)
     with _index_write_lock:
         path.write_text(json.dumps(index), encoding="utf-8")
+    _invalidate_index_cache()
 
 
 def build_ob_cache_index(cache_dir: Path | None = None, index_path: Path | None = None) -> dict[str, Any]:
@@ -277,15 +280,31 @@ def build_ob_cache_index(cache_dir: Path | None = None, index_path: Path | None 
     return payload
 
 
+def _invalidate_index_cache() -> None:
+    global _index_cache
+    with _index_cache_lock:
+        _index_cache = None
+
+
 def load_ob_cache_index(index_path: Path | None = None) -> dict[str, Any] | None:
+    global _index_cache
     path = Path(index_path or default_index_path())
+
+    with _index_cache_lock:
+        if _index_cache is not None:
+            return _index_cache
+
     if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    result = data if isinstance(data, dict) else None
+
+    with _index_cache_lock:
+        _index_cache = result
+    return result
 
 
 def ensure_fallback_buckets(index: dict[str, Any]) -> dict[str, list[str]]:

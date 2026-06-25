@@ -120,6 +120,9 @@ def api_compare():
 
     ob_index_cache = load_ob_cache_index()
 
+    systems_list = System.query.filter(System.id.in_(sys_id_ints)).all()
+    systems_by_id = {s.id: s for s in systems_list}
+
     pool_raw_args_map = defaultdict(set)
     if pool_equivalent_configs:
         for b_id, args_filter in config_list:
@@ -520,7 +523,7 @@ def api_compare():
             for sys_id in sys_id_ints:
                 if sys_id not in sys_args_map:
                     continue
-                system = db.session.get(System, sys_id)
+                system = systems_by_id.get(sys_id)
                 if not system:
                     continue
                 if not any(s['id'] == sys_id for s in system_details):
@@ -569,7 +572,7 @@ def api_compare():
                         res = min(candidates, key=score_key) if lower_better else max(candidates, key=score_key)
                         if first_sig:
                             sys_args_map[sys_id] = res.arguments
-                        system = db.session.get(System, sys_id)
+                        system = systems_by_id.get(sys_id)
                         if not system:
                             continue
                         system_label = format_system_profile_label(system)
@@ -605,7 +608,7 @@ def api_compare():
                         continue
                     primary_traces = []
                     for sys_id in sys_id_ints:
-                        system = db.session.get(System, sys_id)
+                        system = systems_by_id.get(sys_id)
                         if not system:
                             continue
                         matching = [r for r in results_for_bm if r.system_id == sys_id]
@@ -713,7 +716,7 @@ def api_compare():
                 s_traces = []
                 for sys_id in sys_args_map:
                     target_args = sys_args_map[sys_id]
-                    system = db.session.get(System, sys_id)
+                    system = systems_by_id.get(sys_id)
 
                     all_s_res = BenchmarkResult.query.filter(
                         BenchmarkResult.system_id == sys_id,
@@ -877,7 +880,7 @@ def api_compare():
                                 ) or (args_val if isinstance(args_val, str) else "")
                 system_names = []
                 for sid in sys_id_ints:
-                    sys_obj = db.session.get(System, sid)
+                    sys_obj = systems_by_id.get(sid)
                     if sys_obj:
                         system_names.append(sys_obj.identifier)
                 pts_scoring = build_pts_context_for_compare_group(
