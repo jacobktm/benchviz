@@ -14,6 +14,7 @@ from app.components import (
     hardware_rank_match_key,
     extract_software_component,
     get_system_components,
+    estimate_cpu_memory_channels,
 )
 
 
@@ -410,6 +411,229 @@ class GetSystemComponentsTest(unittest.TestCase):
         comps = get_system_components(sys)
         self.assertEqual(comps['memory_speed'], '')
         self.assertEqual(comps['memory_bus_width'], '')
+
+
+class EstimateCPUMemoryChannelsTest(unittest.TestCase):
+    """Verify CPU memory channel estimation from processor name strings."""
+
+    def test_empty_returns_2(self):
+        self.assertEqual(estimate_cpu_memory_channels(''), 2)
+
+    def test_none_returns_2(self):
+        self.assertEqual(estimate_cpu_memory_channels(None), 2)
+
+    # --- Consumer (2 channels) ---
+
+    def test_amd_ryzen_desktop(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen 9 9950X 16-Core @ 5.76GHz'), 2)
+
+    def test_amd_ryzen_7(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen 7 7800X3D 8-Core @ 5.0GHz'), 2)
+
+    def test_amd_ryzen_5_with_x_suffix(self):
+        """Consumer Ryzen with X suffix (7600X) should NOT be mistaken for HEDT."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen 5 7600X 6-Core @ 5.3GHz'), 2)
+
+    def test_intel_core_i9(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i9-14900K @ 5.8GHz'), 2)
+
+    def test_intel_core_i7(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i7-14700K @ 5.6GHz'), 2)
+
+    def test_intel_core_i5(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i5-13600K @ 5.1GHz'), 2)
+
+    def test_intel_core_ultra(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core Ultra 9 285K @ 5.7GHz'), 2)
+
+    def test_intel_core_ultra_7(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core Ultra 7 265K @ 5.3GHz'), 2)
+
+    # --- AMD Threadripper (4 channels) ---
+
+    def test_threadripper_non_pro(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper 7980X 64-Core @ 5.1GHz'), 4)
+
+    def test_threadripper_7970X(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper 7970X 32-Core @ 5.3GHz'), 4)
+
+    def test_threadripper_7960X(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper 7960X 24-Core @ 5.3GHz'), 4)
+
+    # --- AMD Threadripper PRO (8 channels) ---
+
+    def test_threadripper_pro_7995WX(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper PRO 7995WX 96-Core @ 5.1GHz'), 8)
+
+    def test_threadripper_pro_7985WX(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper PRO 7985WX 64-Core @ 5.1GHz'), 8)
+
+    def test_threadripper_pro_7975WX(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper PRO 7975WX 32-Core @ 5.3GHz'), 8)
+
+    def test_threadripper_pro_7965WX(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper PRO 7965WX 24-Core @ 5.3GHz'), 8)
+
+    def test_threadripper_pro_7955WX(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper PRO 7955WX 16-Core @ 5.3GHz'), 8)
+
+    def test_threadripper_pro_7945WX(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper PRO 7945WX 12-Core @ 5.3GHz'), 8)
+
+    # "PRO" is part of the name string; ensure order doesn't matter
+    def test_threadripper_pro_lowercase(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD Ryzen Threadripper pro 7995WX'), 8)
+
+    # --- AMD EPYC (8 channels) ---
+
+    def test_epyc_9654(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD EPYC 9654 96-Core @ 3.7GHz'), 8)
+
+    def test_epyc_9374F(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD EPYC 9374F 32-Core @ 3.9GHz'), 8)
+
+    def test_epyc_7742(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('AMD EPYC 7742 64-Core @ 2.25GHz'), 8)
+
+    # --- Intel Xeon (4 channels) ---
+
+    def test_xeon_gold(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon Gold 6418H @ 2.1GHz'), 4)
+
+    def test_xeon_silver(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon Silver 4410Y @ 2.0GHz'), 4)
+
+    def test_xeon_scalable(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon Platinum 8480+ @ 2.0GHz'), 4)
+
+    # --- Intel Xeon W (4 channels for W-2400, 8 for W-3400) ---
+
+    def test_xeon_w9_3495X(self):
+        """W-3400 series (model 3xxx) → 8 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W9-3495X @ 2.5GHz'), 8)
+
+    def test_xeon_w7_3465X(self):
+        """W-3400 series → 8 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W7-3465X @ 2.5GHz'), 8)
+
+    def test_xeon_w5_3435X(self):
+        """W-3400 series → 8 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W5-3435X @ 2.5GHz'), 8)
+
+    def test_xeon_w3_3425(self):
+        """W-3400 series → 8 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W3-3425 @ 2.5GHz'), 8)
+
+    def test_xeon_w5_2455X(self):
+        """W-2400 series (model 2xxx) → 4 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W5-2455X @ 2.5GHz'), 4)
+
+    def test_xeon_w3_2425(self):
+        """W-2400 series → 4 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W3-2425 @ 2.5GHz'), 4)
+
+    def test_xeon_w_2255(self):
+        """Older Xeon W (single-socket, no hyphen) → 4 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W-2255 @ 3.7GHz'), 4)
+
+    def test_xeon_w_1290P(self):
+        """Xeon W (LGA1200, no model-series prefix) → 4 channels."""
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Xeon W-1290P @ 3.7GHz'), 4)
+
+    # --- Intel Core X-series HEDT (4 channels) ---
+
+    def test_core_i9_10980XE(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i9-10980XE Extreme Edition @ 4.6GHz'), 4)
+
+    def test_core_i9_10900X(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i9-10900X @ 4.7GHz'), 4)
+
+    def test_core_i9_10940X(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i9-10940X @ 4.8GHz'), 4)
+
+    def test_core_i7_7820X(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i7-7820X @ 4.3GHz'), 4)
+
+    def test_core_i7_9800X(self):
+        self.assertEqual(
+            estimate_cpu_memory_channels('Intel Core i7-9800X @ 4.4GHz'), 4)
+
+    # --- Integration test: get_system_components includes cpu_memory_channels ---
+
+    def test_in_get_system_components_consumer(self):
+        sys = MagicMock()
+        sys.hardware = 'Processor: AMD Ryzen 9 9950X, Memory: 32 GB DDR5-6000'
+        sys.software = ''
+        sys.primary_system_name = None
+        sys.identifier = 'test'
+        sys.chassis_version = None
+        sys.cooler_model = None
+        sys.psu_wattage = None
+        sys.psu_model = None
+        sys.custom_hardware = None
+        sys.external_off = False
+        sys.gpu_fans = False
+        sys.memory_fans = False
+        sys.nvme_fans = False
+        sys.nvme_configs = []
+        comps = get_system_components(sys)
+        self.assertEqual(comps['cpu_memory_channels'], '2')
+        self.assertEqual(comps['processor'], 'AMD Ryzen 9 9950X')
+
+    def test_in_get_system_components_threadripper_pro(self):
+        sys = MagicMock()
+        sys.hardware = 'Processor: AMD Ryzen Threadripper PRO 7995WX 96-Core @ 5.1GHz'
+        sys.software = ''
+        sys.primary_system_name = None
+        sys.identifier = 'test'
+        sys.chassis_version = None
+        sys.cooler_model = None
+        sys.psu_wattage = None
+        sys.psu_model = None
+        sys.custom_hardware = None
+        sys.external_off = False
+        sys.gpu_fans = False
+        sys.memory_fans = False
+        sys.nvme_fans = False
+        sys.nvme_configs = []
+        comps = get_system_components(sys)
+        self.assertEqual(comps['cpu_memory_channels'], '8')
 
 
 if __name__ == "__main__":

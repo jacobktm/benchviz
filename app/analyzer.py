@@ -23,6 +23,7 @@ INSIGHT_COMPONENT_KEYS = [
     "memory",
     "memory_speed",
     "memory_bus_width",
+    "cpu_memory_channels",
     "motherboard",
     "chipset",
     "os",

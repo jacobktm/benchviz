@@ -72,6 +72,60 @@ def hardware_rank_match_key(feature_key: str, display_value: str) -> str:
     return clean_text(display_value)
 
 
+def estimate_cpu_memory_channels(processor_str: str) -> int:
+    """Estimate CPU memory channel support from the processor name string.
+
+    Returns 2, 4, or 8 based on the CPU class:
+
+    ====================== ======= ==================================
+    Pattern                Channels Example
+    ====================== ======= ==================================
+    Threadripper PRO              8  AMD Ryzen Threadripper PRO 7995WX
+    Threadripper (non-PRO)        4  AMD Ryzen Threadripper 7980X
+    EPYC                          8  AMD EPYC 9654 96-Core
+    Xeon W9-x/3xxx               8  Intel Xeon W9-3495X
+    Xeon W (other)                4  Intel Xeon W5-2455X
+    Xeon (non-W)                  4  Intel Xeon Gold 6418H
+    Core X-series (X suffix)      4  Intel Core i9-10980XE
+    Consumer / mobile             2  AMD Ryzen 9 9950X, Intel Core Ultra 9 285K
+    Empty / unknown               2
+    ====================== ======= ==================================
+    """
+    s = clean_text(processor_str)
+    if not s:
+        return 2
+
+    lower = s.lower()
+
+    # Must check before bare "threadripper"
+    if "threadripper pro" in lower:
+        return 8
+
+    if "threadripper" in lower:
+        return 4
+
+    if "epyc" in lower:
+        return 8
+
+    # Intel Xeon W-3400 (8-channel): "W9-3495X", "W7-3465X", "W5-3435X", "W3-3425"
+    if re.search(r'xeon\s+w\d[-\s]?3', lower):
+        return 8
+
+    # Intel Xeon W-2400 (4-channel): "W5-2455X", "W3-2425"
+    if re.search(r'xeon\s+w', lower):
+        return 4
+
+    # Intel Xeon (non-W, e.g. Gold / Silver / Bronze) → 4 (conservative)
+    if "xeon" in lower:
+        return 4
+
+    # Intel Core X-series HEDT: i7-7820X, i9-10980XE, i9-10900X, etc.
+    if re.search(r'i[579][-\s]?\d{4,5}x', lower):
+        return 4
+
+    return 2
+
+
 def extract_memory_speed(memory_str: str) -> str:
     """Extract memory generation + speed from a PTS memory string.
 
@@ -141,7 +195,10 @@ def get_system_components(system) -> dict[str, str]:
 
     # Parsed from hardware string (Phoronix labels vary a bit between sources)
     processor = extract_hw_any(["Processor", "CPU", "CPU Model"])
-    processor = normalize_processor_name(processor) if processor else ""
+    processor_normalized = normalize_processor_name(processor) if processor else ""
+    # Use the full (un-normalized) processor string for channel estimation so
+    # patterns like "Threadripper PRO" and "Xeon W9-3495X" are visible.
+    cpu_memory_channels = str(estimate_cpu_memory_channels(processor))
     graphics = extract_hw_any(["Graphics", "GPU", "Graphics Processor"])
     graphics = normalize_graphics_name(graphics) if graphics else ""
     memory = extract_hw_any(["Memory", "RAM", "System Memory"])
@@ -202,7 +259,8 @@ def get_system_components(system) -> dict[str, str]:
         "system_name": get_primary_group_name(system),
         "identifier": clean_text(system.identifier) or "",
         "native_resolution": native_resolution or "",
-        "processor": processor or "",
+        "processor": processor_normalized or "",
+        "cpu_memory_channels": cpu_memory_channels,
         "graphics": graphics or "",
         "memory": memory or "",
         "memory_speed": memory_speed,
