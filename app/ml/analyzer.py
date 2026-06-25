@@ -134,6 +134,12 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
     for bm in primary_bms:
         groups[(bm.title, bm.app_version or "")].append(bm)
 
+    print(f"  DEBUG: found {len(groups)} group(s), incremental={incremental}")
+    for (t, v), bl in groups.items():
+        print(f"  DEBUG:   group title={t!r} app_ver={v!r} n_benchmarks={len(bl)}")
+        rebuild = benchmark_group_needs_rebuild(t, v, bl, incremental=incremental)
+        print(f"  DEBUG:   needs_rebuild={rebuild}")
+
     pending_groups = [
         ((title, app_version), bm_list)
         for (title, app_version), bm_list in groups.items()
