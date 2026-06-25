@@ -125,12 +125,28 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
     """
     mode = "incremental" if incremental else "full"
     print(f"Starting ML benchmark analysis ({mode})...")
-    # Start with a fresh session so the legacy analyzer's expire_all() doesn't interfere
-    db.session.remove()
+    from sqlalchemy import text
+    # Bypass session identity-map issues: count directly via raw SQL
+    raw_count = db.session.execute(
+        text("SELECT COUNT(*) FROM benchmarks WHERE display_format = 'BAR_GRAPH' AND is_primary = 1")
+    ).scalar()
+    print(f"  Raw SQL BAR_GRAPH primary count: {raw_count}")
+    # Also check using ORM with an explicit fresh session
+    fresh_session = db.session.session_factory()
+    try:
+        orm_bms = fresh_session.query(Benchmark).filter(
+            Benchmark.display_format == "BAR_GRAPH",
+            Benchmark.is_primary.is_(True),
+        ).all()
+        print(f"  Fresh-session ORM count: {len(orm_bms)}")
+    finally:
+        fresh_session.close()
+    # Now try the normal approach
     primary_bms = Benchmark.query.filter(
         Benchmark.display_format == "BAR_GRAPH",
         Benchmark.is_primary.is_(True),
     ).all()
+    print(f"  Current-session ORM count: {len(primary_bms)}")
 
     groups: dict[tuple[str, str], list[Benchmark]] = defaultdict(list)
     for bm in primary_bms:
@@ -141,6 +157,7 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
         for (title, app_version), bm_list in groups.items()
         if benchmark_group_needs_rebuild(title, app_version, bm_list, incremental=incremental)
     ]
+    print(f"  Groups found: {len(groups)}, pending: {len(pending_groups)}")
     if not pending_groups:
         print("No ML profile groups need rebuild.")
         return 0
