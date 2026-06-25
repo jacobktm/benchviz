@@ -209,7 +209,7 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
 
         updated += len(existing)
         db.session.commit()
-        db.session.remove()
+        db.session.expire_all()
 
     print(f"ML benchmark analysis complete ({updated} record(s) updated).")
     return updated
