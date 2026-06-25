@@ -16,6 +16,7 @@ from app.components import get_system_components
 from app.models import Benchmark, BenchmarkResult, System
 from app.pts import proportion_is_lower_better
 from app.repositories import BenchmarkRepository
+from app.workload_profile import SCOPE_HARDWARE_KEYS, build_workload_profile
 
 MIN_SYSTEMS_PER_GROUP = 2
 
@@ -38,7 +39,11 @@ def _cohens_d(scores_a: list[float], scores_b: list[float]) -> float:
 
 
 def list_eligible_features() -> list[dict[str, Any]]:
-    """Return hardware feature keys that have at least two distinct values (each with MIN_SYSTEMS_PER_GROUP systems)."""
+    """Return hardware feature keys that have at least two distinct values.
+
+    Values with only one system are shown so users can see all available
+    options; the comparison endpoint enforces a two-system minimum independently.
+    """
     systems = System.query.all()
     comps_by_sid: dict[int, dict[str, str]] = {}
     for s in systems:
@@ -54,7 +59,6 @@ def list_eligible_features() -> list[dict[str, Any]]:
         eligible_values = [
             {'value': v, 'n_systems': len(sids)}
             for v, sids in val_to_sids.items()
-            if len(sids) >= MIN_SYSTEMS_PER_GROUP
         ]
         if len(eligible_values) >= 2:
             features.append({
@@ -68,6 +72,24 @@ def list_eligible_features() -> list[dict[str, Any]]:
         f['label'] = label_map.get(f['feature_key'], f['feature_key'])
 
     return features
+
+
+def _feature_to_scopes(feature_key: str) -> set[str]:
+    """Return the workload scopes a feature belongs to (excluding ``"general"``)."""
+    scopes: set[str] = set()
+    for scope, keys in SCOPE_HARDWARE_KEYS.items():
+        if scope != "general" and feature_key in keys:
+            scopes.add(scope)
+    return scopes
+
+
+def _benchmark_relevant_to_scopes(title: str, app_version: str, scopes: set[str]) -> bool:
+    """Check whether a benchmark's workload profile overlaps with any of the given scopes."""
+    if not scopes:
+        return True
+    profile = build_workload_profile(title, app_version)
+    active = set(profile.get("active_bottlenecks") or [])
+    return bool(active & scopes)
 
 
 def find_discriminating_benchmarks(
@@ -148,6 +170,17 @@ def find_discriminating_benchmarks(
     common_keys = sorted(set(a_benchmarks.keys()) & set(b_benchmarks.keys()))
     if not common_keys:
         return {'available': False, 'reason': 'no common benchmarks between the two groups'}
+
+    # Filter to benchmarks whose workload is relevant to the feature being compared
+    relevant_scopes = _feature_to_scopes(feature_key)
+    if relevant_scopes:
+        filtered: list[tuple[str, str]] = []
+        for title, app_ver in common_keys:
+            if _benchmark_relevant_to_scopes(title, app_ver, relevant_scopes):
+                filtered.append((title, app_ver))
+        common_keys = filtered
+        if not common_keys:
+            return {'available': False, 'reason': f'no common benchmarks relevant to {" / ".join(sorted(relevant_scopes))}'}
 
     results: list[dict[str, Any]] = []
     for key in common_keys:
