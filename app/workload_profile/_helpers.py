@@ -33,7 +33,9 @@ def counter_signal_key(benchmark: Benchmark, arguments: str = "") -> str | None:
         if needle in blob:
             return key
     if "perf " in blob or "perf-" in blob:
-        m = re.search(r"perf[\s\-/]+([a-z0-9][a-z0-9\-/]*)", blob)
+        m = re.search(r"perf[\s\-/]+stat[\s\-/]+e[\s\-/]+([a-z0-9][a-z0-9\-/]*)", blob)
+        if not m:
+            m = re.search(r"perf[\s\-/]+([a-z0-9][a-z0-9\-/]*)", blob)
         if m:
             return m.group(1).replace("/", "_").replace("-", "_")
     return None

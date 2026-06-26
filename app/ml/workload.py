@@ -320,6 +320,18 @@ def compute_workload_fingerprint(
         scores["gpu"] += 1.2
         evidence.append("energy-gpu elevated vs cores")
 
+    gpu_busy = perf.get("gpu_busy")
+    cycles = perf.get("cycles")
+    if gpu_busy and gpu_busy > 0:
+        if cycles and cycles > 0:
+            gpu_busy_ratio = gpu_busy / cycles
+            if gpu_busy_ratio >= 0.01:
+                scores["gpu"] += 1.5
+                evidence.append(f"GPU busy/cycle≈{gpu_busy_ratio:.4f}")
+        else:
+            scores["gpu"] += 1.0
+            evidence.append("GPU active (perf counter)")
+
     cpu_temp = sensor_pool.get("cpu_temp_peak")
     temp_slope = sensor_pool.get("cpu_temp_slope")
     freq_droop = sensor_pool.get("cpu_freq_droop")

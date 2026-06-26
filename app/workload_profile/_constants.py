@@ -64,6 +64,14 @@ _COUNTER_ALIASES: list[tuple[str, str]] = [
     ("energy-pkg", "energy_pkg"),
     ("energy-cores", "energy_cores"),
     ("energy-gpu", "energy_gpu"),
+    ("i915/gpu_busy/", "gpu_busy"),
+    ("i915/rcs0-busy/", "gpu_busy"),
+    ("i915/bcs0-busy/", "gpu_busy"),
+    ("drm_xe/drm-cycles-rcs/", "gpu_busy"),
+    ("drm_xe/drm-cycles-bcs/", "gpu_busy"),
+    ("drm_xe/drm-cycles-ccs/", "gpu_busy"),
+    ("drm_amdgpu/drm-engine-gfx/", "gpu_busy"),
+    ("drm_amdgpu/drm-engine-compute/", "gpu_busy"),
 ]
 
 _BOTTLENECK_HARDWARE_SCOPE: dict[str, str] = {

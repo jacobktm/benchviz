@@ -96,6 +96,16 @@ def classify_workload(
     if perf.get("energy_gpu", 0) > perf.get("energy_cores", 0) * 0.3:
         scores["gpu"] += 1.0
 
+    gpu_busy = perf.get("gpu_busy")
+    cycles = perf.get("cycles")
+    if gpu_busy and gpu_busy > 0:
+        if cycles and cycles > 0 and gpu_busy / cycles >= 0.01:
+            scores["gpu"] += 2.0
+            evidence.append(f"GPU busy/cycle≈{gpu_busy / cycles:.4f}")
+        elif not cycles:
+            scores["gpu"] += 1.5
+            evidence.append("GPU active (perf counter)")
+
     blob = (title_blob or "").lower()
     if any(k in blob for k in ("nvme", "fio", "disk", "storage", "ssd", "i/o")):
         scores["storage"] += 2.0
