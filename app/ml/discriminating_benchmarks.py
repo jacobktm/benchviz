@@ -16,7 +16,8 @@ from app.components import get_system_components
 from app.models import Benchmark, BenchmarkResult, System
 from app.pts import proportion_is_lower_better
 from app.repositories import BenchmarkRepository
-from app.workload_profile import SCOPE_HARDWARE_KEYS, build_workload_profile
+from app.workload_profile import SCOPE_HARDWARE_KEYS
+from app.workload_profile._classification import classify_workload
 
 MIN_SYSTEMS_PER_GROUP = 2
 
@@ -83,11 +84,17 @@ def _feature_to_scopes(feature_key: str) -> set[str]:
     return scopes
 
 
-def _benchmark_relevant_to_scopes(title: str, app_version: str, scopes: set[str]) -> bool:
-    """Check whether a benchmark's workload profile overlaps with any of the given scopes."""
+def _benchmark_relevant_to_scopes(title: str, _app_version: str, scopes: set[str]) -> bool:
+    """Check whether a benchmark's workload profile overlaps with any of the given scopes.
+
+    Uses a lightweight title-heuristic classification that does **not** query
+    the database for perf counters or sensors, so it is safe to call on every
+    common benchmark during a discriminating-benchmark comparison.
+    """
     if not scopes:
         return True
-    profile = build_workload_profile(title, app_version)
+    blob = f"{title} {_app_version}".lower()
+    profile = classify_workload({"perf": {}, "sensor_categories": {}}, blob)
     active = set(profile.get("active_bottlenecks") or [])
     return bool(active & scopes)
 
