@@ -85,6 +85,13 @@ def api_compare():
     system_ids = request.args.getlist('system_ids')
     config_params = request.args.getlist('config')
     benchmark_ids = request.args.getlist('benchmark_id')
+    debug = str(request.args.get('debug') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+    _dbg: list[dict] = [] if debug else None
+
+    def _dbg_append(**kw: object) -> None:
+        if _dbg is not None:
+            _dbg.append(kw)
 
     if not system_ids:
         return {"error": "Missing system_ids parameter(s)"}, 400
@@ -149,6 +156,7 @@ def api_compare():
     systems_list = System.query.filter(System.id.in_(sys_id_ints)).all()
     _t("systems_loaded")
     systems_by_id = {s.id: s for s in systems_list}
+    _dbg_append(step="systems", systems=[{"id": s.id, "identifier": s.identifier} for s in systems_list])
 
     pool_raw_args_map = defaultdict(set)
     if pool_equivalent_configs:
@@ -351,7 +359,7 @@ def api_compare():
             if not args_list:
                 continue
 
-            if pool_resolution_classes and not pool_equivalent_configs:
+            if not pool_equivalent_configs:
                 from app.option_equivalence import resolution_pool_key
                 seen_classes: dict[str, list[str]] = {}
                 for a in args_list:
@@ -360,21 +368,20 @@ def api_compare():
                     pk = resolution_pool_key(a)
                     if pk:
                         seen_classes.setdefault(pk, []).append(a)
-                if seen_classes:
-                    resolution_raw_map = {}
-                    pooled_args_list = []
-                    for a in args_list:
-                        if not a or not isinstance(a, str):
-                            pooled_args_list.append(a)
-                            continue
-                        pk = resolution_pool_key(a)
-                        if pk and len(seen_classes[pk]) > 1:
-                            if pk not in resolution_raw_map:
-                                resolution_raw_map[pk] = seen_classes[pk]
-                                pooled_args_list.append(pk)
-                        else:
-                            pooled_args_list.append(a)
-                    args_list = pooled_args_list
+                resolution_raw_map = {}
+                pooled_args_list = []
+                for a in args_list:
+                    if not a or not isinstance(a, str):
+                        pooled_args_list.append(a)
+                        continue
+                    pk = resolution_pool_key(a)
+                    if pk and len(seen_classes.get(pk, [])) > 1:
+                        if pk not in resolution_raw_map:
+                            resolution_raw_map[pk] = seen_classes[pk]
+                            pooled_args_list.append(pk)
+                    else:
+                        pooled_args_list.append(a)
+                args_list = pooled_args_list
 
             if pool_equivalent_configs:
                 suite_key = (primary_benchmark.title, primary_benchmark.app_version)
@@ -483,6 +490,15 @@ def api_compare():
                 a.strip() for a in args_list
                 if isinstance(a, str) and a.strip()
             ]
+        _dbg_append(
+            step="args_list",
+            benchmark_title=primary_benchmark.title,
+            benchmark_version=primary_benchmark.app_version,
+            pooling_active=pooling_active,
+            args_list=list(args_list),
+            resolution_raw_map=(dict(resolution_raw_map) if resolution_raw_map else None),
+            nonempty_primary_args=nonempty_primary_args,
+        )
         _t("before_args_loop")
 
         _sensor_parsed_cache: dict[tuple, dict] = {}
@@ -531,7 +547,7 @@ def api_compare():
                 )
             else:
                 resolution_raw_args: list[str] | None = None
-                if pool_resolution_classes and not pooling_active:
+                if not pooling_active:
                     from app.option_equivalence import resolution_pool_key
                     # Check if args_val is itself a resolution class key from "All configurations"
                     raw_map_entry = (resolution_raw_map or {}).get(args_val)
@@ -568,6 +584,16 @@ def api_compare():
                 sys_args_map[r.system_id] = r.arguments
                 if r.arguments:
                     primary_args_set.add(r.arguments.strip())
+
+            _dbg_append(
+                step="iter_query",
+                args_val=args_val,
+                resolution_class_name=resolution_class_name,
+                resolution_raw_args=resolution_raw_args if resolution_raw_args else None,
+                systems_with_results=sorted(sys_args_map.keys()) if sys_args_map else [],
+                systems_without_results=sorted(set(sys_id_ints) - set(sys_args_map.keys())),
+                result_count=len(all_prim_results),
+            )
             if resolution_class_name:
                 primary_args_set = {resolution_class_name}
 
@@ -641,7 +667,7 @@ def api_compare():
                             "y": [res.value],
                         }
                         primary_traces.append(trace)
-                    if primary_traces and len(sys_ids_with_results) >= len(sys_id_ints):
+                    if primary_traces:
                         metric_label = (desc_sig or "").strip() or (scale_sig or "Primary Result")
                         charts.append({
                             "metric": metric_label,
@@ -653,6 +679,20 @@ def api_compare():
                             "traces": primary_traces,
                             "is_primary": True
                         })
+                        _dbg_append(
+                            step="chart_included",
+                            path="pooling",
+                            metric=metric_label,
+                            system_count=len(primary_traces),
+                            systems=sorted(sys_ids_with_results),
+                        )
+                    else:
+                        _dbg_append(
+                            step="chart_excluded",
+                            path="pooling",
+                            reason="no primary_traces",
+                            sys_ids_with_results=sorted(sys_ids_with_results),
+                        )
                     first_sig = False
             else:
                 for bm in sorted(primary_benchmarks, key=lambda x: x.id):
@@ -695,7 +735,15 @@ def api_compare():
                                 trace["y"] = y_data
                                 trace["mode"] = "lines"
                             primary_traces.append(trace)
-                    if primary_traces and len(sys_ids_with_results) >= len(sys_id_ints):
+                    if primary_traces:
+                        _dbg_append(
+                            step="chart_included",
+                            path="non-pooling",
+                            benchmark_identifier=bm.identifier,
+                            bm_id=bm.id,
+                            system_count=len(primary_traces),
+                            systems_with_results=sorted(sys_ids_with_results),
+                        )
                         metric_label = (bm.description or "").strip() or (bm.scale or "Primary Result")
                         charts.append({
                             "metric": metric_label,
@@ -707,6 +755,15 @@ def api_compare():
                             "traces": primary_traces,
                             "is_primary": True
                         })
+                    else:
+                        _dbg_append(
+                            step="chart_excluded",
+                            path="non-pooling",
+                            benchmark_identifier=bm.identifier,
+                            bm_id=bm.id,
+                            reason="no primary_traces",
+                            sys_ids_with_results=sorted(sys_ids_with_results),
+                        )
             _t(f"iter_{_args_iter}_charts_built")
 
             from app.workload_profile import (
@@ -1051,6 +1108,8 @@ def api_compare():
         },
         "_timings": _timings_dict,
     }
+    if _dbg is not None:
+        resp["_debug_trace"] = _dbg
     return resp
 
 
