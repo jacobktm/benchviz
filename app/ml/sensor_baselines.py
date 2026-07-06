@@ -20,6 +20,7 @@ from typing import Any, Iterator
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
+from app import db
 from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, System
 from app.sensor_quality import (
