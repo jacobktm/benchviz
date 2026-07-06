@@ -485,6 +485,25 @@ def api_compare():
             ]
         _t("before_args_loop")
 
+        _sensor_parsed_cache: dict[tuple, dict] = {}
+        _all_sensors = Benchmark.query.filter(
+            Benchmark.title == primary_benchmark.title,
+            Benchmark.app_version == primary_benchmark.app_version,
+            Benchmark.display_format == 'LINE_GRAPH',
+        ).all()
+        _sensor_keywords = (
+            'temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts',
+            'fan', 'rpm', 'voltage', 'energy', 'utilization',
+        )
+        _all_sensors = [s for s in _all_sensors if s.description and any(k in s.description.lower() for k in _sensor_keywords)]
+        _all_sensor_ids = [s.id for s in _all_sensors]
+        _all_sensor_results = BenchmarkResult.query.filter(
+            BenchmarkResult.benchmark_id.in_(_all_sensor_ids),
+            BenchmarkResult.system_id.in_(sys_id_ints),
+        ).all()
+        _all_by_sensor_sys: dict[tuple[int, int], list[BenchmarkResult]] = defaultdict(list)
+        for r in _all_sensor_results:
+            _all_by_sensor_sys[(r.benchmark_id, r.system_id)].append(r)
         _args_iter = 0
         for args_val in args_list:
             _t(f"iter_{_args_iter}_start")
@@ -689,17 +708,6 @@ def api_compare():
                         })
             _t(f"iter_{_args_iter}_charts_built")
 
-            sensors = Benchmark.query.filter(
-                Benchmark.title == primary_benchmark.title,
-                Benchmark.app_version == primary_benchmark.app_version,
-                Benchmark.display_format == 'LINE_GRAPH',
-            ).all()
-            sensor_keywords = (
-                'temperature', 'frequency', 'usage', 'power', 'celsius', 'mhz', 'watts',
-                'fan', 'rpm', 'voltage', 'energy', 'utilization',
-            )
-            sensors = [s for s in sensors if s.description and any(k in s.description.lower() for k in sensor_keywords)]
-
             from app.workload_profile import (
                 build_workload_profile,
                 option_profile_key,
@@ -743,23 +751,23 @@ def api_compare():
             filter_noisy = (request.args.get('filter_noisy_sensors') or '1').lower() not in {'0', 'false', 'no'}
             if filter_sensors and workload_profiles_by_option:
                 sensors = [
-                    s for s in sensors
+                    s for s in _all_sensors
                     if any(
                         sensor_is_relevant(s.description, s.scale, wp, strict=True)
                         for wp in workload_profiles_by_option.values()
                     )
                 ]
+            else:
+                sensors = list(_all_sensors)
 
             sensor_ids = [s.id for s in sensors]
             _t(f"iter_{_args_iter}_sensor_query_start")
-            all_sensor_results = BenchmarkResult.query.filter(
-                BenchmarkResult.benchmark_id.in_(sensor_ids),
-                BenchmarkResult.system_id.in_(list(sys_args_map.keys())),
-            ).all()
+            by_sensor_sys: dict[tuple[int, int], list[BenchmarkResult]] = {}
+            for key, results in _all_by_sensor_sys.items():
+                bm_id, sys_id = key
+                if bm_id in sensor_ids and sys_id in sys_args_map:
+                    by_sensor_sys[key] = results
             _t(f"iter_{_args_iter}_sensor_query_done")
-            by_sensor_sys: dict[tuple[int, int], list[BenchmarkResult]] = defaultdict(list)
-            for r in all_sensor_results:
-                by_sensor_sys[(r.benchmark_id, r.system_id)].append(r)
 
             for s_bm in sensors:
                 s_traces = []
@@ -818,33 +826,42 @@ def api_compare():
                             trace["x"] = [short_name]
                             trace["y"] = [s_res.value]
                         elif s_bm.display_format == "LINE_GRAPH":
-                            from app.sensor_quality import numeric_series
-                            y_data = numeric_series(s_res.data_json)
+                            _ckey = (s_bm.id, sys_id, s_res.import_batch_id)
+                            _cached = _sensor_parsed_cache.get(_ckey)
+                            if _cached is not None:
+                                y_data, stats_dict, quality = _cached
+                            else:
+                                from app.sensor_quality import numeric_series
+                                y_data = numeric_series(s_res.data_json)
+                                stats_dict = {}
+                                quality = None
+                                if y_data:
+                                    clean_y = [val for val in y_data if isinstance(val, (int, float))]
+                                    if clean_y:
+                                        import statistics
+                                        stats_dict = {
+                                            "min": min(clean_y),
+                                            "max": max(clean_y),
+                                            "mean": statistics.mean(clean_y),
+                                            "median": statistics.median(clean_y)
+                                        }
+                                        try:
+                                            qs = statistics.quantiles(clean_y, n=4, method="inclusive")
+                                            if len(qs) >= 3:
+                                                stats_dict["q1"] = qs[0]
+                                                stats_dict["q3"] = qs[2]
+                                        except (statistics.StatisticsError, ValueError):
+                                            pass
+                                        quality = series_quality(clean_y, s_bm.description, s_bm.scale)
+                                _sensor_parsed_cache[_ckey] = (y_data, stats_dict, quality)
                             trace["x"] = list(range(len(y_data)))
                             trace["y"] = y_data
                             trace["mode"] = "lines"
-
-                            if y_data:
-                                clean_y = [val for val in y_data if isinstance(val, (int, float))]
-                                if clean_y:
-                                    import statistics
-                                    stats_dict = {
-                                        "min": min(clean_y),
-                                        "max": max(clean_y),
-                                        "mean": statistics.mean(clean_y),
-                                        "median": statistics.median(clean_y)
-                                    }
-                                    try:
-                                        qs = statistics.quantiles(clean_y, n=4, method="inclusive")
-                                        if len(qs) >= 3:
-                                            stats_dict["q1"] = qs[0]
-                                            stats_dict["q3"] = qs[2]
-                                    except (statistics.StatisticsError, ValueError):
-                                        pass
-                                    q = series_quality(clean_y, s_bm.description, s_bm.scale)
-                                    stats_dict["quality"] = q
-                                    trace["quality"] = q
-                                    trace["stats"] = stats_dict
+                            if quality is not None:
+                                stats_dict["quality"] = quality
+                                trace["quality"] = quality
+                            if stats_dict:
+                                trace["stats"] = stats_dict
 
                         s_traces.append(trace)
 

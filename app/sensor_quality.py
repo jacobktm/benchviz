@@ -222,8 +222,10 @@ def chart_has_usable_signal(
 
     qualities = []
     for tr in traces:
-        y = tr.get("y") or tr.get("data_json") or []
-        q = series_quality(y, description, scale)
+        q = tr.get("quality") or tr.get("_quality")
+        if q is None:
+            y = tr.get("y") or tr.get("data_json") or []
+            q = series_quality(y, description, scale)
         qualities.append(q)
         tr["_quality"] = q
 
