@@ -930,6 +930,7 @@ def api_compare():
                     sys_obj = systems_by_id.get(sid)
                     if sys_obj:
                         system_names.append(sys_obj.identifier)
+                _pts_timings: list[tuple[str, float]] = []
                 pts_scoring = build_pts_context_for_compare_group(
                     title=primary_benchmark.title,
                     app_version=primary_benchmark.app_version or "",
@@ -938,7 +939,11 @@ def api_compare():
                     system_ids=system_names,
                     config_args=args_val if args_val is not None else "",
                     ob_index=ob_index_cache,
+                    _timings_out=_pts_timings,
                 )
+                # merge pts timings into main timeline for the profile
+                for label, ts in _pts_timings:
+                    _timings.append((f"iter_{_args_iter}_pts_{label}", ts))
                 _t(f"iter_{_args_iter}_pts_context_built")
                 sub_by_desc = {
                     (st.get("description") or "").strip(): st

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from ..ob_cache_sync import (
@@ -38,7 +39,11 @@ def build_pts_context_for_compare_group(
     system_ids: list[str],
     config_args: str = "",
     ob_index: dict[str, Any] | None = None,
+    _timings_out: list[tuple[str, float]] | None = None,
 ) -> dict[str, Any]:
+    _pt = lambda label: _timings_out.append((label, time.perf_counter())) if _timings_out is not None else None
+    _pt("pts_start")
+
     ob_index = ob_index if ob_index is not None else load_ob_cache_index()
     per_subtest: list[dict[str, Any]] = []
     subtest_value_maps: list[dict[str, float | None]] = []
@@ -73,6 +78,7 @@ def build_pts_context_for_compare_group(
             scale=scale,
             arguments=config_args,
         )
+        _pt("hash_done")
         cached = _ob_cache.get(comp_hash)
         if cached is not None:
             ob_entry, ob_source = cached
@@ -89,12 +95,14 @@ def build_pts_context_for_compare_group(
                 allow_live=compare_ob_live_fetch_enabled(),
             )
             _ob_cache[comp_hash] = (ob_entry, ob_source)
+        _pt("ob_lookup_done")
         ob_median = ob_median_from_entry(ob_entry)
         ob_p1 = ob_p1_from_entry(ob_entry)
         relative = normalize_relative_values(values, hib=hib)
         ob_relative = relative_vs_ob_median(values, hib=hib, ob_median=ob_median)
         ob_p1_relative = relative_vs_ob_baseline(values, hib=hib, baseline=ob_p1)
         percentiles = ob_percentiles_for_systems(values, ob_entry)
+        _pt("ob_stats_done")
 
         per_subtest.append({
             "comparison_hash": comp_hash,
@@ -122,12 +130,14 @@ def build_pts_context_for_compare_group(
         })
         subtest_value_maps.append(values)
 
+    _pt("geo_composite_start")
     geo_raw = pts_geometric_mean_composite(subtest_value_maps, system_ids, hib_flags)
 
     geo_for_norm = {sid: geo_raw.get(sid) for sid in system_ids}
     geo_relative = normalize_relative_values(geo_for_norm, hib=True)
 
     geo_ob_relative = pts_geometric_mean_ob_composite(per_subtest, system_ids)
+    _pt("geo_composite_done")
 
     ref_id = system_ids[0] if system_ids else ""
     best_geo = None
@@ -153,7 +163,9 @@ def build_pts_context_for_compare_group(
         for sid, vs in per_system_rel.items()
     }
 
+    _pt("harmonic_start")
     harmonic_by_scale = pts_harmonic_mean_by_scale(per_subtest, system_ids)
+    _pt("pts_done")
 
     return {
         "test_identifier": strip_test_profile_identifier(identifier) or title,
