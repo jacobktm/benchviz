@@ -1258,3 +1258,18 @@ def api_profile_last_comparison():
         return data, 200
     except Exception as e:
         return {"error": str(e)}, 500
+
+
+_ML_PROFILE_PATH = "/tmp/benchviz_last_ml_profile.json"
+
+@bp.route('/api/profile/last-ml')
+def api_profile_last_ml():
+    """Return profiling data from the last ML rebuild (rebuild-all-insights)."""
+    if not os.path.exists(_ML_PROFILE_PATH):
+        return {"error": "No ML profile data available"}, 404
+    try:
+        with open(_ML_PROFILE_PATH) as f:
+            data = json.load(f)
+        return data, 200
+    except Exception as e:
+        return {"error": str(e)}, 500

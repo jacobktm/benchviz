@@ -4,6 +4,9 @@ Batch ML analysis: workload fingerprint, attribution, thermal sensitivity per be
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from collections import defaultdict
 
 from app import db
@@ -19,6 +22,26 @@ from app.ml.thermal import compute_thermal_sensitivity
 from app.ml.workload import compute_workload_fingerprint
 from app.models import Benchmark, BenchmarkAnalysis, BenchmarkResult
 from app.insights_util import benchmark_group_needs_rebuild
+
+_ml_timings: list[tuple[str, float]] = []
+
+def _mt(label: str) -> None:
+    _ml_timings.append((label, time.perf_counter()))
+
+_ML_PROFILE_PATH = "/tmp/benchviz_last_ml_profile.json"
+
+def _save_ml_profile(meta: dict) -> None:
+    timings_dict = {}
+    for i in range(1, len(_ml_timings)):
+        label = _ml_timings[i][0]
+        secs = round(_ml_timings[i][1] - _ml_timings[i-1][1], 3)
+        timings_dict[label] = secs
+    data = {"timings": timings_dict, "meta": meta, "raw_timings": _ml_timings.copy()}
+    try:
+        with open(_ML_PROFILE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 def _analyze_config(
@@ -123,12 +146,15 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
     Compute ML profiles for all primary benchmark groups; merge into BenchmarkAnalysis.analysis_json.
     Returns number of analysis records updated.
     """
+    _ml_timings.clear()
+    _mt("start")
     mode = "incremental" if incremental else "full"
     print(f"Starting ML benchmark analysis ({mode})...")
     primary_bms = Benchmark.query.filter(
         Benchmark.display_format == "BAR_GRAPH",
         Benchmark.is_primary.is_(True),
     ).all()
+    _mt("query_benchmarks")
 
     groups: dict[tuple[str, str], list[Benchmark]] = defaultdict(list)
     for bm in primary_bms:
@@ -139,12 +165,15 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
         for (title, app_version), bm_list in groups.items()
         if benchmark_group_needs_rebuild(title, app_version, bm_list, incremental=incremental)
     ]
+    _mt("filter_pending")
     print(f"  Groups found: {len(groups)}, pending: {len(pending_groups)}")
     if not pending_groups:
         print("No ML profile groups need rebuild.")
+        _save_ml_profile({"mode": mode, "updated": 0, "pending": 0})
         return 0
 
     baseline_index = build_hardware_sensor_baseline_index()
+    _mt("build_baselines")
     baseline_summary = baseline_index.to_dict()
     print(
         f"Built hardware sensor baselines: {baseline_summary.get('n_baselines', 0)} ranges "
@@ -152,7 +181,9 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
     )
 
     updated = 0
-    for (title, app_version), bm_list in pending_groups:
+    _mt("process_groups_start")
+    for idx, ((title, app_version), bm_list) in enumerate(pending_groups):
+        _mt(f"group_{idx}_start")
         rep = bm_list[0]
         all_results = []
         for bm in bm_list:
@@ -168,12 +199,14 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
 
         by_args = {}
         for args_key in args_set:
+            _mt(f"group_{idx}_config_{args_key}_start")
             profile = _analyze_config(
                 title, app_version, args_key, bm_list,
                 baseline_index=baseline_index,
             )
             if profile:
                 by_args[args_key] = profile
+            _mt(f"group_{idx}_config_{args_key}_done")
 
         if not by_args:
             continue
@@ -211,6 +244,8 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
         updated += len(existing)
         db.session.commit()
         db.session.expire_all()
+        _mt(f"group_{idx}_done")
 
     print(f"ML benchmark analysis complete ({updated} record(s) updated).")
+    _save_ml_profile({"mode": mode, "updated": updated, "pending": len(pending_groups)})
     return updated
