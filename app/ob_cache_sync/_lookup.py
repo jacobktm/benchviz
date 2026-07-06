@@ -375,7 +375,15 @@ def lookup_ob_entry_with_fallback(
     if ent is not None and (_index_entry_cache_fresh(ent) or not allow_live):
         return ent, "local"
 
-    disk_ent = _try_local_disk_exact(comparison_hash, idx, identifier)
+    # If index has been populated (synced) and hash isn't in it,
+    # skip the redundant _try_local_disk_exact — it re-reads pts.index
+    # and generated.json files that are already in the index.
+    # Version fallback (further below) still runs: it matches by
+    # family+description+unit against the in-memory index, no disk I/O.
+    _idx_populated = bool(idx.get("entries")) or idx.get("entry_count", 0) > 0
+    disk_ent = None
+    if not (_idx_populated and ent is None):
+        disk_ent = _try_local_disk_exact(comparison_hash, idx, identifier)
     if disk_ent is not None:
         return disk_ent, "local"
 
