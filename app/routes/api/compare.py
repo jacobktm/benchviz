@@ -486,6 +486,7 @@ def api_compare():
         _t("before_args_loop")
 
         _sensor_parsed_cache: dict[tuple, dict] = {}
+        _workload_cache: dict[tuple, dict] = {}
         _all_sensors = Benchmark.query.filter(
             Benchmark.title == primary_benchmark.title,
             Benchmark.app_version == primary_benchmark.app_version,
@@ -728,15 +729,21 @@ def api_compare():
                     ch["option_key"] = ok
                     ch["workload_profile"] = workload_profiles_by_option[ok]
                     continue
-                wl = build_workload_profile(
-                    primary_benchmark.title,
-                    primary_benchmark.app_version or "",
-                    config_args_for_wl,
-                    system_ids=sys_id_ints,
-                    description=desc or primary_benchmark.description or "",
-                    option_description=desc,
-                    option_scale=scale,
-                )
+                _wl_cache_key = (config_args_for_wl, ok)
+                _cached_wl = _workload_cache.get(_wl_cache_key)
+                if _cached_wl is not None:
+                    wl = _cached_wl
+                else:
+                    wl = build_workload_profile(
+                        primary_benchmark.title,
+                        primary_benchmark.app_version or "",
+                        config_args_for_wl,
+                        system_ids=sys_id_ints,
+                        description=desc or primary_benchmark.description or "",
+                        option_description=desc,
+                        option_scale=scale,
+                    )
+                    _workload_cache[_wl_cache_key] = wl
                 workload_profiles_by_option[ok] = wl
                 ch["option_key"] = ok
                 ch["workload_profile"] = wl

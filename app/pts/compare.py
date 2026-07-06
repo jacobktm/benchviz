@@ -45,7 +45,8 @@ def build_pts_context_for_compare_group(
     _pt("pts_start")
 
     ob_index = ob_index if ob_index is not None else load_ob_cache_index()
-    if identifier and ob_index is not None:
+    _idx_populated = bool(ob_index.get("entries")) or (ob_index.get("entry_count") or 0) > 0 if ob_index else False
+    if identifier and ob_index is not None and not _idx_populated:
         from ..ob_cache_sync import ingest_cached_profiles_for_identifier
         ingest_cached_profiles_for_identifier(ob_index, identifier)
     per_subtest: list[dict[str, Any]] = []
