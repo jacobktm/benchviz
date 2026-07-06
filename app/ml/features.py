@@ -114,22 +114,28 @@ def _collect_perf_for_system(
     )
     if app_version:
         perf_q = perf_q.filter(Benchmark.app_version == app_version)
+    perf_bms = [bm for bm in perf_q.all() if is_perf_counter_benchmark(bm)]
+    if not perf_bms:
+        return {}
+    perf_ids = [bm.id for bm in perf_bms]
+    key_map = {bm.id: counter_signal_key(bm) for bm in perf_bms}
+
     out: dict[str, list[float]] = defaultdict(list)
-    for bm in perf_q.all():
-        if not is_perf_counter_benchmark(bm):
-            continue
-        key = counter_signal_key(bm)
+    for res in BenchmarkResult.query.filter(
+        BenchmarkResult.benchmark_id.in_(perf_ids),
+        BenchmarkResult.system_id == system_id,
+    ).all():
+        key = key_map.get(res.benchmark_id)
         if not key:
             continue
-        for res in BenchmarkResult.query.filter_by(benchmark_id=bm.id, system_id=system_id).all():
-            if not _monitor_result_matches_config(res.arguments, config_args_db):
-                continue
-            if res.value is None:
-                continue
-            try:
-                out[key].append(float(res.value))
-            except (TypeError, ValueError):
-                pass
+        if not _monitor_result_matches_config(res.arguments, config_args_db):
+            continue
+        if res.value is None:
+            continue
+        try:
+            out[key].append(float(res.value))
+        except (TypeError, ValueError):
+            pass
     return {k: statistics.median(vs) for k, vs in out.items() if vs}
 
 
@@ -207,10 +213,19 @@ def _collect_sensors_for_system(
     cpu_usage_peaks: list[float] = []
     gpu_usage_peaks: list[float] = []
 
+    sensor_ids = [s.id for s in sensors]
+    results_by_bm: dict[int, list[BenchmarkResult]] = defaultdict(list)
+    if sensor_ids:
+        for res in BenchmarkResult.query.filter(
+            BenchmarkResult.benchmark_id.in_(sensor_ids),
+            BenchmarkResult.system_id == system_id,
+        ).all():
+            results_by_bm[res.benchmark_id].append(res)
+
     for s_bm in sensors:
         bucket = _label_bucket(s_bm.description or "", s_bm.scale or "")
         kind = sensor_kind(s_bm.description, s_bm.scale)
-        for res in BenchmarkResult.query.filter_by(benchmark_id=s_bm.id, system_id=system_id).all():
+        for res in results_by_bm.get(s_bm.id, []):
             if not _monitor_result_matches_config(res.arguments, config_args_db):
                 continue
             if not res.data_json:

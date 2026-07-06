@@ -14,6 +14,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
+from sqlalchemy.orm import joinedload
+
 from app.components import get_system_components, hardware_rank_match_key
 from app.models import Benchmark, BenchmarkResult, System
 from app.sensor_quality import (
@@ -234,13 +236,25 @@ def build_hardware_sensor_baseline_index() -> HardwareSensorBaselineIndex:
             }
         return system_cache[system.id].get(part) or ""
 
+    sensor_ids = [
+        s.id for s in sensors
+        if s.description and any(k in s.description.lower() for k in _SENSOR_KEYWORDS)
+    ]
+
+    results_by_bm: dict[int, list[BenchmarkResult]] = defaultdict(list)
+    if sensor_ids:
+        for res in BenchmarkResult.query.options(joinedload(BenchmarkResult.system)).filter(
+            BenchmarkResult.benchmark_id.in_(sensor_ids)
+        ).all():
+            results_by_bm[res.benchmark_id].append(res)
+
     for s_bm in sensors:
         if not s_bm.description:
             continue
         if not any(k in s_bm.description.lower() for k in _SENSOR_KEYWORDS):
             continue
-        for res in BenchmarkResult.query.filter_by(benchmark_id=s_bm.id).all():
-            if not res.data_json or not res.system:
+        for res in results_by_bm.get(s_bm.id, []):
+            if not res.data_json:
                 continue
             for signal_key, val in extract_sensor_scalars(s_bm, res.data_json):
                 part = _hardware_part_for_signal(signal_key)
