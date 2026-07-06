@@ -421,3 +421,6 @@ def lookup_ob_entry_with_fallback(
     if ent is not None:
         return ent, "local"
     return None, ""
+
+
+ingest_cached_profiles_for_identifier = _ingest_cached_profiles_for_identifier

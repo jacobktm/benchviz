@@ -8,6 +8,7 @@ from app.ob_cache_sync._data import (
 from app.ob_cache_sync._lookup import (
     lookup_ob_entry,
     lookup_ob_entry_with_fallback,
+    ingest_cached_profiles_for_identifier,
 )
 from app.ob_cache_sync._paths import (
     DEFAULT_OB_CACHE_TTL_HOURS,

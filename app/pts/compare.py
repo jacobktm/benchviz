@@ -45,6 +45,9 @@ def build_pts_context_for_compare_group(
     _pt("pts_start")
 
     ob_index = ob_index if ob_index is not None else load_ob_cache_index()
+    if identifier and ob_index is not None:
+        from ..ob_cache_sync import ingest_cached_profiles_for_identifier
+        ingest_cached_profiles_for_identifier(ob_index, identifier)
     per_subtest: list[dict[str, Any]] = []
     subtest_value_maps: list[dict[str, float | None]] = []
     hib_flags: list[bool] = []
