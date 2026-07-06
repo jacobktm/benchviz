@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import defaultdict
 
 from flask import jsonify, request, url_for
@@ -55,8 +56,16 @@ def api_saved_comparison(comp_id):
     return saved.payload_json, 200
 
 
+_timings: list[tuple[str, float]] = []
+
+def _t(label: str) -> None:
+    _timings.append((label, time.perf_counter()))
+
+
 @bp.route('/api/compare')
 def api_compare():
+    _timings.clear()
+    _t("start")
     system_ids = request.args.getlist('system_ids')
     config_params = request.args.getlist('config')
     benchmark_ids = request.args.getlist('benchmark_id')
@@ -119,8 +128,10 @@ def api_compare():
     )
 
     ob_index_cache = load_ob_cache_index()
+    _t("ob_index_loaded")
 
     systems_list = System.query.filter(System.id.in_(sys_id_ints)).all()
+    _t("systems_loaded")
     systems_by_id = {s.id: s for s in systems_list}
 
     pool_raw_args_map = defaultdict(set)
@@ -456,6 +467,7 @@ def api_compare():
                 a.strip() for a in args_list
                 if isinstance(a, str) and a.strip()
             ]
+        _t("before_args_loop")
 
         for args_val in args_list:
             charts = []
@@ -510,6 +522,7 @@ def api_compare():
                 else:
                     q_prim = q_prim.filter(BenchmarkResult.arguments == args_val)
             all_prim_results = q_prim.all()
+            _t("prim_results_queried")
 
             by_bm_id = defaultdict(list)
             for r in all_prim_results:
@@ -656,6 +669,7 @@ def api_compare():
                             "traces": primary_traces,
                             "is_primary": True
                         })
+            _t("charts_built")
 
             sensors = Benchmark.query.filter(
                 Benchmark.title == primary_benchmark.title,
@@ -848,6 +862,7 @@ def api_compare():
                         "option_workload_relevant": option_relevance,
                     })
 
+            _t("sensors_done")
             if charts:
                 charts.sort(key=lambda x: not x["is_primary"])
                 title = f"{primary_benchmark.title} ({primary_benchmark.app_version})"
@@ -902,6 +917,7 @@ def api_compare():
                     config_args=args_val if args_val is not None else "",
                     ob_index=ob_index_cache,
                 )
+                _t("pts_context_built")
                 sub_by_desc = {
                     (st.get("description") or "").strip(): st
                     for st in (pts_scoring.get("subtests") or [])
@@ -946,10 +962,18 @@ def api_compare():
         build_pts_global_harmonic_summary(comparison_groups)
         if comparison_groups else None
     )
+    _t("global_harmonic_done")
     pts_global_ob = (
         build_pts_ob_global_summary(pts_contexts, first_names)
         if pts_contexts and first_names else None
     )
+    _t("done")
+
+    timings_dict = {}
+    for i in range(1, len(_timings)):
+        label = _timings[i][0]
+        secs = round(_timings[i][1] - _timings[i-1][1], 3)
+        timings_dict[label] = secs
 
     return {
         "comparison_groups": comparison_groups,
@@ -963,6 +987,7 @@ def api_compare():
             "global_harmonic_cross_scale": (pts_global_harmonic or {}).get("cross_scale") if pts_global_harmonic else None,
             "global_ob": pts_global_ob,
         },
+        "_timings": timings_dict,
     }
 
 

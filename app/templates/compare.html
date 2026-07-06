@@ -139,6 +139,7 @@
         </div>
         <div id="poolSummary" style="display:none;margin-bottom:0.6rem;padding:0.55rem 0.7rem;border-radius:8px;background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.25);font-size:0.82rem;color:var(--text-secondary);"></div>
         <div id="metricToggles" style="display: flex; gap: 0.5rem; flex-wrap: wrap;"></div>
+        <pre id="jsTimings" style="display:none;font-size:0.7rem;color:var(--text-secondary);margin-top:0.5rem;white-space:pre-wrap;" title="Press Ctrl+Shift+T to toggle timings"></pre>
     </div>
     
     <div class="chart-container" id="chartWrapper" style="display: flex; flex-direction: column; gap: 2rem; min-height: 200px;">
@@ -3715,7 +3716,9 @@
                 }
             }
 
+            _t('before_build_data');
             const pageData = buildComparePageData();
+            _t('build_data_done');
             let { benchmarkGroups, systems: pageSystems, overallHarmonicCrossScale, overallHarmonicByScale, overallGeometric, overallObP1Balanced, overallObP1Mean } = pageData;
             const configLabelsMap = {};
             (availableBenchmarks || []).forEach(bm => {
@@ -4175,6 +4178,7 @@
                 });
             }
 
+            _t('before_render_groups');
             benchmarkGroups.forEach((bGroup, bGroupIdx) => {
                 const groupWrapper = document.createElement('div');
                 groupWrapper.className = 'benchmark-group';
@@ -4572,10 +4576,12 @@
 
                 chartsContainer.appendChild(groupWrapper);
             });
+            _t('render_groups_done');
 
             if (!chartsContainer.querySelector('div')) {
                 chartsContainer.innerHTML = '<div style="color:var(--text-secondary);width:100%;text-align:center;padding:2rem;">No data successfully plotted.</div>';
             }
+            _reportTimings();
         }
 
         function updateObBaselineNotice(pts) {
@@ -4600,7 +4606,31 @@
                 + (normalizeComposite ? ' OB p1 relative is ON for individual charts.' : '');
         }
 
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+                const el = document.getElementById('jsTimings');
+                if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+            }
+        });
+
+        const _ts = [];
+        function _t(label) { _ts.push({ label, t: performance.now() }); }
+        function _reportTimings() {
+            const output = { fetch: 0, parse: 0, buildData: 0, render: 0 };
+            for (let i = 1; i < _ts.length; i++) {
+                const label = _ts[i].label;
+                const secs = Math.round((_ts[i].t - _ts[i-1].t) * 100) / 100;
+                output[label] = secs;
+            }
+            output._total = Math.round((_ts[_ts.length-1].t - _ts[0].t) * 100) / 100;
+            console.table(output);
+            const el = document.getElementById('jsTimings');
+            if (el) el.textContent = JSON.stringify(output, null, 2);
+        }
+
         generateBtn.addEventListener('click', async () => {
+            _ts.length = 0;
+            _t('start');
             const systemIds = selectedSystems.map(s => s.id);
 
             if (!systemIds.length) {
@@ -4639,7 +4669,9 @@
                 url.searchParams.set('filter_noisy_sensors', filterNoisySensors ? '1' : '0');
 
                 const response = await fetch(url.toString());
+                _t('fetch_done');
                 const data = await response.json();
+                _t('parse_done');
 
                 if (data.error) {
                     chartsContainer.innerHTML = `<div style="color: #f85149;">Error: ${data.error}</div>`;
@@ -4738,7 +4770,9 @@
                     
                     // Overall sensor toggles are populated lazily by renderCharts when needed.
                     metricToggles.innerHTML = '';
+                    _t('before_render');
                     renderCharts();
+                    _t('render_done');
 
                     // Top-right actions (save/export) – set up once
                     const actionsHost = document.getElementById('chartActionsRow');
@@ -4790,6 +4824,7 @@
                 console.error(err);
                 chartsContainer.innerHTML = `<div style="color: #f85149;">Failed to load data. See console.</div>`;
             } finally {
+                _reportTimings();
                 overlay.classList.remove('active');
             }
         });
