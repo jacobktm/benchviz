@@ -2077,11 +2077,41 @@
             const rows = [];
             const multiBench = benchmarkGroups.length > 1;
             benchmarkGroups.forEach(bGroup => {
-                collectBenchmarkSubtestMarginRows(bGroup, systems, configLabelsMap).forEach(r => {
-                    rows.push({
-                        ...r,
-                        label: multiBench ? `${bGroup.benchmarkName} · ${r.label}` : r.label,
-                    });
+                const configs = bGroup.configs || [];
+                const validConfigs = configs.filter(c => {
+                    const vals = systems.map(s => configValueForSystem(c, s));
+                    return vals.some(v => v != null && !isNaN(v) && Number(v) > 0);
+                });
+                if (validConfigs.length < 1) return;
+                // One axis per benchmark: geometric mean across all configs
+                const vals = systems.map((sys, sIdx) => {
+                    const nums = validConfigs
+                        .map(c => configValueForSystem(c, sys))
+                        .filter(v => v != null && !isNaN(v) && Number(v) > 0)
+                        .map(Number);
+                    return nums.length ? geometricMean(nums) : null;
+                });
+                const present = vals.filter(v => v != null);
+                if (present.length < 2) return;
+                const G = geometricMean(present);
+                if (G == null || !isFinite(G) || G <= 0) return;
+                const ch = configs[0] && (configs[0].primaryChart || getConfigPrimaryChart(configs[0], bGroup));
+                const HIB = isHigherIsBetter(ch ? (ch.proportion ?? bGroup.proportion) : bGroup.proportion);
+                const pcts = vals.map(v => {
+                    if (v == null) return null;
+                    return HIB ? ((v / G) - 1) * 100 : ((G / v) - 1) * 100;
+                });
+                const nonZero = pcts.some(p => p != null && isFinite(p) && Math.abs(p) >= 1e-6);
+                if (!nonZero) return;
+                const a = vals[0];
+                const b = vals[1];
+                const deltaPct = (a != null && b != null)
+                    ? (HIB ? ((a / b) - 1) * 100 : ((b / a) - 1) * 100)
+                    : null;
+                rows.push({
+                    label: multiBench ? bGroup.benchmarkName : (bGroup.benchmarkName || 'Benchmark'),
+                    deltaPct,
+                    pcts,
                 });
             });
             if (systems.length === 2) {
