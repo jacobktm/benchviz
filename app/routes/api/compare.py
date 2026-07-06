@@ -560,10 +560,12 @@ def api_compare():
                     prop = (prop_sig or "").strip().upper()
                     lower_better = prop == "LIB"
                     primary_traces = []
+                    sys_ids_with_results = set()
                     for sys_id in sys_id_ints:
                         candidates = [r for r in sig_rows if r.system_id == sys_id]
                         if not candidates:
                             continue
+                        sys_ids_with_results.add(sys_id)
                         def score_key(r):
                             v = r.value
                             if v is None:
@@ -588,7 +590,7 @@ def api_compare():
                             "y": [res.value],
                         }
                         primary_traces.append(trace)
-                    if primary_traces:
+                    if primary_traces and len(sys_ids_with_results) >= len(sys_id_ints):
                         metric_label = (desc_sig or "").strip() or (scale_sig or "Primary Result")
                         charts.append({
                             "metric": metric_label,
@@ -607,6 +609,7 @@ def api_compare():
                     if not results_for_bm:
                         continue
                     primary_traces = []
+                    sys_ids_with_results = set()
                     for sys_id in sys_id_ints:
                         system = systems_by_id.get(sys_id)
                         if not system:
@@ -614,6 +617,7 @@ def api_compare():
                         matching = [r for r in results_for_bm if r.system_id == sys_id]
                         if not matching:
                             continue
+                        sys_ids_with_results.add(sys_id)
                         for res in sorted(matching, key=lambda r: (r.imported_at or "", r.id)):
                             obs_label = format_observation_label(
                                 system, res.profile_snapshot, res.imported_at,
@@ -640,7 +644,7 @@ def api_compare():
                                 trace["y"] = y_data
                                 trace["mode"] = "lines"
                             primary_traces.append(trace)
-                    if primary_traces:
+                    if primary_traces and len(sys_ids_with_results) >= len(sys_id_ints):
                         metric_label = (bm.description or "").strip() or (bm.scale or "Primary Result")
                         charts.append({
                             "metric": metric_label,
