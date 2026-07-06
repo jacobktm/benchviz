@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import math
 import statistics
+import warnings
 from collections import defaultdict
 from typing import Any
+
+from sklearn.exceptions import UndefinedMetricWarning
 
 import numpy as np
 from sklearn.linear_model import Ridge
@@ -200,7 +203,9 @@ def rank_benchmark(
     alpha = 1.0 if n_features < len(train_sids) else 5.0
     model = Ridge(alpha=alpha, random_state=42)
     model.fit(Xs, y)
-    r2 = float(model.score(Xs, y))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+        r2 = float(model.score(Xs, y))
 
     y_pred = model.predict(Xs)
 

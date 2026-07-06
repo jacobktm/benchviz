@@ -8,12 +8,16 @@ instead of fixed thresholds (e.g. 75°C, 65% usage).
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Iterator
 
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from app.components import get_system_components, hardware_rank_match_key
@@ -141,6 +145,19 @@ class SensorRangeBaseline:
             "median": round(self.median, 4),
         }
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> SensorRangeBaseline:
+        return cls(
+            hardware_part=d["hardware_part"],
+            match_key=d["match_key"],
+            signal_key=d["signal_key"],
+            n_samples=d["n_samples"],
+            idle=d["idle_p10"],
+            load=d["load_p90"],
+            span=d["span"],
+            median=d["median"],
+        )
+
 
 @dataclass
 class HardwareSensorBaselineIndex:
@@ -190,6 +207,34 @@ class HardwareSensorBaselineIndex:
             "by_model": dict(by_model),
         }
 
+    def _as_cache_dict(self) -> dict[str, Any]:
+        baselines_list = []
+        for (part, mk, sk), b in self.baselines.items():
+            entry = b.to_dict()
+            entry["_key_part"] = part
+            entry["_key_match"] = mk
+            entry["_key_signal"] = sk
+            baselines_list.append(entry)
+        return {
+            "baselines": baselines_list,
+            "global_keys": sorted(self.global_keys),
+        }
+
+    @classmethod
+    def _from_cache_dict(cls, d: dict[str, Any]) -> HardwareSensorBaselineIndex:
+        index = cls()
+        for entry in d.get("baselines", []):
+            b = SensorRangeBaseline.from_dict(entry)
+            key = (entry["_key_part"], entry["_key_match"], entry["_key_signal"])
+            index.baselines[key] = b
+        index.global_keys = set(d.get("global_keys", []))
+        return index
+
+
+def _sensor_baselines_cache_path() -> str:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, "instance", "sensor_baselines_cache.json")
+
 
 def _build_range_baseline(
     hardware_part: str,
@@ -216,12 +261,63 @@ def _build_range_baseline(
     )
 
 
-def build_hardware_sensor_baseline_index() -> HardwareSensorBaselineIndex:
+def _sensor_max_imported_at(sensor_ids: list[int]) -> datetime | None:
+    if not sensor_ids:
+        return None
+    return db.session.query(func.max(BenchmarkResult.imported_at)).filter(
+        BenchmarkResult.benchmark_id.in_(sensor_ids),
+    ).scalar()
+
+
+def _try_load_cached_baselines(sensor_ids: list[int]) -> HardwareSensorBaselineIndex | None:
+    path = _sensor_baselines_cache_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            cache = json.load(f)
+    except Exception:
+        return None
+    cached_at = cache.get("max_imported_at")
+    if not cached_at:
+        return None
+    max_ts = _sensor_max_imported_at(sensor_ids)
+    if max_ts is None:
+        return None
+    if max_ts.isoformat() != cached_at:
+        return None
+    return HardwareSensorBaselineIndex._from_cache_dict(cache)
+
+
+def _save_cached_baselines(
+    index: HardwareSensorBaselineIndex, sensor_ids: list[int],
+) -> None:
+    max_ts = _sensor_max_imported_at(sensor_ids)
+    cache = index._as_cache_dict()
+    cache["max_imported_at"] = max_ts.isoformat() if max_ts else None
+    path = _sensor_baselines_cache_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+
+def build_hardware_sensor_baseline_index(*, incremental: bool = True) -> HardwareSensorBaselineIndex:
     """
     Scan all MONITOR results in the DB; build per-model idle/load ranges per signal.
     """
     sensors = Benchmark.query.filter(Benchmark.display_format == "LINE_GRAPH").all()
-    sensor_by_id = {s.id: s for s in sensors if s.description}
+    sensor_ids = [
+        s.id for s in sensors
+        if s.description and any(k in s.description.lower() for k in _SENSOR_KEYWORDS)
+    ]
+
+    if incremental:
+        cached = _try_load_cached_baselines(sensor_ids)
+        if cached is not None:
+            return cached
 
     # (hardware_part, match_key, signal_key) -> [values]
     samples: dict[tuple[str, str, str], list[float]] = defaultdict(list)
@@ -235,11 +331,6 @@ def build_hardware_sensor_baseline_index() -> HardwareSensorBaselineIndex:
                 "graphics": hardware_rank_match_key("graphics", comps.get("graphics") or ""),
             }
         return system_cache[system.id].get(part) or ""
-
-    sensor_ids = [
-        s.id for s in sensors
-        if s.description and any(k in s.description.lower() for k in _SENSOR_KEYWORDS)
-    ]
 
     results_by_bm: dict[int, list[BenchmarkResult]] = defaultdict(list)
     if sensor_ids:
@@ -281,6 +372,7 @@ def build_hardware_sensor_baseline_index() -> HardwareSensorBaselineIndex:
             index.baselines[(part, "__global__", sk)] = base
             index.global_keys.add(sk)
 
+    _save_cached_baselines(index, sensor_ids)
     return index
 
 

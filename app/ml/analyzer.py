@@ -172,7 +172,7 @@ def analyze_ml_profiles(*, incremental: bool = True) -> int:
         _save_ml_profile({"mode": mode, "updated": 0, "pending": 0})
         return 0
 
-    baseline_index = build_hardware_sensor_baseline_index()
+    baseline_index = build_hardware_sensor_baseline_index(incremental=incremental)
     _mt("build_baselines")
     baseline_summary = baseline_index.to_dict()
     print(
