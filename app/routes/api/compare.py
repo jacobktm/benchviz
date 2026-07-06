@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections import defaultdict
@@ -60,6 +61,21 @@ _timings: list[tuple[str, float]] = []
 
 def _t(label: str) -> None:
     _timings.append((label, time.perf_counter()))
+
+_PROFILE_PATH = "/tmp/benchviz_last_compare_profile.json"
+
+def _save_profile(meta: dict) -> None:
+    timings_dict = {}
+    for i in range(1, len(_timings)):
+        label = _timings[i][0]
+        secs = round(_timings[i][1] - _timings[i-1][1], 3)
+        timings_dict[label] = secs
+    data = {"timings": timings_dict, "meta": meta, "raw_timings": _timings.copy()}
+    try:
+        with open(_PROFILE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 
 @bp.route('/api/compare')
@@ -469,7 +485,9 @@ def api_compare():
             ]
         _t("before_args_loop")
 
+        _args_iter = 0
         for args_val in args_list:
+            _t(f"iter_{_args_iter}_start")
             charts = []
             sys_args_map = {}
             system_details = []
@@ -522,7 +540,7 @@ def api_compare():
                 else:
                     q_prim = q_prim.filter(BenchmarkResult.arguments == args_val)
             all_prim_results = q_prim.all()
-            _t("prim_results_queried")
+            _t(f"iter_{_args_iter}_prim_results_queried")
 
             by_bm_id = defaultdict(list)
             for r in all_prim_results:
@@ -669,7 +687,7 @@ def api_compare():
                             "traces": primary_traces,
                             "is_primary": True
                         })
-            _t("charts_built")
+            _t(f"iter_{_args_iter}_charts_built")
 
             sensors = Benchmark.query.filter(
                 Benchmark.title == primary_benchmark.title,
@@ -691,6 +709,7 @@ def api_compare():
 
             config_args_for_wl = args_val if args_val is not None else ""
             workload_profiles_by_option: dict[str, dict] = {}
+            _t(f"iter_{_args_iter}_workload_start")
             for ch in charts:
                 if not ch.get("is_primary"):
                     continue
@@ -719,6 +738,7 @@ def api_compare():
                 if len(workload_profiles_by_option) == 1
                 else None
             )
+            _t(f"iter_{_args_iter}_workload_done")
             filter_sensors = (request.args.get('filter_sensors') or '1').lower() not in {'0', 'false', 'no'}
             filter_noisy = (request.args.get('filter_noisy_sensors') or '1').lower() not in {'0', 'false', 'no'}
             if filter_sensors and workload_profiles_by_option:
@@ -731,10 +751,12 @@ def api_compare():
                 ]
 
             sensor_ids = [s.id for s in sensors]
+            _t(f"iter_{_args_iter}_sensor_query_start")
             all_sensor_results = BenchmarkResult.query.filter(
                 BenchmarkResult.benchmark_id.in_(sensor_ids),
                 BenchmarkResult.system_id.in_(list(sys_args_map.keys())),
             ).all()
+            _t(f"iter_{_args_iter}_sensor_query_done")
             by_sensor_sys: dict[tuple[int, int], list[BenchmarkResult]] = defaultdict(list)
             for r in all_sensor_results:
                 by_sensor_sys[(r.benchmark_id, r.system_id)].append(r)
@@ -862,7 +884,7 @@ def api_compare():
                         "option_workload_relevant": option_relevance,
                     })
 
-            _t("sensors_done")
+            _t(f"iter_{_args_iter}_sensors_done")
             if charts:
                 charts.sort(key=lambda x: not x["is_primary"])
                 title = f"{primary_benchmark.title} ({primary_benchmark.app_version})"
@@ -917,7 +939,7 @@ def api_compare():
                     config_args=args_val if args_val is not None else "",
                     ob_index=ob_index_cache,
                 )
-                _t("pts_context_built")
+                _t(f"iter_{_args_iter}_pts_context_built")
                 sub_by_desc = {
                     (st.get("description") or "").strip(): st
                     for st in (pts_scoring.get("subtests") or [])
@@ -946,6 +968,8 @@ def api_compare():
                     "workload_profiles_by_option": workload_profiles_by_option,
                     "pts_scoring": pts_scoring,
                 })
+                _t(f"iter_{_args_iter}_done")
+            _args_iter += 1
 
     if not comparison_groups:
         return {"error": "Could not find benchmark data"}, 404
@@ -969,13 +993,22 @@ def api_compare():
     )
     _t("done")
 
-    timings_dict = {}
+    _timings_dict = {}
     for i in range(1, len(_timings)):
         label = _timings[i][0]
         secs = round(_timings[i][1] - _timings[i-1][1], 3)
-        timings_dict[label] = secs
+        _timings_dict[label] = secs
 
-    return {
+    _meta = {
+        "system_ids": system_ids,
+        "config_count": len(config_list),
+        "benchmark_ids": benchmark_ids,
+        "group_count": len(comparison_groups),
+        "timestamp": time.time(),
+    }
+    _save_profile(_meta)
+
+    resp = {
         "comparison_groups": comparison_groups,
         "scoring_engine": "pts" if pts_contexts else "benchviz",
         "pts": {
@@ -987,8 +1020,9 @@ def api_compare():
             "global_harmonic_cross_scale": (pts_global_harmonic or {}).get("cross_scale") if pts_global_harmonic else None,
             "global_ob": pts_global_ob,
         },
-        "_timings": timings_dict,
+        "_timings": _timings_dict,
     }
+    return resp
 
 
 @bp.route('/api/pool_flag_suggestions')
@@ -1182,3 +1216,16 @@ def api_pool_flag_suggestions():
     sample_out = sample_out[:18]
 
     return {"candidates": candidates[:20], "samples": sample_out}, 200
+
+
+@bp.route('/api/profile/last-comparison')
+def api_profile_last_comparison():
+    """Return profiling data from the last /api/compare call."""
+    if not os.path.exists(_PROFILE_PATH):
+        return {"error": "No profile data available"}, 404
+    try:
+        with open(_PROFILE_PATH) as f:
+            data = json.load(f)
+        return data, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
