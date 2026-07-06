@@ -20,6 +20,78 @@ from ._helpers import (
 _SIGNALS_CACHE: OrderedDict[tuple, Any] = OrderedDict()
 _SIGNALS_CACHE_MAX = 64
 
+_RAW_DATA_CACHE: OrderedDict[tuple, dict] = OrderedDict()
+_RAW_DATA_CACHE_MAX = 128
+
+
+def _raw_cache_key(
+    title: str, app_version: str,
+    system_ids: list[int] | None,
+) -> tuple:
+    return (title, app_version, tuple(sorted(system_ids)) if system_ids else None)
+
+
+def _fetch_raw_data(
+    title: str, app_version: str,
+    system_ids: list[int] | None,
+) -> dict[str, Any]:
+    raw_key = _raw_cache_key(title, app_version, system_ids)
+    cached = _RAW_DATA_CACHE.get(raw_key)
+    if cached is not None:
+        _RAW_DATA_CACHE.move_to_end(raw_key)
+        return cached
+
+    perf_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == "BAR_GRAPH",
+        Benchmark.is_primary.is_(False),
+    )
+    if app_version:
+        perf_q = perf_q.filter(Benchmark.app_version == app_version)
+    perf_bms = [b for b in perf_q.all() if is_perf_counter_benchmark(b)]
+
+    perf_results: list[BenchmarkResult] = []
+    if perf_bms:
+        perf_ids = [bm.id for bm in perf_bms]
+        q = BenchmarkResult.query.filter(BenchmarkResult.benchmark_id.in_(perf_ids))
+        if system_ids:
+            q = q.filter(BenchmarkResult.system_id.in_(system_ids))
+        perf_results = list(q.all())
+
+    sensor_q = Benchmark.query.filter(
+        Benchmark.title == title,
+        Benchmark.display_format == "LINE_GRAPH",
+    )
+    if app_version:
+        sensor_q = sensor_q.filter(Benchmark.app_version == app_version)
+    sensor_keywords = (
+        "temperature", "frequency", "usage", "power", "celsius", "mhz", "watts",
+        "fan", "rpm", "voltage", "energy", "utilization",
+    )
+    sensors = [
+        s for s in sensor_q.all()
+        if s.description and any(k in s.description.lower() for k in sensor_keywords)
+    ]
+
+    sensor_results: list[BenchmarkResult] = []
+    if sensors:
+        sensor_ids = [bm.id for bm in sensors]
+        q = BenchmarkResult.query.filter(BenchmarkResult.benchmark_id.in_(sensor_ids))
+        if system_ids:
+            q = q.filter(BenchmarkResult.system_id.in_(system_ids))
+        sensor_results = list(q.all())
+
+    raw: dict[str, Any] = {
+        "perf_bms": perf_bms,
+        "perf_results": perf_results,
+        "sensors": sensors,
+        "sensor_results": sensor_results,
+    }
+    _RAW_DATA_CACHE[raw_key] = raw
+    if len(_RAW_DATA_CACHE) > _RAW_DATA_CACHE_MAX:
+        _RAW_DATA_CACHE.popitem(last=False)
+    return raw
+
 
 def _signals_cache_key(
     title: str, app_version: str, config_args: str,
@@ -181,44 +253,66 @@ def collect_workload_signals(
             return cached
 
     config_args_db = "" if (not config_args or config_args == "default") else config_args
+    raw = _fetch_raw_data(title, app_version, system_ids)
 
-    perf_q = Benchmark.query.filter(
-        Benchmark.title == title,
-        Benchmark.display_format == "BAR_GRAPH",
-        Benchmark.is_primary.is_(False),
-    )
-    if app_version:
-        perf_q = perf_q.filter(Benchmark.app_version == app_version)
-    perf_bms = [b for b in perf_q.all() if is_perf_counter_benchmark(b)]
-
-    perf_values = _batch_perf_results(
-        perf_bms, system_ids, config_args_db, option_description, option_scale,
-    )
+    perf_key_map = {bm.id: counter_signal_key(bm) for bm in raw["perf_bms"]}
+    perf_values: dict[str, list[float]] = defaultdict(list)
+    for res in raw["perf_results"]:
+        key = perf_key_map.get(res.benchmark_id)
+        if not key or not _result_matches_option(
+            res.arguments, config_args_db, option_description, option_scale,
+        ):
+            continue
+        if res.value is None:
+            continue
+        try:
+            perf_values[key].append(float(res.value))
+        except (TypeError, ValueError):
+            pass
 
     perf_signals = {
-        k: statistics.median(vs)
-        for k, vs in perf_values.items()
-        if vs
+        k: statistics.median(vs) for k, vs in perf_values.items() if vs
     }
 
-    sensor_q = Benchmark.query.filter(
-        Benchmark.title == title,
-        Benchmark.display_format == "LINE_GRAPH",
-    )
-    if app_version:
-        sensor_q = sensor_q.filter(Benchmark.app_version == app_version)
-    sensor_keywords = (
-        "temperature", "frequency", "usage", "power", "celsius", "mhz", "watts",
-        "fan", "rpm", "voltage", "energy", "utilization",
-    )
-    sensors = [
-        s for s in sensor_q.all()
-        if s.description and any(k in s.description.lower() for k in sensor_keywords)
-    ]
+    sensors = raw["sensors"]
+    sensor_label_map = {bm.id: _sensor_label(bm) for bm in sensors}
+    sensor_cat_map = {bm.id: _sensor_category(sensor_label_map[bm.id]) for bm in sensors}
+    results_by_bm: dict[int, list[BenchmarkResult]] = defaultdict(list)
+    for res in raw["sensor_results"]:
+        results_by_bm[res.benchmark_id].append(res)
 
-    sensor_signals, sensor_by_cat = _batch_sensor_signals(
-        sensors, system_ids, config_args_db, option_description, option_scale,
-    )
+    sensor_signals: dict[str, float] = {}
+    sensor_by_cat: dict[str, list[float]] = defaultdict(list)
+    for s_bm in sensors:
+        label = sensor_label_map.get(s_bm.id)
+        cat = sensor_cat_map.get(s_bm.id)
+        if not label:
+            continue
+        vals: list[float] = []
+        for res in results_by_bm.get(s_bm.id, []):
+            if not _result_matches_option(
+                res.arguments, config_args_db, option_description, option_scale,
+            ):
+                continue
+            if not res.data_json:
+                continue
+            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
+                continue
+            kind = sensor_kind(s_bm.description, s_bm.scale)
+            if kind in ("usage", "frequency"):
+                peak = peak_series_value(res.data_json)
+                if peak is not None:
+                    vals.append(peak)
+            else:
+                nums = [float(x) for x in res.data_json if isinstance(x, (int, float))]
+                if nums:
+                    vals.append(statistics.mean(nums))
+        if not vals:
+            continue
+        med = statistics.median(vals)
+        sensor_signals[label] = med
+        if cat:
+            sensor_by_cat[cat].append(med)
 
     sensor_category_means = {
         cat: statistics.median(vs) for cat, vs in sensor_by_cat.items() if vs
@@ -254,87 +348,52 @@ def collect_workload_signals_by_system(
             return cached
 
     config_args_db = "" if (not config_args or config_args == "default") else config_args
+    raw = _fetch_raw_data(title, app_version, system_ids)
 
-    perf_q = Benchmark.query.filter(
-        Benchmark.title == title,
-        Benchmark.display_format == "BAR_GRAPH",
-        Benchmark.is_primary.is_(False),
-    )
-    if app_version:
-        perf_q = perf_q.filter(Benchmark.app_version == app_version)
-    perf_bms = [b for b in perf_q.all() if is_perf_counter_benchmark(b)]
-
+    perf_key_map = {bm.id: counter_signal_key(bm) for bm in raw["perf_bms"]}
     perf_by_sys: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    if perf_bms:
-        perf_ids = [bm.id for bm in perf_bms]
-        key_map = {bm.id: counter_signal_key(bm) for bm in perf_bms}
-        q = BenchmarkResult.query.filter(BenchmarkResult.benchmark_id.in_(perf_ids))
-        if system_ids:
-            q = q.filter(BenchmarkResult.system_id.in_(system_ids))
-        for res in q.all():
-            key = key_map.get(res.benchmark_id)
-            if not key:
-                continue
+    for res in raw["perf_results"]:
+        key = perf_key_map.get(res.benchmark_id)
+        if not key or not _result_matches_option(
+            res.arguments, config_args_db, option_description, option_scale,
+        ):
+            continue
+        if res.value is None:
+            continue
+        try:
+            perf_by_sys[res.system_id][key].append(float(res.value))
+        except (TypeError, ValueError):
+            pass
+
+    sensors = raw["sensors"]
+    sensor_label_map = {bm.id: _sensor_label(bm) for bm in sensors}
+    sensor_cat_map = {bm.id: _sensor_category(sensor_label_map[bm.id]) for bm in sensors}
+    results_by_bm: dict[int, list[BenchmarkResult]] = defaultdict(list)
+    for res in raw["sensor_results"]:
+        results_by_bm[res.benchmark_id].append(res)
+
+    sensor_cat_by_sys: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    for s_bm in sensors:
+        cat = sensor_cat_map.get(s_bm.id)
+        if not cat:
+            continue
+        for res in results_by_bm.get(s_bm.id, []):
             if not _result_matches_option(
                 res.arguments, config_args_db, option_description, option_scale,
             ):
                 continue
-            if res.value is None:
+            if not res.data_json:
                 continue
-            try:
-                perf_by_sys[res.system_id][key].append(float(res.value))
-            except (TypeError, ValueError):
-                pass
-
-    sensor_q = Benchmark.query.filter(
-        Benchmark.title == title,
-        Benchmark.display_format == "LINE_GRAPH",
-    )
-    if app_version:
-        sensor_q = sensor_q.filter(Benchmark.app_version == app_version)
-    sensor_keywords = (
-        "temperature", "frequency", "usage", "power", "celsius", "mhz", "watts",
-        "fan", "rpm", "voltage", "energy", "utilization",
-    )
-    sensors = [
-        s for s in sensor_q.all()
-        if s.description and any(k in s.description.lower() for k in sensor_keywords)
-    ]
-
-    sensor_cat_by_sys: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
-    if sensors:
-        sensor_ids = [bm.id for bm in sensors]
-        label_map = {bm.id: _sensor_label(bm) for bm in sensors}
-        cat_map = {bm.id: _sensor_category(label_map[bm.id]) for bm in sensors}
-
-        q = BenchmarkResult.query.filter(BenchmarkResult.benchmark_id.in_(sensor_ids))
-        if system_ids:
-            q = q.filter(BenchmarkResult.system_id.in_(system_ids))
-        results_by_bm: dict[int, list[BenchmarkResult]] = defaultdict(list)
-        for res in q.all():
-            results_by_bm[res.benchmark_id].append(res)
-
-        for s_bm in sensors:
-            cat = cat_map.get(s_bm.id)
-            if not cat:
+            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
                 continue
-            for res in results_by_bm.get(s_bm.id, []):
-                if not _result_matches_option(
-                    res.arguments, config_args_db, option_description, option_scale,
-                ):
-                    continue
-                if not res.data_json:
-                    continue
-                if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
-                    continue
-                kind = sensor_kind(s_bm.description, s_bm.scale)
-                if kind in ("usage", "frequency"):
-                    val = peak_series_value(res.data_json)
-                else:
-                    nums = [float(x) for x in res.data_json if isinstance(x, (int, float))]
-                    val = statistics.mean(nums) if nums else None
-                if val is not None:
-                    sensor_cat_by_sys[res.system_id][cat].append(float(val))
+            kind = sensor_kind(s_bm.description, s_bm.scale)
+            if kind in ("usage", "frequency"):
+                val = peak_series_value(res.data_json)
+            else:
+                nums = [float(x) for x in res.data_json if isinstance(x, (int, float))]
+                val = statistics.mean(nums) if nums else None
+            if val is not None:
+                sensor_cat_by_sys[res.system_id][cat].append(float(val))
 
     all_ids = set(perf_by_sys.keys()) | set(sensor_cat_by_sys.keys())
     if system_ids:
