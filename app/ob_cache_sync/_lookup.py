@@ -274,13 +274,14 @@ def _collect_version_fallback_candidates(
     arguments: str,
     description: str,
     scale: str,
+    skip_ingest: bool = False,
 ) -> tuple[list[tuple[dict[str, Any], str]], int]:
     tp = strip_test_profile_identifier(identifier)
     family = test_profile_family(tp) if tp else ""
     if not family or not (description or "").strip():
         return [], 0
 
-    ingested = _ingest_cached_profiles_for_identifier(index, identifier)
+    ingested = 0 if skip_ingest else _ingest_cached_profiles_for_identifier(index, identifier)
     ensure_fallback_buckets(index)
 
     desc = (description or "").strip()
@@ -401,6 +402,7 @@ def lookup_ob_entry_with_fallback(
         arguments=arguments or "",
         description=desc,
         scale=unit,
+        skip_ingest=_idx_populated,
     )
     if ingested:
         _persist_index_if_updated(idx, updated=True)
