@@ -23,6 +23,36 @@ _SIGNALS_CACHE_MAX = 64
 _RAW_DATA_CACHE: OrderedDict[tuple, dict] = OrderedDict()
 _RAW_DATA_CACHE_MAX = 128
 
+_SENSOR_SIGNAL_CACHE: dict[tuple, float | None] = {}
+_SENSOR_SIGNAL_CACHE_MAX = 2048
+_SENTINEL = object()
+
+
+def _compute_sensor_signal(
+    data_json: Any, description: str, scale: str,
+    result_id: int,
+) -> float | None:
+    key = (result_id, description, scale)
+    cached = _SENSOR_SIGNAL_CACHE.get(key, _SENTINEL)
+    if cached is not _SENTINEL:
+        return cached
+    if not data_json:
+        _SENSOR_SIGNAL_CACHE[key] = None
+        return None
+    if is_noisy_sensor_series(data_json, description, scale):
+        _SENSOR_SIGNAL_CACHE[key] = None
+        return None
+    kind = sensor_kind(description, scale)
+    if kind in ("usage", "frequency"):
+        val = peak_series_value(data_json)
+    else:
+        nums = [float(x) for x in data_json if isinstance(x, (int, float))]
+        val = statistics.mean(nums) if nums else None
+    _SENSOR_SIGNAL_CACHE[key] = val
+    if len(_SENSOR_SIGNAL_CACHE) > _SENSOR_SIGNAL_CACHE_MAX:
+        _SENSOR_SIGNAL_CACHE.pop(next(iter(_SENSOR_SIGNAL_CACHE)))
+    return val
+
 
 def _raw_cache_key(
     title: str, app_version: str,
@@ -210,19 +240,9 @@ def _batch_sensor_signals(
                 res.arguments, config_args_db, option_description, option_scale,
             ):
                 continue
-            if not res.data_json:
-                continue
-            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
-                continue
-            kind = sensor_kind(s_bm.description, s_bm.scale)
-            if kind in ("usage", "frequency"):
-                peak = peak_series_value(res.data_json)
-                if peak is not None:
-                    vals.append(peak)
-            else:
-                nums = [float(x) for x in res.data_json if isinstance(x, (int, float))]
-                if nums:
-                    vals.append(statistics.mean(nums))
+            sig_val = _compute_sensor_signal(res.data_json, s_bm.description, s_bm.scale, res.id)
+            if sig_val is not None:
+                vals.append(sig_val)
         if not vals:
             continue
         med = statistics.median(vals)
@@ -294,19 +314,9 @@ def collect_workload_signals(
                 res.arguments, config_args_db, option_description, option_scale,
             ):
                 continue
-            if not res.data_json:
-                continue
-            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
-                continue
-            kind = sensor_kind(s_bm.description, s_bm.scale)
-            if kind in ("usage", "frequency"):
-                peak = peak_series_value(res.data_json)
-                if peak is not None:
-                    vals.append(peak)
-            else:
-                nums = [float(x) for x in res.data_json if isinstance(x, (int, float))]
-                if nums:
-                    vals.append(statistics.mean(nums))
+            sig_val = _compute_sensor_signal(res.data_json, s_bm.description, s_bm.scale, res.id)
+            if sig_val is not None:
+                vals.append(sig_val)
         if not vals:
             continue
         med = statistics.median(vals)
@@ -382,18 +392,9 @@ def collect_workload_signals_by_system(
                 res.arguments, config_args_db, option_description, option_scale,
             ):
                 continue
-            if not res.data_json:
-                continue
-            if is_noisy_sensor_series(res.data_json, s_bm.description, s_bm.scale):
-                continue
-            kind = sensor_kind(s_bm.description, s_bm.scale)
-            if kind in ("usage", "frequency"):
-                val = peak_series_value(res.data_json)
-            else:
-                nums = [float(x) for x in res.data_json if isinstance(x, (int, float))]
-                val = statistics.mean(nums) if nums else None
-            if val is not None:
-                sensor_cat_by_sys[res.system_id][cat].append(float(val))
+            sig_val = _compute_sensor_signal(res.data_json, s_bm.description, s_bm.scale, res.id)
+            if sig_val is not None:
+                sensor_cat_by_sys[res.system_id][cat].append(sig_val)
 
     all_ids = set(perf_by_sys.keys()) | set(sensor_cat_by_sys.keys())
     if system_ids:
