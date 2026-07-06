@@ -160,6 +160,11 @@ def ensure_schema_compatibility():
     if 'benchmark_results' in inspector3.get_table_names():
         with db.engine.begin() as connection:
             _migrate_benchmark_results_v2(connection, inspector3)
+        with db.engine.begin() as connection:
+            connection.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_benchmark_results_bm_sys "
+                "ON benchmark_results (benchmark_id, system_id)"
+            ))
 
 
 def _migrate_benchmark_results_v2(connection, inspector) -> None:

@@ -716,16 +716,22 @@ def api_compare():
                     )
                 ]
 
+            sensor_ids = [s.id for s in sensors]
+            all_sensor_results = BenchmarkResult.query.filter(
+                BenchmarkResult.benchmark_id.in_(sensor_ids),
+                BenchmarkResult.system_id.in_(list(sys_args_map.keys())),
+            ).all()
+            by_sensor_sys: dict[tuple[int, int], list[BenchmarkResult]] = defaultdict(list)
+            for r in all_sensor_results:
+                by_sensor_sys[(r.benchmark_id, r.system_id)].append(r)
+
             for s_bm in sensors:
                 s_traces = []
                 for sys_id in sys_args_map:
                     target_args = sys_args_map[sys_id]
                     system = systems_by_id.get(sys_id)
 
-                    all_s_res = BenchmarkResult.query.filter(
-                        BenchmarkResult.system_id == sys_id,
-                        BenchmarkResult.benchmark_id == s_bm.id,
-                    ).all()
+                    all_s_res = by_sensor_sys.get((s_bm.id, sys_id), [])
                     if not target_args:
                         if nonempty_primary_args:
                             matching_s_res = [

@@ -44,6 +44,8 @@ def build_pts_context_for_compare_group(
     subtest_value_maps: list[dict[str, float | None]] = []
     hib_flags: list[bool] = []
 
+    _ob_cache: dict[str, tuple[Any, str | None]] = {}
+
     for ch in primary_charts:
         desc = (ch.get("description") or "").strip()
         scale = (ch.get("scale") or "").strip()
@@ -71,17 +73,22 @@ def build_pts_context_for_compare_group(
             scale=scale,
             arguments=config_args,
         )
-        ob_entry, ob_source = lookup_ob_entry_with_fallback(
-            comp_hash,
-            ob_index,
-            identifier=identifier,
-            title=title,
-            arguments=config_args,
-            description=desc,
-            app_version=app_version,
-            scale=scale,
-            allow_live=compare_ob_live_fetch_enabled(),
-        )
+        cached = _ob_cache.get(comp_hash)
+        if cached is not None:
+            ob_entry, ob_source = cached
+        else:
+            ob_entry, ob_source = lookup_ob_entry_with_fallback(
+                comp_hash,
+                ob_index,
+                identifier=identifier,
+                title=title,
+                arguments=config_args,
+                description=desc,
+                app_version=app_version,
+                scale=scale,
+                allow_live=compare_ob_live_fetch_enabled(),
+            )
+            _ob_cache[comp_hash] = (ob_entry, ob_source)
         ob_median = ob_median_from_entry(ob_entry)
         ob_p1 = ob_p1_from_entry(ob_entry)
         relative = normalize_relative_values(values, hib=hib)
