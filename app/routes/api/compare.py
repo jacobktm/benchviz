@@ -704,14 +704,15 @@ def api_compare():
                             )
                             obs_label = format_observation_label(system, best.profile_snapshot, best.imported_at)
                             system_label = format_system_profile_label(system)
+                            args_label = best.arguments or ""
                             trace = {
                                 "name": obs_label,
                                 "type": "bar" if first_bm.display_format == "BAR_GRAPH" else "scatter",
-                                "customdata": [[system_label, obs_label]],
+                                "customdata": [[system_label, obs_label, args_label]],
                                 "hovertemplate": (
-                                    "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{x}<extra></extra>"
+                                    "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{customdata[0][2]}<br>%{x}<extra></extra>"
                                     if first_bm.display_format == "BAR_GRAPH"
-                                    else "%{customdata[0][0]}<br>%{customdata[0][1]}<extra></extra>"
+                                    else "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{customdata[0][2]}<extra></extra>"
                                 ),
                                 "import_batch_id": best.import_batch_id,
                             }
