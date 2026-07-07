@@ -2,6 +2,7 @@ import os
 import glob
 import re
 import uuid
+from collections import defaultdict
 from lxml import etree
 from . import db
 from .models import System, BenchmarkResult
@@ -109,7 +110,7 @@ def parse_file(file_path, system_profile=None):
         system_lookup_map[system_id] = system
 
         current_identifier = ""
-        failed_test_args: set[str] = set()
+        failed_test_configs: dict[str, set[str]] = defaultdict(set)
         for result_node in root.findall('Result'):
             raw_ident = result_node.findtext('Identifier', default='')
             if raw_ident:
@@ -150,19 +151,6 @@ def parse_file(file_path, system_profile=None):
                 display_format=display_format,
                 is_primary=(display_format == 'BAR_GRAPH' and not is_perf_counter),
             )
-
-            # For LINE_GRAPH (MONITOR) results, check if the test config belongs
-            # to a failed test and skip if so. MONITOR arguments embed the test
-            # config after the sensor name prefix.
-            if display_format == 'LINE_GRAPH':
-                if arguments.strip() and failed_test_args:
-                    desc = (description or '').strip()
-                    if desc.endswith(' Monitor'):
-                        sensor_name = desc[:-len(' Monitor')].strip()
-                        if sensor_name and arguments.strip().startswith(sensor_name):
-                            test_config = arguments.strip()[len(sensor_name):].strip()
-                            if test_config in failed_test_args:
-                                continue
                 
             data_node = result_node.find('Data')
             if data_node is not None:
@@ -190,8 +178,23 @@ def parse_file(file_path, system_profile=None):
                     value_str = entry_node.findtext('Value')
                     profile_snapshot = capture_profile_snapshot(entry_system)
 
-                    # For BAR_GRAPH results, check if the test failed and skip
-                    # the row entirely if so.
+                    # For LINE_GRAPH (MONITOR), skip this specific entry if
+                    # the corresponding BAR_GRAPH test config failed for
+                    # the same system.  MONITOR arguments embed the test
+                    # config after the sensor name prefix.
+                    if display_format == 'LINE_GRAPH':
+                        if arguments.strip() and failed_test_configs:
+                            desc = (description or '').strip()
+                            if desc.endswith(' Monitor'):
+                                sensor_name = desc[:-len(' Monitor')].strip()
+                                if sensor_name and arguments.strip().startswith(sensor_name):
+                                    test_config = arguments.strip()[len(sensor_name):].strip()
+                                    failed_for_this = failed_test_configs.get(test_config)
+                                    if failed_for_this and entry_identifier in failed_for_this:
+                                        continue
+
+                    # For BAR_GRAPH results, check if the test failed and
+                    # skip the row entirely if so.
                     if display_format == 'BAR_GRAPH':
                         value_empty = not (value_str or '').strip()
                         if value_empty:
@@ -202,10 +205,8 @@ def parse_file(file_path, system_profile=None):
                                     if isinstance(parsed, dict):
                                         error_val = parsed.get('error')
                                         if error_val and isinstance(error_val, str) and error_val.strip():
-                                            # Track the failed test config so
-                                            # associated MONITOR data is skipped.
                                             if arguments.strip():
-                                                failed_test_args.add(arguments.strip())
+                                                failed_test_configs[arguments.strip()].add(entry_identifier)
                                             continue
                                 except Exception:
                                     pass
