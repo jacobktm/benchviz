@@ -373,18 +373,17 @@ def api_compare():
                     pk = resolution_pool_key(a)
                     if pk and len(seen_classes.get(pk, [])) > 1:
                         sub_key = pool_key_for_args(None, a)
-                        if sub_key and sub_key not in resolution_raw_map:
-                            matching = [
-                                ra for ra in seen_classes[pk]
-                                if pool_key_for_args(None, ra) == sub_key
-                            ]
-                            if len(matching) > 1:
-                                resolution_raw_map[sub_key] = matching
-                                pooled_args_list.append(sub_key)
-                            else:
-                                pooled_args_list.append(a)
-                        elif sub_key:
-                            pooled_args_list.append(a)
+                        if sub_key:
+                            if sub_key not in resolution_raw_map:
+                                matching = [
+                                    ra for ra in seen_classes[pk]
+                                    if pool_key_for_args(None, ra) == sub_key
+                                ]
+                                if len(matching) > 1:
+                                    resolution_raw_map[sub_key] = matching
+                                    pooled_args_list.append(sub_key)
+                                else:
+                                    pooled_args_list.append(a)
                         else:
                             pooled_args_list.append(a)
                     else:
