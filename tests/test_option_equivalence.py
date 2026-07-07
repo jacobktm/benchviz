@@ -111,6 +111,31 @@ class ResolutionPoolKeyTest(unittest.TestCase):
                 "Resolution class: 1080p-ish",
             )
 
+    def test_space_separated_resolution(self):
+        """Phoronix-style space-separated '1920 1080' should match."""
+        self.assertEqual(
+            resolution_pool_key("1920 1080"),
+            "Resolution class: 1080p-ish",
+        )
+
+    def test_space_separated_resolution_with_quality(self):
+        """Phoronix args like '1920 1080 Low' should match resolution class."""
+        self.assertEqual(
+            resolution_pool_key("1920 1080 Low"),
+            "Resolution class: 1080p-ish",
+        )
+        self.assertEqual(
+            resolution_pool_key("1920 1080 High"),
+            "Resolution class: 1080p-ish",
+        )
+
+    def test_space_separated_2560_1600_is_1440p_ish(self):
+        """Space-separated 2560 1600 maps to 1440p-ish."""
+        self.assertEqual(
+            resolution_pool_key("2560 1600 Low"),
+            "Resolution class: 1440p-ish",
+        )
+
     def test_canonicalize_preserves_non_resolution_parts(self):
         """_canonicalize_args_for_pool should keep non-resolution args intact."""
         canonical, changed = _canonicalize_args_for_pool("--preset medium 1920x1080")

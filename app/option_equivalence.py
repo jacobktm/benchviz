@@ -6,7 +6,7 @@ import re
 GPU_BACKEND_POOL_TOKEN = "GPU backend (pooled: CUDA/OptiX/HIP/ROCm)"
 
 
-_RESOLUTION_WIDTH_RE = re.compile(r"\b(?P<w>\d{3,4})\s*[xX×]\s*(?P<h>\d{3,4})\b")
+_RESOLUTION_WIDTH_RE = re.compile(r"\b(?P<w>\d{3,4})(?:\s*[xX×]\s*|\s+)(?P<h>\d{3,4})\b")
 _ASPECT_RE = re.compile(r"\b(?P<w>\d{1,2})\s*[:/]\s*(?P<h>\d{1,2})\b")
 
 
