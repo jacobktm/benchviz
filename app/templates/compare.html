@@ -1392,6 +1392,52 @@
                         ...chartOpts,
                         hideTitle: true,
                     });
+                    if (rows.some(r => Array.isArray(r.vals) && r.vals.some(v => v != null))) {
+                        const mathDetails = document.createElement('details');
+                        mathDetails.style.cssText = 'margin-top:0.6rem;background:rgba(0,0,0,0.12);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:0.3rem 0.4rem;';
+                        const mathSummary = document.createElement('summary');
+                        mathSummary.style.cssText = 'cursor:pointer;color:var(--text-secondary);font-size:0.75rem;font-weight:500;';
+                        mathSummary.textContent = 'Show math breakdown';
+                        mathDetails.appendChild(mathSummary);
+                        const mathDiv = document.createElement('div');
+                        mathDiv.style.cssText = 'margin-top:0.3rem;overflow-x:auto;';
+                        const tbl = document.createElement('table');
+                        tbl.style.cssText = 'width:100%;border-collapse:collapse;font-size:0.72rem;';
+                        const esc = (s) => String(s == null ? '' : s).replace(/"/g, '&quot;');
+                        const fmt = (v) => v == null ? '—' : (Number(v).toFixed(4));
+                        const hdr = document.createElement('tr');
+                        hdr.style.cssText = 'border-bottom:1px solid rgba(255,255,255,0.12);';
+                        hdr.innerHTML = '<th style="text-align:left;padding:0.2rem 0.3rem;">Subtest</th>'
+                            + systemLabels.map(l => '<th style="text-align:right;padding:0.2rem 0.3rem;">' + esc(l) + '</th>').join('')
+                            + '<th style="text-align:right;padding:0.2rem 0.3rem;">GeoMean</th>'
+                            + '<th style="text-align:center;padding:0.2rem 0.3rem;">HIB</th>';
+                        tbl.appendChild(hdr);
+                        rows.forEach(r => {
+                            const tr = document.createElement('tr');
+                            tr.style.cssText = 'border-bottom:1px solid rgba(255,255,255,0.06);';
+                            const rawVals = (r.vals || []).map(v => esc(fmt(v)));
+                            const pctVals = (r.pcts || []).map((v, i) => {
+                                if (v == null) return null;
+                                const raw = r.vals && r.vals[i];
+                                if (raw == null) return 'no raw';
+                                return (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
+                            });
+                            tr.innerHTML = '<td style="padding:0.2rem 0.3rem;max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(r.label) + '">' + esc(r.label) + '</td>'
+                                + rawVals.map(v => '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + v + '</td>').join('')
+                                + '<td style="padding:0.2rem 0.3rem;text-align:right;font-family:monospace;">' + esc(fmt(r.G)) + '</td>'
+                                + '<td style="padding:0.2rem 0.3rem;text-align:center;font-family:monospace;">' + (r.HIB ? 'HIB' : 'LIB') + '</td>';
+                            tbl.appendChild(tr);
+                            const pctTr = document.createElement('tr');
+                            pctTr.style.cssText = 'border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.68rem;color:var(--text-secondary);';
+                            pctTr.innerHTML = '<td style="padding:0.1rem 0.3rem;">Δ%</td>'
+                                + pctVals.map(v => '<td style="padding:0.1rem 0.3rem;text-align:right;font-family:monospace;">' + esc(v == null ? '—' : v) + '</td>').join('')
+                                + '<td style="padding:0.1rem 0.3rem;"></td><td style="padding:0.1rem 0.3rem;"></td>';
+                            tbl.appendChild(pctTr);
+                        });
+                        mathDiv.appendChild(tbl);
+                        mathDetails.appendChild(mathDiv);
+                        deltaHost.appendChild(mathDetails);
+                    }
                 }
             };
             details.addEventListener('toggle', () => {
@@ -2057,7 +2103,7 @@
                 if (!nonZero) return;
                 const metricPart = ch ? primaryChartPanelTitle(ch) : 'Primary metric';
                 const label = multiOpt ? `${optPart} · ${metricPart}` : metricPart;
-                rows.push({ label, deltaPct, pcts });
+                rows.push({ label, deltaPct, pcts, vals: nums, G, HIB });
             };
 
             const multiArgs = new Set(bGroup.configs.map(c => String(c.args != null ? c.args : ''))).size > 1;
@@ -2121,6 +2167,9 @@
                     label: multiBench ? bGroup.benchmarkName : (bGroup.benchmarkName || 'Benchmark'),
                     deltaPct,
                     pcts,
+                    vals,
+                    G,
+                    HIB,
                 });
             });
             if (systems.length === 2) {
