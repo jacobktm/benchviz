@@ -710,10 +710,11 @@ def api_compare():
                                 "type": "bar" if first_bm.display_format == "BAR_GRAPH" else "scatter",
                                 "customdata": [[system_label, obs_label, args_label]],
                                 "hovertemplate": (
-                                    "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{customdata[0][2]}<br>%{x}<extra></extra>"
+                                    "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{text}<br>%{x}<extra></extra>"
                                     if first_bm.display_format == "BAR_GRAPH"
-                                    else "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{customdata[0][2]}<extra></extra>"
+                                    else "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{text}<extra></extra>"
                                 ),
+                                "text": args_label,
                                 "import_batch_id": best.import_batch_id,
                             }
                             if first_bm.display_format == "BAR_GRAPH":
