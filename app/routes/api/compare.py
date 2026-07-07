@@ -356,7 +356,7 @@ def api_compare():
                 continue
 
             if not pool_equivalent_configs:
-                from app.option_equivalence import resolution_pool_key
+                from app.option_equivalence import resolution_pool_key, pool_key_for_args
                 seen_classes: dict[str, list[str]] = {}
                 for a in args_list:
                     if not a or not isinstance(a, str):
@@ -372,9 +372,21 @@ def api_compare():
                         continue
                     pk = resolution_pool_key(a)
                     if pk and len(seen_classes.get(pk, [])) > 1:
-                        if pk not in resolution_raw_map:
-                            resolution_raw_map[pk] = seen_classes[pk]
-                            pooled_args_list.append(pk)
+                        sub_key = pool_key_for_args(None, a)
+                        if sub_key and sub_key not in resolution_raw_map:
+                            matching = [
+                                ra for ra in seen_classes[pk]
+                                if pool_key_for_args(None, ra) == sub_key
+                            ]
+                            if len(matching) > 1:
+                                resolution_raw_map[sub_key] = matching
+                                pooled_args_list.append(sub_key)
+                            else:
+                                pooled_args_list.append(a)
+                        elif sub_key:
+                            pooled_args_list.append(a)
+                        else:
+                            pooled_args_list.append(a)
                     else:
                         pooled_args_list.append(a)
                 args_list = pooled_args_list
