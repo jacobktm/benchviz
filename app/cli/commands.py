@@ -896,6 +896,7 @@ def reimport_all(yes, benchmarks_dir):
     if not yes:
         click.echo("ERROR: Add --yes to confirm. This will DELETE ALL DATA and reimport.", err=True)
         raise click.Abort()
+    import glob
     import shutil
     import zipfile
     import tempfile
