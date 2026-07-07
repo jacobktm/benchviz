@@ -1208,12 +1208,9 @@
             wrap.style.width = '100%';
             wrap.style.marginBottom = '0.5rem';
             const estH = m === 2 ? Math.min(n * 28 + 120, 2600) : 760;
-            if (m === 2) {
-                wrap.style.maxHeight = 'min(70vh, ' + estH + 'px)';
-                wrap.style.overflowY = 'auto';
-            } else {
-                wrap.style.overflowY = 'hidden';
-            }
+            wrap.style.maxHeight = 'min(70vh, ' + estH + 'px)';
+            wrap.style.overflowY = m === 2 ? 'auto' : 'hidden';
+            if (m > 2) wrap.style.overflowX = 'hidden';
             const canvas = document.createElement('canvas');
             wrap.appendChild(canvas);
             parent.appendChild(wrap);
@@ -1355,17 +1352,18 @@
             function create() {
                 const containerWidth = (typeof chartsContainer !== 'undefined' && chartsContainer.offsetWidth) ? chartsContainer.offsetWidth : 0;
                 const w = Math.max(wrap.offsetWidth || 0, parent.offsetWidth || 0, containerWidth, 320);
-                let h = estH;
-                if (m > 2) {
-                    const wrapRect = wrap.getBoundingClientRect();
-                    const available = window.innerHeight - wrapRect.top - 24;
-                    h = Math.min(estH, Math.max(available, 220));
-                }
                 canvas.width = w;
-                canvas.height = h;
+                canvas.height = estH;
                 canvas.style.width = w + 'px';
-                canvas.style.height = h + 'px';
+                canvas.style.height = estH + 'px';
                 const ch = new Chart(canvas.getContext('2d'), { type: (m === 2 ? 'bar' : 'radar'), data: chartData, options });
+                if (m > 2) {
+                    const s = Math.min(1, wrap.clientHeight / estH);
+                    if (s < 1) {
+                        canvas.style.transform = 'scale(' + s + ')';
+                        canvas.style.transformOrigin = 'top left';
+                    }
+                }
                 activeCharts.push(ch);
                 return ch;
             }
