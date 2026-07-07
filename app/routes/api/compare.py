@@ -85,6 +85,11 @@ def api_compare():
     system_ids = request.args.getlist('system_ids')
     config_params = request.args.getlist('config')
     benchmark_ids = request.args.getlist('benchmark_id')
+
+    _dbg: list[dict] = []
+    def _dbg_append(**kw: object) -> None:
+        _dbg.append(kw)
+
     if not system_ids:
         return {"error": "Missing system_ids parameter(s)"}, 400
 
@@ -148,6 +153,7 @@ def api_compare():
     systems_list = System.query.filter(System.id.in_(sys_id_ints)).all()
     _t("systems_loaded")
     systems_by_id = {s.id: s for s in systems_list}
+    _dbg_append(step="systems", systems=[{"id": s.id, "identifier": s.identifier} for s in systems_list])
     pool_raw_args_map = defaultdict(set)
     if pool_equivalent_configs:
         for b_id, args_filter in config_list:
@@ -480,6 +486,14 @@ def api_compare():
                 a.strip() for a in args_list
                 if isinstance(a, str) and a.strip()
             ]
+        _dbg_append(
+            step="args_list",
+            benchmark_title=primary_benchmark.title,
+            benchmark_version=primary_benchmark.app_version,
+            args_list=list(args_list),
+            resolution_raw_map=(dict(resolution_raw_map) if resolution_raw_map else None),
+            nonempty_primary_args=nonempty_primary_args,
+        )
         _t("before_args_loop")
 
         _sensor_parsed_cache: dict[tuple, dict] = {}
@@ -565,6 +579,16 @@ def api_compare():
                 sys_args_map[r.system_id] = r.arguments
                 if r.arguments:
                     primary_args_set.add(r.arguments.strip())
+
+            _dbg_append(
+                step="iter_query",
+                args_val=args_val,
+                resolution_class_name=resolution_class_name,
+                resolution_raw_args=resolution_raw_args if resolution_raw_args else None,
+                systems_with_results=sorted(sys_args_map.keys()) if sys_args_map else [],
+                systems_without_results=sorted(set(sys_id_ints) - set(sys_args_map.keys())),
+                result_count=len(all_prim_results),
+            )
 
             if resolution_class_name:
                 primary_args_set = {resolution_class_name}
@@ -1049,6 +1073,11 @@ def api_compare():
         },
         "_timings": _timings_dict,
     }
+    try:
+        with open(_COMPARE_DEBUG_PATH, "w") as f:
+            json.dump(_dbg, f, default=str)
+    except Exception:
+        pass
     return resp
 
 
