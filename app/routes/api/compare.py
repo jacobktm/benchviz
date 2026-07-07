@@ -1136,9 +1136,12 @@ def api_compare():
                     if len(present) >= 2:
                         import math
                         G = math.exp(sum(math.log(v) for v in present) / len(present))
-                    pcts = [((v / G - 1) * 100) if HIB else ((G / v - 1) * 100)
-                            if v is not None and v > 0 and G and G > 0 else None
-                            for v in sys_values]
+                    pcts = [
+                        (((v / G - 1) * 100) if HIB else ((G / v - 1) * 100))
+                        if v is not None and v > 0 and G is not None and G > 0
+                        else None
+                        for v in sys_values
+                    ]
                     subtest_math.append({
                         "metric": ch.get("metric"),
                         "description": ch.get("description"),
