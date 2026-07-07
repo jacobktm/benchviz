@@ -346,7 +346,7 @@ class ParserXmlTest(unittest.TestCase):
         self.assertEqual(Benchmark.query.count(), 1)
         self.assertEqual(BenchmarkResult.query.count(), 0)
 
-    def test_empty_value_no_crash(self):
+    def test_empty_value_skipped(self):
         xml = _xml("""\
 <PhoronixTestSuite>
   <System>
@@ -375,7 +375,7 @@ class ParserXmlTest(unittest.TestCase):
 </PhoronixTestSuite>
 """)
         self._write_and_parse(xml)
-        self.assertEqual(BenchmarkResult.query.count(), 1)
+        self.assertEqual(BenchmarkResult.query.count(), 0)
 
     def test_system_profile_applied(self):
         xml = _xml("""\

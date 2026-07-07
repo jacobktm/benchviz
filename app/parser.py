@@ -178,11 +178,16 @@ def parse_file(file_path, system_profile=None):
                     value_str = entry_node.findtext('Value')
                     profile_snapshot = capture_profile_snapshot(entry_system)
 
+                    # Skip entries with empty value (failed test / no data).
+                    value_empty = not (value_str or '').strip()
+
                     # For LINE_GRAPH (MONITOR), skip this specific entry if
                     # the corresponding BAR_GRAPH test config failed for
                     # the same system.  MONITOR arguments embed the test
                     # config after the sensor name prefix.
                     if display_format == 'LINE_GRAPH':
+                        if value_empty:
+                            continue
                         if arguments.strip() and failed_test_configs:
                             desc = (description or '').strip()
                             if desc.endswith(' Monitor'):
@@ -196,20 +201,10 @@ def parse_file(file_path, system_profile=None):
                     # For BAR_GRAPH results, check if the test failed and
                     # skip the row entirely if so.
                     if display_format == 'BAR_GRAPH':
-                        value_empty = not (value_str or '').strip()
                         if value_empty:
-                            json_text = entry_node.findtext('JSON', default='') or ''
-                            if json_text.strip():
-                                try:
-                                    parsed = json.loads(json_text)
-                                    if isinstance(parsed, dict):
-                                        error_val = parsed.get('error')
-                                        if error_val and isinstance(error_val, str) and error_val.strip():
-                                            if arguments.strip():
-                                                failed_test_configs[arguments.strip()].add(entry_identifier)
-                                            continue
-                                except Exception:
-                                    pass
+                            if arguments.strip():
+                                failed_test_configs[arguments.strip()].add(entry_identifier)
+                            continue
 
                     b_result = BenchmarkResult(
                         system_id=entry_system.id,
