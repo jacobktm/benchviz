@@ -17,6 +17,7 @@ def register_commands(app):
         debug_primary_perf_benchmarks,
         import_hardware_ranks_cmd,
         ingest,
+        reimport_all,
         init_db,
         move_results,
         nuke_db,
@@ -50,3 +51,4 @@ def register_commands(app):
     app.cli.add_command(calibrate_hardware_ranks_cmd)
     app.cli.add_command(debug_pool_args_cmd)
     app.cli.add_command(debug_pool_axes_cmd)
+    app.cli.add_command(reimport_all)
