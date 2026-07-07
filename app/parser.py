@@ -109,6 +109,7 @@ def parse_file(file_path, system_profile=None):
         system_lookup_map[system_id] = system
 
         current_identifier = ""
+        failed_test_args: set[str] = set()
         for result_node in root.findall('Result'):
             raw_ident = result_node.findtext('Identifier', default='')
             if raw_ident:
@@ -149,6 +150,19 @@ def parse_file(file_path, system_profile=None):
                 display_format=display_format,
                 is_primary=(display_format == 'BAR_GRAPH' and not is_perf_counter),
             )
+
+            # For LINE_GRAPH (MONITOR) results, check if the test config belongs
+            # to a failed test and skip if so. MONITOR arguments embed the test
+            # config after the sensor name prefix.
+            if display_format == 'LINE_GRAPH':
+                if arguments.strip() and failed_test_args:
+                    desc = (description or '').strip()
+                    if desc.endswith(' Monitor'):
+                        sensor_name = desc[:-len(' Monitor')].strip()
+                        if sensor_name and arguments.strip().startswith(sensor_name):
+                            test_config = arguments.strip()[len(sensor_name):].strip()
+                            if test_config in failed_test_args:
+                                continue
                 
             data_node = result_node.find('Data')
             if data_node is not None:
@@ -175,6 +189,26 @@ def parse_file(file_path, system_profile=None):
                         
                     value_str = entry_node.findtext('Value')
                     profile_snapshot = capture_profile_snapshot(entry_system)
+
+                    # For BAR_GRAPH results, check if the test failed and skip
+                    # the row entirely if so.
+                    if display_format == 'BAR_GRAPH':
+                        value_empty = not (value_str or '').strip()
+                        if value_empty:
+                            json_text = entry_node.findtext('JSON', default='') or ''
+                            if json_text.strip():
+                                try:
+                                    parsed = json.loads(json_text)
+                                    if isinstance(parsed, dict):
+                                        error_val = parsed.get('error')
+                                        if error_val and isinstance(error_val, str) and error_val.strip():
+                                            # Track the failed test config so
+                                            # associated MONITOR data is skipped.
+                                            if arguments.strip():
+                                                failed_test_args.add(arguments.strip())
+                                            continue
+                                except Exception:
+                                    pass
 
                     b_result = BenchmarkResult(
                         system_id=entry_system.id,

@@ -33,6 +33,12 @@ def extract_run_values_from_entry(entry_node) -> list[float]:
             try:
                 parsed = json.loads(json_text)
                 if isinstance(parsed, dict):
+                    # If the JSON contains an "error" field, the test failed.
+                    # Its run times are execution durations with no benchmark
+                    # meaning; discard the entry entirely.
+                    error_val = parsed.get("error")
+                    if error_val and isinstance(error_val, str) and error_val.strip():
+                        return []
                     candidate_keys = [
                         k for k in parsed.keys()
                         if isinstance(k, str) and ("test-run-times" in k or "run-times" in k or "run_times" in k)

@@ -192,7 +192,10 @@ def build_pts_global_summary(
 ) -> dict[str, Any]:
     trace_ids = system_ids or compare_system_trace_ids(comparison_groups)
     subtests = extract_subtests_from_comparison_groups(comparison_groups)
-    per_system: dict[str, list[float]] = {sid: [] for sid in trace_ids}
+    # PTS-style composite: normalize each subtest to its reference (min for HIB,
+    # max for LIB) and then take the geometric mean of the per-subtest ratios.
+    # This is "GM of ratios", NOT "ratio of GMs".
+    per_system_ratios: dict[str, list[float]] = {sid: [] for sid in trace_ids}
     subtest_count = 0
     lib_rows = 0
     native_scales: set[str] = set()
@@ -202,7 +205,8 @@ def build_pts_global_summary(
         if scale:
             native_scales.add(scale)
         values = st.get("values") or {}
-        contributed = False
+        # Collect valid values for this subtest, converting LIB→HIB
+        valid: dict[str, float] = {}
         for sid in trace_ids:
             raw = values.get(sid)
             if raw is None:
@@ -213,16 +217,22 @@ def build_pts_global_summary(
                 continue
             if v <= 0:
                 continue
-            per_system[sid].append(lib_to_hib_value(v) if not hib else v)
-            contributed = True
-        if contributed:
-            subtest_count += 1
-            if not hib:
-                lib_rows += 1
+            valid[sid] = lib_to_hib_value(v) if not hib else v
+        if len(valid) < 2:
+            continue
+        subtest_count += 1
+        if not hib:
+            lib_rows += 1
+        # Reference value: min for HIB, max for converted LIB
+        ref = min(valid.values()) if hib else max(valid.values())
+        if ref <= 0:
+            continue
+        for sid in valid:
+            per_system_ratios[sid].append(valid[sid] / ref)
 
     composite_raw = {
         sid: geometric_mean(vs) if len(vs) >= 2 else None
-        for sid, vs in per_system.items()
+        for sid, vs in per_system_ratios.items()
     }
     composite_relative = normalize_relative_values(composite_raw, hib=True)
 

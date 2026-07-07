@@ -37,7 +37,7 @@ from app.ob_cache_sync import (
     default_pts_clone_dir,
     sync_ob_cache,
 )
-from app.parser import parse_benchmark_files
+from app.parser import parse_benchmark_files, parse_file
 from app.repositories import SystemRepository
 
 
@@ -883,6 +883,59 @@ def debug_pool_args_cmd(pool_arg_flags: str, args_list: tuple[str, ...]):
         pooled = pool_key_for_args_by_flags(a, pool_flags)
         print("  pooled key:", pooled)
         print("")
+
+
+@click.command("reimport-all")
+@click.option("--yes", is_flag=True, help="Confirm the operation (deletes ALL existing data).")
+@click.option("--benchmarks-dir", default="", help="Directory with benchmark zip files (default: ~/Documents/Benchmarks).")
+def reimport_all(yes, benchmarks_dir):
+    """Nuke all data, extract all benchmark zips, reimport everything fresh.
+
+    Destroys and recreates all tables. Requires --yes.
+    """
+    if not yes:
+        click.echo("ERROR: Add --yes to confirm. This will DELETE ALL DATA and reimport.", err=True)
+        raise click.Abort()
+    import shutil
+    import zipfile
+    import tempfile
+
+    bm_dir = benchmarks_dir.strip() or os.path.expanduser("~/Documents/Benchmarks")
+    if not os.path.isdir(bm_dir):
+        click.echo(f"ERROR: Benchmarks directory not found: {bm_dir}", err=True)
+        raise click.Abort()
+
+    with current_app.app_context():
+        click.echo("Dropping all tables ...")
+        db.drop_all()
+        click.echo("Recreating schema ...")
+        db.create_all()
+
+        zips = sorted(glob.glob(os.path.join(bm_dir, "*.zip")))
+        if not zips:
+            click.echo(f"No zip files found in {bm_dir}.")
+            return
+        click.echo(f"Found {len(zips)} zip file(s).")
+
+        tmp = tempfile.mkdtemp(prefix="benchviz_reimport_")
+        try:
+            n_imported = 0
+            for zp in zips:
+                name = os.path.splitext(os.path.basename(zp))[0]
+                extract_dir = os.path.join(tmp, name)
+                os.makedirs(extract_dir, exist_ok=True)
+                with zipfile.ZipFile(zp, "r") as zf:
+                    zf.extractall(extract_dir)
+                # Find composite.xml (may be nested one level deep)
+                xmls = glob.glob(os.path.join(extract_dir, "**", "composite.xml"), recursive=True)
+                for xml_path in xmls:
+                    click.echo(f"  Importing {xml_path} ...")
+                    parse_file(xml_path)
+                    n_imported += 1
+            db.session.commit()
+            click.echo(f"Imported {n_imported} benchmark file(s) from {len(zips)} zip(s).")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 @click.command("debug-pool-axes")

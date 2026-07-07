@@ -69,8 +69,15 @@ class PtsGlobalSummaryTest(unittest.TestCase):
             {"hib": True, "values": {"a": 200.0, "b": 180.0}},
         ])
         summary = build_pts_global_summary(groups, ["a", "b"])
-        self.assertAlmostEqual(summary["composite_raw"]["a"], geometric_mean([100.0, 200.0]))
-        self.assertAlmostEqual(summary["composite_raw"]["b"], geometric_mean([110.0, 180.0]))
+        # PTS-style GM of ratios: normalize each subtest to reference (min),
+        # then GM across subtests.
+        # subtest1: a=100/100=1.0, b=110/100=1.1
+        # subtest2: a=200/180=1.111..., b=180/180=1.0
+        # composite_raw[a] = GM(1.0, 1.111...) = sqrt(1.111...) ≈ 1.0541
+        self.assertAlmostEqual(summary["composite_raw"]["a"], 1.054092553, places=6)
+        # composite_raw[b] = GM(1.1, 1.0) = sqrt(1.1) ≈ 1.04881
+        self.assertAlmostEqual(summary["composite_raw"]["b"], 1.048808848, places=6)
+        # b is the reference (lower composite_raw)
         self.assertEqual(summary["reference_system_id"], "b")
         self.assertAlmostEqual(summary["composite_relative"]["b"], 1.0)
         self.assertGreater(summary["composite_relative"]["a"], 1.0)
