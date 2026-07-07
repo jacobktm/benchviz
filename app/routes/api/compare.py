@@ -379,11 +379,8 @@ def api_compare():
                                     ra for ra in seen_classes[pk]
                                     if pool_key_for_args(None, ra) == sub_key
                                 ]
-                                if len(matching) > 1:
-                                    resolution_raw_map[sub_key] = matching
-                                    pooled_args_list.append(sub_key)
-                                else:
-                                    pooled_args_list.append(a)
+                                resolution_raw_map[sub_key] = matching
+                                pooled_args_list.append(sub_key)
                         else:
                             pooled_args_list.append(a)
                     else:
@@ -688,58 +685,110 @@ def api_compare():
                         })
                     first_sig = False
             else:
-                for bm in sorted(primary_benchmarks, key=lambda x: x.id):
-                    results_for_bm = by_bm_id.get(bm.id, [])
-                    if not results_for_bm:
-                        continue
-                    primary_traces = []
-                    sys_ids_with_results = set()
-                    for sys_id in sys_id_ints:
-                        system = systems_by_id.get(sys_id)
-                        if not system:
-                            continue
-                        matching = [r for r in results_for_bm if r.system_id == sys_id]
-                        if not matching:
-                            continue
-                        sys_ids_with_results.add(sys_id)
-                        for res in sorted(matching, key=lambda r: (r.imported_at or "", r.id)):
-                            obs_label = format_observation_label(
-                                system, res.profile_snapshot, res.imported_at,
+                if resolution_class_name:
+                    first_bm = next(iter(sorted(primary_benchmarks, key=lambda x: x.id)), None)
+                    if first_bm:
+                        merged_traces = []
+                        for sys_id in sys_id_ints:
+                            system = systems_by_id.get(sys_id)
+                            if not system:
+                                continue
+                            sys_results = [r for r in all_prim_results if r.system_id == sys_id]
+                            if not sys_results:
+                                continue
+                            lower_better = (first_bm.proportion or "").strip().upper() == "LIB"
+                            best = (
+                                min(sys_results, key=lambda r: float("inf") if r.value is None else float(r.value))
+                                if lower_better
+                                else max(sys_results, key=lambda r: float("-inf") if r.value is None else float(r.value))
                             )
+                            obs_label = format_observation_label(system, best.profile_snapshot, best.imported_at)
                             system_label = format_system_profile_label(system)
                             trace = {
                                 "name": obs_label,
-                                "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
+                                "type": "bar" if first_bm.display_format == "BAR_GRAPH" else "scatter",
                                 "customdata": [[system_label, obs_label]],
                                 "hovertemplate": (
                                     "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{x}<extra></extra>"
-                                    if bm.display_format == "BAR_GRAPH"
+                                    if first_bm.display_format == "BAR_GRAPH"
                                     else "%{customdata[0][0]}<br>%{customdata[0][1]}<extra></extra>"
                                 ),
-                                "import_batch_id": res.import_batch_id,
+                                "import_batch_id": best.import_batch_id,
                             }
-                            if bm.display_format == "BAR_GRAPH":
+                            if first_bm.display_format == "BAR_GRAPH":
                                 trace["x"] = [obs_label]
-                                trace["y"] = [res.value]
-                            elif bm.display_format == "LINE_GRAPH":
+                                trace["y"] = [best.value]
+                            elif first_bm.display_format == "LINE_GRAPH":
                                 from app.sensor_quality import numeric_series
-                                y_data = numeric_series(res.data_json)
+                                y_data = numeric_series(best.data_json)
                                 trace["x"] = list(range(len(y_data)))
                                 trace["y"] = y_data
                                 trace["mode"] = "lines"
-                            primary_traces.append(trace)
-                    if primary_traces:
-                        metric_label = (bm.description or "").strip() or (bm.scale or "Primary Result")
-                        charts.append({
-                            "metric": metric_label,
-                            "description": bm.description,
-                            "scale": bm.scale,
-                            "display_format": bm.display_format,
-                            "proportion": bm.proportion,
-                            "options": sorted(primary_args_set),
-                            "traces": primary_traces,
-                            "is_primary": True
-                        })
+                            merged_traces.append(trace)
+                        if merged_traces:
+                            charts.append({
+                                "metric": resolution_class_name,
+                                "description": first_bm.description,
+                                "scale": first_bm.scale,
+                                "display_format": first_bm.display_format,
+                                "proportion": first_bm.proportion,
+                                "options": sorted(primary_args_set),
+                                "traces": merged_traces,
+                                "is_primary": True,
+                            })
+                else:
+                    for bm in sorted(primary_benchmarks, key=lambda x: x.id):
+                        results_for_bm = by_bm_id.get(bm.id, [])
+                        if not results_for_bm:
+                            continue
+                        primary_traces = []
+                        sys_ids_with_results = set()
+                        for sys_id in sys_id_ints:
+                            system = systems_by_id.get(sys_id)
+                            if not system:
+                                continue
+                            matching = [r for r in results_for_bm if r.system_id == sys_id]
+                            if not matching:
+                                continue
+                            sys_ids_with_results.add(sys_id)
+                            for res in sorted(matching, key=lambda r: (r.imported_at or "", r.id)):
+                                obs_label = format_observation_label(
+                                    system, res.profile_snapshot, res.imported_at,
+                                )
+                                system_label = format_system_profile_label(system)
+                                trace = {
+                                    "name": obs_label,
+                                    "type": "bar" if bm.display_format == "BAR_GRAPH" else "scatter",
+                                    "customdata": [[system_label, obs_label]],
+                                    "hovertemplate": (
+                                        "%{customdata[0][0]}<br>%{customdata[0][1]}<br>%{x}<extra></extra>"
+                                        if bm.display_format == "BAR_GRAPH"
+                                        else "%{customdata[0][0]}<br>%{customdata[0][1]}<extra></extra>"
+                                    ),
+                                    "import_batch_id": res.import_batch_id,
+                                }
+                                if bm.display_format == "BAR_GRAPH":
+                                    trace["x"] = [obs_label]
+                                    trace["y"] = [res.value]
+                                elif bm.display_format == "LINE_GRAPH":
+                                    from app.sensor_quality import numeric_series
+                                    y_data = numeric_series(res.data_json)
+                                    trace["x"] = list(range(len(y_data)))
+                                    trace["y"] = y_data
+                                    trace["mode"] = "lines"
+                                primary_traces.append(trace)
+                        if primary_traces:
+                            metric_label = (bm.description or "").strip() or (bm.scale or "Primary Result")
+                            charts.append({
+                                "metric": metric_label,
+                                "description": bm.description,
+                                "scale": bm.scale,
+                                "display_format": bm.display_format,
+                                "proportion": bm.proportion,
+                                "options": sorted(primary_args_set),
+                                "traces": primary_traces,
+                                "is_primary": True
+                            })
             _t(f"iter_{_args_iter}_charts_built")
 
             from app.workload_profile import (
@@ -1427,7 +1476,7 @@ def api_compare_debug():
                 continue
 
             if not pool_equivalent_configs:
-                from app.option_equivalence import resolution_pool_key
+                from app.option_equivalence import resolution_pool_key, pool_key_for_args
                 seen_classes: dict[str, list[str]] = {}
                 for a in args_list:
                     if not a or not isinstance(a, str):
@@ -1443,9 +1492,17 @@ def api_compare_debug():
                         continue
                     pk = resolution_pool_key(a)
                     if pk and len(seen_classes.get(pk, [])) > 1:
-                        if pk not in resolution_raw_map:
-                            resolution_raw_map[pk] = seen_classes[pk]
-                            pooled_args_list.append(pk)
+                        sub_key = pool_key_for_args(None, a)
+                        if sub_key:
+                            if sub_key not in resolution_raw_map:
+                                matching = [
+                                    ra for ra in seen_classes[pk]
+                                    if pool_key_for_args(None, ra) == sub_key
+                                ]
+                                resolution_raw_map[sub_key] = matching
+                                pooled_args_list.append(sub_key)
+                        else:
+                            pooled_args_list.append(a)
                     else:
                         pooled_args_list.append(a)
                 args_list = pooled_args_list
